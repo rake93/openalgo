@@ -30,6 +30,7 @@ need → drill into the specific file. Don't load everything at once.
 |---|---|
 | Ubuntu server install | [installation-guidelines/getting-started/ubuntu-server-installation.md](installation-guidelines/getting-started/ubuntu-server-installation.md) |
 | Docker | [docker/README.md](docker/README.md) |
+| Cloud deploy — Oracle Cloud Always Free (Mumbai), $0/mo | [../deploy/oracle/README.md](../deploy/oracle/README.md) |
 | Upgrade / SMTP / TOTP / forgot-password | https://docs.openalgo.in/installation-guidelines/getting-started/ |
 | Broker integration (34 plugins) | [broker-integration-guide.md](broker-integration-guide.md) |
 | Release notes & changelog | [releases/](releases/) · [CHANGELOG.md](CHANGELOG.md) |
