@@ -35,6 +35,8 @@ type BuySellButtonsInstance = InstanceType<typeof BuySellButtons>
 type TradeFeedInstance = InstanceType<typeof OpenAlgoTradeFeed>
 
 import type { AppMode, ThemeMode } from '@/stores/themeStore'
+import { IndicatorHost, type IndicatorInstance } from '@/lib/charts/indicator-host'
+export type { IndicatorInstance } from '@/lib/charts/indicator-host'
 import { buildChartTheme, isLightTheme, volumeColor } from './chartTheme'
 import { CHART_TYPES } from './chartTypes'
 import { fmtPrice, money, priceDp, snapTick, tickSize } from './format'
@@ -112,6 +114,8 @@ export interface TerminalCallbacks {
   onWsState(state: string): void
   onSymbolLoaded(view: SymbolView): void
   onLtp(ltp: number): void
+  /** Active engine-backed indicators changed (add/remove/inputs/error). */
+  onIndicators?(list: IndicatorInstance[]): void
 }
 
 export interface TerminalOptions {
@@ -181,6 +185,10 @@ export class TradingTerminal {
   private ltpPollTimer: ReturnType<typeof setInterval> | null = null
   private destroyed = false
 
+  /** Engine-backed indicators (WASM worker) rendered onto this terminal's chart. */
+  private readonly indicators: IndicatorHost
+  private indicatorsRestored = false
+
   constructor(opts: TerminalOptions) {
     this.apiKey = opts.apiKey
     this.wsUrl = opts.wsUrl
@@ -192,6 +200,15 @@ export class TradingTerminal {
     this.interval = this.lsGet('interval') || '5m'
     this.ctype = this.lsGet('ctype') || 'candlestick'
     if (!CHART_TYPES[this.ctype]) this.ctype = 'candlestick'
+    this.indicators = new IndicatorHost({
+      onIndicators: (list) => {
+        if (this.indicatorsRestored) {
+          localStorage.setItem(`${this.sk}-indicators`, JSON.stringify(this.indicators.snapshot()))
+        }
+        this.cb.onIndicators?.(list)
+      },
+      onError: (message) => this.toast(message, 'err'),
+    })
   }
 
   /**
@@ -567,6 +584,8 @@ export class TradingTerminal {
       style: { color: volumeColor(mode, appMode) },
     })
     this.setPriceData()
+    // Rebind indicator renderers to the fresh chart (rebuilds recreate panes).
+    this.indicators.attachChart({ chart: this.chart, anchorSeries: this.price, basePane: 2 })
 
     // Default zoom: a FIXED number of recent bars, so the visible price range
     // (and cursor→price mapping) is the same on every screen width.
@@ -725,6 +744,7 @@ export class TradingTerminal {
         if (u.isNew) this.rawBars.push(u.bar)
         else this.rawBars[this.rawBars.length - 1] = u.bar
         this.setPriceData()
+        this.indicators.onBar(u.bar, u.isNew)
       }
     }
     this.setLegend(this.rawBars.length ? this.rawBars[this.rawBars.length - 1] : null)
@@ -897,6 +917,7 @@ export class TradingTerminal {
         : this.rawBars[this.rawBars.length - 1].open
     this.lastLtp = this.rawBars[this.rawBars.length - 1].close
     this.buildChart()
+    void this.syncIndicatorDataset()
     this.cb.onLtp(this.lastLtp)
     this.cb.onSymbolLoaded(this.sym)
 
@@ -1075,8 +1096,61 @@ export class TradingTerminal {
     }
   }
 
+  /* ── engine-backed indicators ──────────────────────────────────────────── */
+
+  get indicatorManifest() {
+    return this.indicators.manifest
+  }
+
+  listIndicators(): IndicatorInstance[] {
+    return this.indicators.list()
+  }
+
+  async addIndicator(definitionId: string, inputs?: Record<string, unknown>): Promise<void> {
+    await this.indicators.add(definitionId, inputs)
+  }
+
+  async setIndicatorInputs(instanceId: string, inputs: Record<string, unknown>): Promise<void> {
+    await this.indicators.setInputs(instanceId, inputs)
+  }
+
+  async removeIndicator(instanceId: string): Promise<void> {
+    const needsRebuild = await this.indicators.remove(instanceId)
+    if (needsRebuild) {
+      // openalgo-charts panes are not removable — rebuild the chart, which
+      // re-attaches renderers, then recompute the surviving indicators.
+      this.buildChart()
+      await this.indicators.recreateSessions()
+    }
+  }
+
+  private async syncIndicatorDataset(): Promise<void> {
+    if (!this.sym) return
+    try {
+      await this.indicators.setDataset(this.rawBars, {
+        symbol: this.sym.symbol,
+        exchange: this.sym.exchange,
+        interval: this.interval,
+      })
+      if (!this.indicatorsRestored) {
+        this.indicatorsRestored = true
+        const saved = JSON.parse(localStorage.getItem(`${this.sk}-indicators`) || '[]') as {
+          definitionId: string
+          inputs: Record<string, unknown>
+        }[]
+        for (const item of saved) {
+          await this.indicators.add(item.definitionId, item.inputs).catch(() => undefined)
+        }
+      }
+    } catch (e) {
+      // Indicators are additive: chart + trading keep working without them.
+      console.error('[trading] indicator engine unavailable', e)
+    }
+  }
+
   destroy() {
     this.destroyed = true
+    this.indicators.dispose()
     if (this.bookTimer) clearInterval(this.bookTimer)
     if (this.reconcileTimer) clearTimeout(this.reconcileTimer)
     this.stopLtpFallback()

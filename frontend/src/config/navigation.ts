@@ -41,6 +41,7 @@ export const navItems: NavItem[] = [
   { href: '/tradebook', label: 'Tradebook', icon: FileText },
   { href: '/positions', label: 'Positions', icon: TrendingUp },
   { href: '/trading', label: 'Trading', icon: CandlestickChart },
+  { href: '/charts', label: 'Charts', icon: BarChart3 },
   { href: '/platforms', label: 'Platforms', icon: Layers },
   { href: '/strategy', label: 'Strategy', icon: Code2 },
   { href: '/logs', label: 'Logs', icon: FileBarChart },

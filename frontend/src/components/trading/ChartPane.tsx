@@ -16,6 +16,7 @@ import {
   type SymbolView,
   type TerminalCallbacks,
   TradingTerminal,
+  type IndicatorInstance,
 } from '@/lib/trading/terminal'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/themeStore'
@@ -91,6 +92,7 @@ export function ChartPane({ paneId, apiKey, wsUrl, style }: Props) {
 
   // right-click order menu
   const [ctx, setCtx] = useState<{ x: number; y: number; items: CtxItem[] } | null>(null)
+  const [indicators, setIndicators] = useState<IndicatorInstance[]>([])
 
   /* ── boot this pane's terminal once ───────────────────────────────────── */
   useEffect(() => {
@@ -117,6 +119,7 @@ export function ChartPane({ paneId, apiKey, wsUrl, style }: Props) {
         setQty(1)
       },
       onLtp: () => {}, // legend overlay + canvas render the live price
+      onIndicators: setIndicators,
     }
 
     if (chartRef.current && legendRef.current) {
@@ -279,6 +282,52 @@ export function ChartPane({ paneId, apiKey, wsUrl, style }: Props) {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Indicators (engine-backed, computed in the WASM worker) */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="h-8 gap-1" title="Indicators">
+              <span className="text-[13px] font-semibold italic">ƒx</span>
+              <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="max-h-80 w-64 overflow-auto">
+            {(terminalRef.current?.indicatorManifest ?? []).map((m) => (
+              <DropdownMenuItem
+                key={m.id}
+                onSelect={() => void terminalRef.current?.addIndicator(m.id)}
+                className="justify-between gap-2 text-sm"
+              >
+                {m.name}
+                <span className="text-[10px] uppercase text-muted-foreground">{m.category}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {indicators.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1">
+            {indicators.map((ind) => (
+              <span
+                key={ind.instanceId}
+                title={ind.error || ind.definitionId}
+                className={cn(
+                  'flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 text-[11px]',
+                  ind.error && 'bg-destructive/15 text-destructive'
+                )}
+              >
+                {ind.name}
+                <button
+                  type="button"
+                  aria-label={`Remove ${ind.name}`}
+                  onClick={() => void terminalRef.current?.removeIndicator(ind.instanceId)}
+                  className="ml-0.5 opacity-50 hover:opacity-100"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Product (segmented) */}
         {sym && !sym.quoteOnly && (

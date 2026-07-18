@@ -27,6 +27,12 @@ def get_csp_config():
     # Script source directive
     script_src = os.getenv("CSP_SCRIPT_SRC", "'self' https://cdn.socket.io")
     if script_src:
+        # The indicator engine (/charts, /trading) compiles a WebAssembly
+        # module in a Web Worker. 'wasm-unsafe-eval' permits ONLY
+        # WebAssembly.instantiate — JS eval()/new Function() remain blocked —
+        # so append it even when CSP_SCRIPT_SRC comes from a user's .env.
+        if "'wasm-unsafe-eval'" not in script_src:
+            script_src += " 'wasm-unsafe-eval'"
         csp_config["script-src"] = script_src
 
     # Style source directive
