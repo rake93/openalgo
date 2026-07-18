@@ -18,6 +18,7 @@ import {
   TradingTerminal,
   type IndicatorInstance,
 } from '@/lib/trading/terminal'
+import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/themeStore'
 import { showToast } from '@/utils/toast'
@@ -93,6 +94,7 @@ export function ChartPane({ paneId, apiKey, wsUrl, style }: Props) {
   // right-click order menu
   const [ctx, setCtx] = useState<{ x: number; y: number; items: CtxItem[] } | null>(null)
   const [indicators, setIndicators] = useState<IndicatorInstance[]>([])
+  const [settingsFor, setSettingsFor] = useState<IndicatorInstance | null>(null)
 
   /* ── boot this pane's terminal once ───────────────────────────────────── */
   useEffect(() => {
@@ -315,7 +317,14 @@ export function ChartPane({ paneId, apiKey, wsUrl, style }: Props) {
                   ind.error && 'bg-destructive/15 text-destructive'
                 )}
               >
-                {ind.name}
+                <button
+                  type="button"
+                  onClick={() => setSettingsFor(ind)}
+                  className="hover:underline"
+                  title="Settings"
+                >
+                  {ind.name}
+                </button>
                 <button
                   type="button"
                   aria-label={`Remove ${ind.name}`}
@@ -447,6 +456,13 @@ export function ChartPane({ paneId, apiKey, wsUrl, style }: Props) {
         }
         onPick={(row) => terminalRef.current?.loadSymbol(row)}
         initialQuery={sym?.symbol}
+      />
+
+      <IndicatorSettingsDialog
+        instance={settingsFor}
+        manifest={terminalRef.current?.indicatorManifest ?? []}
+        onSave={(instanceId, inputs) => terminalRef.current?.setIndicatorInputs(instanceId, inputs)}
+        onClose={() => setSettingsFor(null)}
       />
     </section>
   )

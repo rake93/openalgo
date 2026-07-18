@@ -1,12 +1,18 @@
 /**
  * /charts — production chart workspace with engine-backed indicators.
- * Phase 0/1: price + volume, live candles, add/edit/remove built-in
- * indicators computed in the worker on the Rust/WASM core.
+ * Price + volume, live candles, worker/WASM indicators, generated settings
+ * forms, and server-side layout persistence (auto-saved "default" layout).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useThemeStore } from '@/stores/themeStore'
-import { getEngine } from '@/lib/charts/engine'
+import {
+  createLayout,
+  listLayouts,
+  updateLayout,
+  type ChartLayoutState,
+} from '@/api/indicators'
+import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
 import {
   ChartWorkspaceController,
   type IndicatorInstance,
@@ -14,6 +20,7 @@ import {
 
 const INTERVALS = ['1m', '3m', '5m', '15m', '30m', '1h', 'D', 'W'] as const
 const DEFAULT_SYMBOL = { symbol: 'NIFTY', exchange: 'NSE_INDEX' }
+const LAYOUT_NAME = 'default'
 
 interface SearchRow {
   symbol: string
@@ -24,6 +31,8 @@ interface SearchRow {
 export default function ChartWorkspace() {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const controllerRef = useRef<ChartWorkspaceController | null>(null)
+  const layoutIdRef = useRef<number | null>(null)
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mode = useThemeStore((s) => s.mode)
 
   const [ready, setReady] = useState(false)
@@ -33,9 +42,9 @@ export default function ChartWorkspace() {
   const [interval, setIntervalValue] = useState('5m')
   const [active, setActive] = useState(DEFAULT_SYMBOL)
   const [indicators, setIndicators] = useState<IndicatorInstance[]>([])
+  const [settingsFor, setSettingsFor] = useState<IndicatorInstance | null>(null)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchRow[]>([])
-  const [perfMs, setPerfMs] = useState<number | null>(null)
   const [showLibrary, setShowLibrary] = useState(false)
 
   useEffect(() => {
@@ -52,33 +61,54 @@ export default function ChartWorkspace() {
           setNoApiKey(true)
           return
         }
-        const engine = await getEngine()
-        if (!alive || !containerRef.current) return
+        if (!containerRef.current) return
         controller = new ChartWorkspaceController({
           apiKey: keyRes.api_key,
           wsUrl: cfgRes.websocket_url || 'ws://127.0.0.1:8765',
           container: containerRef.current,
-          engine,
           isDark: () => useThemeStore.getState().mode === 'dark',
           callbacks: {
             onStatus: setStatus,
             onWsState: setWsState,
             onIndicators: setIndicators,
-            onSymbolLoaded: (info) =>
-              setActive({ symbol: info.symbol, exchange: info.exchange }),
+            onSymbolLoaded: (info) => {
+              setActive({ symbol: info.symbol, exchange: info.exchange })
+              setIntervalValue(info.interval)
+            },
             onError: (message) => setStatus(message),
-            onPerf: (p) => setPerfMs(p.computeMs),
           },
         })
         controllerRef.current = controller
         setReady(true)
-        await controller.load(DEFAULT_SYMBOL.symbol, DEFAULT_SYMBOL.exchange, '5m')
+
+        // Restore the auto-saved default layout (symbol/interval/indicators).
+        let restored = false
+        try {
+          const layouts = await listLayouts()
+          const saved = layouts.find((l) => l.name === LAYOUT_NAME)
+          if (saved) {
+            layoutIdRef.current = saved.id
+            if (saved.symbol && saved.exchange) {
+              await controller.load(saved.symbol, saved.exchange, saved.timeframe || '5m')
+              restored = true
+            }
+            for (const item of saved.layout?.indicators ?? []) {
+              await controller.addIndicator(item.definitionId, item.inputs).catch(() => undefined)
+            }
+          }
+        } catch {
+          /* layouts API unavailable — fall through to default */
+        }
+        if (!restored) {
+          await controller.load(DEFAULT_SYMBOL.symbol, DEFAULT_SYMBOL.exchange, '5m')
+        }
       } catch (err) {
         if (alive) setStatus(err instanceof Error ? err.message : 'failed to start workspace')
       }
     })()
     return () => {
       alive = false
+      if (saveTimer.current) clearTimeout(saveTimer.current)
       controller?.destroy()
       controllerRef.current = null
     }
@@ -87,6 +117,41 @@ export default function ChartWorkspace() {
   useEffect(() => {
     controllerRef.current?.setTheme()
   }, [mode])
+
+  // Debounced auto-save of the default layout.
+  useEffect(() => {
+    if (!ready) return
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => {
+      const controller = controllerRef.current
+      if (!controller) return
+      const state: ChartLayoutState = { indicators: controller.indicators.snapshot() }
+      const meta = controller.current
+      void (async () => {
+        try {
+          if (layoutIdRef.current) {
+            await updateLayout(layoutIdRef.current, {
+              symbol: meta.symbol,
+              exchange: meta.exchange,
+              timeframe: meta.interval,
+              layout: state,
+            })
+          } else {
+            const created = await createLayout({
+              name: LAYOUT_NAME,
+              symbol: meta.symbol,
+              exchange: meta.exchange,
+              timeframe: meta.interval,
+              layout: state,
+            })
+            if (created) layoutIdRef.current = created.id
+          }
+        } catch {
+          /* persistence is best-effort */
+        }
+      })()
+    }, 1200)
+  }, [ready, indicators, active, interval])
 
   const doSearch = useCallback(async (q: string) => {
     setQuery(q)
@@ -187,7 +252,6 @@ export default function ChartWorkspace() {
             </div>
           )}
         </div>
-        {/* Active indicator chips */}
         <div className="flex flex-wrap items-center gap-1">
           {indicators.map((ind) => (
             <span
@@ -197,7 +261,9 @@ export default function ChartWorkspace() {
                 ind.error ? 'bg-destructive/20 text-destructive' : 'bg-accent'
               }`}
             >
-              {ind.name}
+              <button type="button" onClick={() => setSettingsFor(ind)} className="hover:underline">
+                {ind.name}
+              </button>
               <button
                 type="button"
                 onClick={() => void controllerRef.current?.removeIndicator(ind.instanceId)}
@@ -229,11 +295,17 @@ export default function ChartWorkspace() {
       {/* Status bar */}
       <div className="flex items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
         <span>{status}</span>
-        <span className="flex items-center gap-3">
-          {perfMs !== null && <span>calc {perfMs.toFixed(1)} ms</span>}
-          <span className={wsState === 'open' ? 'text-green-500' : ''}>ws: {wsState}</span>
-        </span>
+        <span className={wsState === 'open' ? 'text-green-500' : ''}>ws: {wsState}</span>
       </div>
+
+      <IndicatorSettingsDialog
+        instance={settingsFor}
+        manifest={manifest}
+        onSave={(instanceId, inputs) =>
+          controllerRef.current?.updateIndicatorInputs(instanceId, inputs)
+        }
+        onClose={() => setSettingsFor(null)}
+      />
     </div>
   )
 }
