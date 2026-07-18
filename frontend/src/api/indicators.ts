@@ -52,3 +52,50 @@ export async function updateLayout(
 export async function deleteLayout(id: number): Promise<void> {
   await webClient.delete(`/indicators/api/layouts/${id}`)
 }
+
+/* ── OpenScript scripts ─────────────────────────────────────────────────── */
+
+export interface ScriptRecord {
+  id: number
+  name: string
+  description: string | null
+  language: string
+  visibility: string
+  current_version_id: number | null
+  /** Present when a single script is fetched (get/create/update). */
+  version_number?: number
+  source?: string
+  updated_at: string | null
+  created_at: string | null
+}
+
+export async function listScripts(): Promise<ScriptRecord[]> {
+  const { data } = await webClient.get<ApiEnvelope<ScriptRecord[]>>('/indicators/api/scripts')
+  return data.data ?? []
+}
+
+export async function getScript(id: number): Promise<ScriptRecord | undefined> {
+  const { data } = await webClient.get<ApiEnvelope<ScriptRecord>>(`/indicators/api/scripts/${id}`)
+  return data.data
+}
+
+export async function createScript(payload: {
+  name: string
+  description?: string
+  source: string
+}): Promise<ScriptRecord | undefined> {
+  const { data } = await webClient.post<ApiEnvelope<ScriptRecord>>('/indicators/api/scripts', payload)
+  return data.data
+}
+
+export async function updateScript(
+  id: number,
+  payload: Partial<{ name: string; description: string; source: string }>
+): Promise<ScriptRecord | undefined> {
+  const { data } = await webClient.put<ApiEnvelope<ScriptRecord>>(`/indicators/api/scripts/${id}`, payload)
+  return data.data
+}
+
+export async function deleteScript(id: number): Promise<void> {
+  await webClient.delete(`/indicators/api/scripts/${id}`)
+}
