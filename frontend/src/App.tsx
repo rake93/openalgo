@@ -53,6 +53,7 @@ const WebSocketOrder = lazy(() => import('@/pages/WebSocketOrder'))
 const ChartTest = lazy(() => import('@/pages/ChartTest'))
 const Playground = lazy(() => import('@/pages/Playground'))
 const Trading = lazy(() => import('@/pages/Trading'))
+const ChartWorkspace = lazy(() => import('@/pages/charts/ChartWorkspace'))
 const Historify = lazy(() => import('@/pages/Historify'))
 const HistorifyCharts = lazy(() => import('@/pages/HistorifyCharts'))
 
@@ -285,6 +286,7 @@ function App() {
               <Route element={<FullWidthLayout />}>
                 <Route path="/playground" element={<Playground />} />
                 <Route path="/trading" element={<Trading />} />
+                <Route path="/charts" element={<ChartWorkspace />} />
                 <Route path="/historify" element={<Historify />} />
                 <Route path="/historify/charts" element={<HistorifyCharts />} />
                 <Route path="/historify/charts/:symbol" element={<HistorifyCharts />} />

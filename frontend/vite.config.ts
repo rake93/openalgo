@@ -29,6 +29,12 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // The indicator engine is a file:-linked local package whose worker entry
+  // (`?worker`) and wasm asset (`?url`) must keep their real URLs — dep
+  // pre-bundling would inline/rewrite them and break worker construction.
+  optimizeDeps: {
+    exclude: ['@openalgo/indicator-engine'],
+  },
   server: {
     port: 5173,
     proxy: {
