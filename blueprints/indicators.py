@@ -19,14 +19,13 @@ from database.indicator_db import (
     IndicatorScriptVersion,
     db_session,
 )
+from services.indicator_engine.compiler_service import compile_source
 from utils.logging import get_logger
 from utils.session import check_session_validity
 
 logger = get_logger(__name__)
 
 indicators_bp = Blueprint("indicators_bp", __name__, url_prefix="/indicators/api")
-
-COMPILER_VERSION = "openscript-1.0"
 
 
 def _user() -> str:
@@ -160,16 +159,23 @@ def _script_row(
         row["version_number"] = version.version_number
         if include_source:
             row["source"] = version.source_code
+            meta = version.metadata_json or {}
+            row["diagnostics"] = meta.get("diagnostics", [])
     return row
 
 
 def _new_version(script_id: int, source: str, version_number: int) -> IndicatorScriptVersion:
+    """Build an immutable version, compiling the source server-side (the server
+    never trusts client IR — it stores its own compiled IR + diagnostics)."""
+    compiled = compile_source(source)
     return IndicatorScriptVersion(
         script_id=script_id,
         version_number=version_number,
         source_code=source,
-        source_hash=hashlib.sha256(source.encode("utf-8")).hexdigest(),
-        compiler_version=COMPILER_VERSION,
+        source_hash=compiled["source_hash"],
+        compiler_version=compiled["compiler_version"],
+        compiled_ir=compiled["ir"],
+        metadata_json={"diagnostics": compiled["diagnostics"]},
     )
 
 
