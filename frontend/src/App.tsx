@@ -54,6 +54,7 @@ const ChartTest = lazy(() => import('@/pages/ChartTest'))
 const Playground = lazy(() => import('@/pages/Playground'))
 const Trading = lazy(() => import('@/pages/Trading'))
 const ChartWorkspace = lazy(() => import('@/pages/charts/ChartWorkspace'))
+const ChartEditor = lazy(() => import('@/pages/charts/ChartEditor'))
 const Historify = lazy(() => import('@/pages/Historify'))
 const HistorifyCharts = lazy(() => import('@/pages/HistorifyCharts'))
 
@@ -287,6 +288,8 @@ function App() {
                 <Route path="/playground" element={<Playground />} />
                 <Route path="/trading" element={<Trading />} />
                 <Route path="/charts" element={<ChartWorkspace />} />
+                <Route path="/charts/editor" element={<ChartEditor />} />
+                <Route path="/charts/editor/:scriptId" element={<ChartEditor />} />
                 <Route path="/historify" element={<Historify />} />
                 <Route path="/historify/charts" element={<HistorifyCharts />} />
                 <Route path="/historify/charts/:symbol" element={<HistorifyCharts />} />

@@ -23,6 +23,7 @@ import {
   type LtpEvent,
   type SeriesApi,
 } from 'openalgo-charts'
+import type { IRProgram } from '@openalgo/indicator-engine'
 import { IndicatorHost, type IndicatorInstance } from './indicator-host'
 
 export type { IndicatorInstance } from './indicator-host'
@@ -77,6 +78,7 @@ export class ChartWorkspaceController {
   private exchange = ''
   private interval = '5m'
   private destroyed = false
+  private previewId: string | null = null
 
   get manifest() {
     return this.indicators.manifest
@@ -195,6 +197,26 @@ export class ChartWorkspaceController {
 
   async removeIndicator(instanceId: string): Promise<void> {
     const needsRebuild = await this.indicators.remove(instanceId)
+    if (needsRebuild) {
+      this.rebuildChart()
+      await this.indicators.recreateSessions()
+    }
+  }
+
+  /**
+   * Live preview of the OpenScript editor: replace the single preview session
+   * with the freshly-compiled IR. Only one preview indicator exists at a time.
+   */
+  async previewIr(ir: IRProgram): Promise<void> {
+    await this.clearPreview()
+    this.previewId = await this.indicators.addIr(ir)
+  }
+
+  async clearPreview(): Promise<void> {
+    if (!this.previewId) return
+    const id = this.previewId
+    this.previewId = null
+    const needsRebuild = await this.indicators.remove(id)
     if (needsRebuild) {
       this.rebuildChart()
       await this.indicators.recreateSessions()

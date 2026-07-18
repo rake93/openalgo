@@ -12,6 +12,7 @@ import type { Chart, Bar, SeriesApi } from 'openalgo-charts'
 import type {
   IndicatorManifestEntry,
   IndicatorOutput,
+  IRProgram,
   OHLCVBar,
 } from '@openalgo/indicator-engine'
 import { datasetFromBars, toDatasetBuffers, datasetKey } from '@openalgo/indicator-engine'
@@ -28,6 +29,8 @@ export interface IndicatorInstance {
   inputs: Record<string, unknown>
   pane?: number
   error?: string
+  /** Present for custom OpenScript indicators — runs as an IR session. */
+  ir?: IRProgram
 }
 
 export interface IndicatorHostCallbacks {
@@ -183,6 +186,34 @@ export class IndicatorHost {
     return instanceId
   }
 
+  /**
+   * Add a custom OpenScript indicator from a compiled IRProgram. Mirrors `add()`
+   * but takes declaration/inputs from the IR instead of the builtin manifest.
+   */
+  async addIr(ir: IRProgram, inputs?: Record<string, unknown>): Promise<string> {
+    this.seq += 1
+    const instanceId = `${this.hostId}i${this.seq}`
+    const instance: IndicatorInstance = {
+      instanceId,
+      definitionId: 'ir',
+      name: ir.declaration.shortName ?? ir.declaration.name,
+      overlay: ir.declaration.overlay,
+      inputs: { ...Object.fromEntries(ir.inputs.map((i) => [i.id, i.defaultValue])), ...inputs },
+      ir,
+    }
+    if (!ir.declaration.overlay) {
+      instance.pane = this.nextPane
+      this.nextPane += 1
+    }
+    this.instances.set(instanceId, instance)
+    this.createRenderer(instance)
+    this.emit()
+    if (this.currentKey) {
+      await this.createSession(instance)
+    }
+    return instanceId
+  }
+
   async setInputs(instanceId: string, inputs: Record<string, unknown>): Promise<void> {
     const instance = this.instances.get(instanceId)
     if (!instance || !this.engine) return
@@ -262,7 +293,7 @@ export class IndicatorHost {
       const result = await engine.createSession({
         sessionId: instance.instanceId,
         datasetKey: this.currentKey,
-        program: { kind: 'builtin', id: instance.definitionId },
+        program: instance.ir ? { kind: 'ir', ir: instance.ir } : { kind: 'builtin', id: instance.definitionId },
         inputs: instance.inputs,
         mode: 'realtime',
         meta: this.meta,

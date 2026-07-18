@@ -5,6 +5,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useThemeStore } from '@/stores/themeStore'
 import {
   createLayout,
@@ -252,6 +253,13 @@ export default function ChartWorkspace() {
             </div>
           )}
         </div>
+        <Link
+          to="/charts/editor"
+          className="h-8 rounded bg-card px-3 text-sm font-medium leading-8 hover:bg-accent"
+          title="Write a custom OpenScript indicator"
+        >
+          ƒx Editor
+        </Link>
         <div className="flex flex-wrap items-center gap-1">
           {indicators.map((ind) => (
             <span
