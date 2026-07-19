@@ -1,6 +1,9 @@
 """IR admission gate (Python) — mirrors the TS admitIR unit tests and the
 shared fixtures/admission corpus (drift guard with the engine)."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -121,3 +124,32 @@ def test_execute_ir_rejects_unknown_node_op():
     dataset = {k: np.arange(n, dtype=float) for k in ("open", "high", "low", "close", "volume", "time")}
     with pytest.raises(IRAdmissionError):
         execute_ir(ir, dataset)
+
+
+_ADMIT_FIXTURES_DIR = (
+    Path(__file__).resolve().parents[1].parent
+    / "openalgo-openscript"
+    / "fixtures"
+    / "admission"
+)
+
+
+def _load_admit_fixtures():
+    if not _ADMIT_FIXTURES_DIR.is_dir():
+        return []
+    params = []
+    for p in sorted(_ADMIT_FIXTURES_DIR.glob("*.json")):
+        data = json.loads(p.read_text(encoding="utf-8"))
+        params.append(pytest.param(data, id=data["name"]))
+    return params
+
+
+_ADMIT_FIXTURES = _load_admit_fixtures()
+
+
+@pytest.mark.skipif(not _ADMIT_FIXTURES, reason="shared admission fixtures not found (engine repo not a sibling)")
+@pytest.mark.parametrize("fixture", _ADMIT_FIXTURES)
+def test_admission_conformance(fixture):
+    got = sorted({e["code"] for e in admit_ir(fixture["ir"])})
+    want = sorted(set(fixture["expectAdmissionErrors"]))
+    assert got == want, f"{fixture['name']}: got {got}, want {want}"
