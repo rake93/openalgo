@@ -747,6 +747,17 @@ def setup_environment(app):
                 logger.error(f"Failed to initialize Historify scheduler: {e}")
 
             try:
+                # Headless OpenScript indicator-alert engine: evaluates active
+                # alerts on a schedule and delivers via Socket.IO + Telegram, so
+                # alerts fire even with the browser closed.
+                from services.indicator_engine.alert_service import init_indicator_alert_scheduler
+
+                init_indicator_alert_scheduler(socketio=socketio)
+                logger.debug("Indicator alert scheduler initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize Indicator alert scheduler: {e}")
+
+            try:
                 # Server-side scalping SL / target / trailing-stop engine. Runs
                 # browser-independently so stops keep working after the user
                 # leaves /scalping or closes the tab. Idles when no SL is set.

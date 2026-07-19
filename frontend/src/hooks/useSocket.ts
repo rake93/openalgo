@@ -330,6 +330,17 @@ export function useSocket() {
       }
     })
 
+    // Headless OpenScript indicator alerts (fired by the server-side engine).
+    socket.on(
+      'indicator_alert',
+      (data: { symbol?: string; timeframe?: string; message?: string; condition_id?: string }) => {
+        playAlertSound('indicatorAlert')
+        const head = data.symbol ? `${data.symbol} ${data.timeframe ?? ''}`.trim() : 'Indicator alert'
+        const body = data.message || data.condition_id || 'Alert triggered'
+        showCategoryToast('info', `${head} — ${body}`, 'indicatorAlert')
+      }
+    )
+
     return () => {
       socket.disconnect()
       setSocketInstance(null)
