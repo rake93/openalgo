@@ -15,6 +15,7 @@ from flask import Blueprint, jsonify, request, session
 
 from database.indicator_db import (
     ChartLayout,
+    IndicatorAlert,
     IndicatorScript,
     IndicatorScriptVersion,
     db_session,
@@ -328,6 +329,135 @@ def list_script_versions(script_id: int):
         )
     except Exception as e:
         logger.exception(f"Error listing versions for script {script_id}: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        db_session.remove()
+
+
+# ── Indicator alerts (headless bar-close evaluation) ─────────────────────────
+
+
+def _alert_row(alert: IndicatorAlert) -> dict:
+    return {
+        "id": alert.id,
+        "script_version_id": alert.script_version_id,
+        "builtin_id": alert.builtin_id,
+        "symbol": alert.symbol,
+        "exchange": alert.exchange,
+        "timeframe": alert.timeframe,
+        "condition_id": alert.condition_id,
+        "inputs": alert.inputs_json or {},
+        "trigger_mode": alert.trigger_mode,
+        "is_active": alert.is_active,
+        "last_evaluated_bar": alert.last_evaluated_bar,
+        "last_triggered_at": alert.last_triggered_at.isoformat() if alert.last_triggered_at else None,
+        "created_at": alert.created_at.isoformat() if alert.created_at else None,
+    }
+
+
+def _owns_version(user_id: str, version_id: int) -> bool:
+    row = (
+        db_session.query(IndicatorScriptVersion)
+        .join(IndicatorScript, IndicatorScriptVersion.script_id == IndicatorScript.id)
+        .filter(IndicatorScriptVersion.id == version_id, IndicatorScript.user_id == user_id)
+        .first()
+    )
+    return row is not None
+
+
+@indicators_bp.route("/alerts", methods=["GET"])
+@check_session_validity
+def list_alerts():
+    try:
+        rows = (
+            IndicatorAlert.query.filter_by(user_id=_user())
+            .order_by(IndicatorAlert.updated_at.desc())
+            .all()
+        )
+        return jsonify({"status": "success", "data": [_alert_row(a) for a in rows]})
+    except Exception as e:
+        logger.exception(f"Error listing alerts: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        db_session.remove()
+
+
+@indicators_bp.route("/alerts", methods=["POST"])
+@check_session_validity
+def create_alert():
+    try:
+        data = request.get_json(force=True) or {}
+        required = ("symbol", "exchange", "timeframe", "condition_id")
+        missing = [f for f in required if not (data.get(f) or "").strip()]
+        if missing:
+            return jsonify({"status": "error", "message": f"missing: {', '.join(missing)}"}), 400
+        script_version_id = data.get("script_version_id")
+        builtin_id = data.get("builtin_id")
+        if not script_version_id and not builtin_id:
+            return jsonify({"status": "error", "message": "script_version_id or builtin_id is required"}), 400
+        if script_version_id and not _owns_version(_user(), script_version_id):
+            return jsonify({"status": "error", "message": "unknown script version"}), 404
+        alert = IndicatorAlert(
+            user_id=_user(),
+            script_version_id=script_version_id,
+            builtin_id=builtin_id,
+            symbol=data["symbol"].strip(),
+            exchange=data["exchange"].strip(),
+            timeframe=data["timeframe"].strip(),
+            condition_id=data["condition_id"].strip(),
+            inputs_json=data.get("inputs") or {},
+            trigger_mode=data.get("trigger_mode") or "bar-close",
+            is_active=bool(data.get("is_active", True)),
+        )
+        db_session.add(alert)
+        db_session.commit()
+        return jsonify({"status": "success", "data": _alert_row(alert)}), 201
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error creating alert: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        db_session.remove()
+
+
+@indicators_bp.route("/alerts/<int:alert_id>", methods=["PUT"])
+@check_session_validity
+def update_alert(alert_id: int):
+    try:
+        alert = IndicatorAlert.query.filter_by(id=alert_id, user_id=_user()).first()
+        if not alert:
+            return jsonify({"status": "error", "message": "alert not found"}), 404
+        data = request.get_json(force=True) or {}
+        if "is_active" in data:
+            alert.is_active = bool(data["is_active"])
+        if "inputs" in data:
+            alert.inputs_json = data["inputs"] or {}
+        for field in ("symbol", "exchange", "timeframe", "condition_id", "trigger_mode"):
+            if field in data and (data[field] or "").strip():
+                setattr(alert, field, data[field].strip())
+        db_session.commit()
+        return jsonify({"status": "success", "data": _alert_row(alert)})
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error updating alert {alert_id}: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        db_session.remove()
+
+
+@indicators_bp.route("/alerts/<int:alert_id>", methods=["DELETE"])
+@check_session_validity
+def delete_alert(alert_id: int):
+    try:
+        alert = IndicatorAlert.query.filter_by(id=alert_id, user_id=_user()).first()
+        if not alert:
+            return jsonify({"status": "error", "message": "alert not found"}), 404
+        db_session.delete(alert)
+        db_session.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        db_session.rollback()
+        logger.exception(f"Error deleting alert {alert_id}: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         db_session.remove()

@@ -99,3 +99,52 @@ export async function updateScript(
 export async function deleteScript(id: number): Promise<void> {
   await webClient.delete(`/indicators/api/scripts/${id}`)
 }
+
+/* ── Indicator alerts ───────────────────────────────────────────────────── */
+
+export interface AlertRecord {
+  id: number
+  script_version_id: number | null
+  builtin_id: string | null
+  symbol: string
+  exchange: string
+  timeframe: string
+  condition_id: string
+  inputs: Record<string, unknown>
+  trigger_mode: string
+  is_active: boolean
+  last_evaluated_bar: number | null
+  last_triggered_at: string | null
+  created_at: string | null
+}
+
+export async function listAlerts(): Promise<AlertRecord[]> {
+  const { data } = await webClient.get<ApiEnvelope<AlertRecord[]>>('/indicators/api/alerts')
+  return data.data ?? []
+}
+
+export async function createAlert(payload: {
+  script_version_id?: number
+  builtin_id?: string
+  symbol: string
+  exchange: string
+  timeframe: string
+  condition_id: string
+  inputs?: Record<string, unknown>
+  trigger_mode?: string
+}): Promise<AlertRecord | undefined> {
+  const { data } = await webClient.post<ApiEnvelope<AlertRecord>>('/indicators/api/alerts', payload)
+  return data.data
+}
+
+export async function updateAlert(
+  id: number,
+  payload: Partial<{ is_active: boolean; inputs: Record<string, unknown>; timeframe: string }>
+): Promise<AlertRecord | undefined> {
+  const { data } = await webClient.put<ApiEnvelope<AlertRecord>>(`/indicators/api/alerts/${id}`, payload)
+  return data.data
+}
+
+export async function deleteAlert(id: number): Promise<void> {
+  await webClient.delete(`/indicators/api/alerts/${id}`)
+}
