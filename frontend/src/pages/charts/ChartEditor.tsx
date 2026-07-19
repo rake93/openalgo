@@ -287,6 +287,25 @@ export default function ChartEditor() {
     [currentVersionId, active, interval]
   )
 
+  // Pine-style shortcuts: Ctrl/Cmd+S saves, Ctrl/Cmd+O opens the library.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) {
+        return
+      }
+      const key = e.key.toLowerCase()
+      if (key === 's') {
+        e.preventDefault()
+        void save()
+      } else if (key === 'o') {
+        e.preventDefault()
+        void toggleLibrary()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [save, toggleLibrary])
+
   const errorCount = diagnostics.filter((d) => d.severity === 'error').length
 
   return (
