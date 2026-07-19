@@ -230,10 +230,14 @@ def _collect_outputs(ir, values, n) -> list[dict]:
     return outputs
 
 
-def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None) -> list[dict]:
+def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None) -> list[dict]:
     """Run a compiled IRProgram over a dataset (dict of float numpy arrays with
     keys open/high/low/close/volume). Returns a list of output dicts; `line`
     outputs carry their numpy `values`, `alert` outputs carry `firedAtBar`.
+
+    `budget` is an optional `OperationBudget` (see budget.py) — stepped once
+    per node before evaluation, exactly like the TS executor, raising
+    `BudgetExceeded` (OS4001/OS4002) when a limit is crossed.
     """
     inputs = inputs or {}
     n = len(dataset["close"])
@@ -242,5 +246,7 @@ def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None) -> list[dict
     values: list = [None] * len(nodes)
     ta_cache: dict = {}
     for node in nodes:
+        if budget is not None:
+            budget.step()
         values[node["id"]] = _eval_node(node, values, dataset, inputs, decls, n, ta_cache)
     return _collect_outputs(ir, values, n)

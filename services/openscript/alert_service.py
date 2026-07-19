@@ -174,6 +174,7 @@ def _evaluate_one(alert: dict) -> None:
         fired_on_last_bar,
         history_to_dataset,
     )
+    from .runtime.budget import OperationBudget
     from .runtime.executor import execute_ir
 
     try:
@@ -199,7 +200,9 @@ def _evaluate_one(alert: dict) -> None:
         return
 
     dataset = history_to_dataset(rows)
-    outputs = execute_ir(compiled_ir, dataset, alert["inputs"])
+    # OS4001/OS4002 budget — same accounting as the TS worker (parity, P1.7).
+    budget = OperationBudget(len(dataset["close"]), len(compiled_ir["nodes"]))
+    outputs = execute_ir(compiled_ir, dataset, alert["inputs"], budget=budget)
     alert_out = find_alert_output(outputs, alert["condition_id"])
     if alert_out is None:
         return

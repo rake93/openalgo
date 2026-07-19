@@ -9,6 +9,8 @@ import pytest
 from openalgo import ta
 
 from services.openscript import openscript
+from services.openscript.limits import SCRIPT_LIMITS
+from services.openscript.runtime.budget import BudgetExceeded, OperationBudget
 from services.openscript.runtime.executor import execute_ir
 
 
@@ -90,8 +92,70 @@ def test_alertcondition_fired_bars(dataset):
     assert alert["firedAtBar"] == expected
 
 
+def test_cpr_matches_wasm_formula(dataset):
+    """ta.cpr must execute server-side (openalgo.ta has no cpr — local numpy
+    fallback) and match the oa_composites::cpr formula exactly:
+    pivot=(h+l+c)/3, bc=(h+l)/2, tc=2*pivot-bc, elementwise per bar."""
+    out = _run("[p, b, t] = ta.cpr()\nplot(p)\nplot(b)\nplot(t)", dataset)
+    h, low, c = dataset["high"], dataset["low"], dataset["close"]
+    pivot = (h + low + c) / 3.0
+    bc = (h + low) / 2.0
+    tc = 2.0 * pivot - bc
+    _close(_line(out, 0), pivot)
+    _close(_line(out, 1), bc)
+    _close(_line(out, 2), tc)
+
+
 def test_input_override(dataset):
     out = _run('len = input.int(9, "Length")\nplot(ta.ema(close, len))', dataset, {"len": 20})
     _close(_line(out), ta.ema(dataset["close"], 20))
     out_default = _run('len = input.int(9, "Length")\nplot(ta.ema(close, len))', dataset)
     _close(_line(out_default), ta.ema(dataset["close"], 9))
+
+
+# ── OS4001/OS4002 budget parity with the TS OperationBudget ────────────────
+
+
+def _limits(**overrides):
+    merged = dict(SCRIPT_LIMITS)
+    merged.update(overrides)
+    return merged
+
+
+def test_budget_ops_per_bar_exceeded_at_construction():
+    with pytest.raises(BudgetExceeded) as ei:
+        OperationBudget(100, 3, _limits(maximumOperationsPerBar=2))
+    assert ei.value.code == "OS4001"
+
+
+def test_budget_total_operations_exceeded_on_step():
+    budget = OperationBudget(100, 1, _limits(maximumTotalOperations=250))
+    budget.step()  # 100
+    budget.step()  # 200
+    with pytest.raises(BudgetExceeded) as ei:
+        budget.step()  # 300 > 250
+    assert ei.value.code == "OS4001"
+    assert budget.spent() == 300
+
+
+def test_budget_time_exceeded():
+    budget = OperationBudget(1, 1, _limits(maximumExecutionMilliseconds=0))
+    with pytest.raises(BudgetExceeded) as ei:
+        budget.step()
+    assert ei.value.code == "OS4002"
+
+
+def test_execute_ir_enforces_budget(dataset):
+    result = openscript.compile("plot(ta.ema(close, 20))")
+    assert result.ir is not None
+    n = len(dataset["close"])
+    budget = OperationBudget(n, len(result.ir["nodes"]), _limits(maximumTotalOperations=n))
+    with pytest.raises(BudgetExceeded) as ei:
+        execute_ir(result.ir, dataset, {}, budget=budget)
+    assert ei.value.code == "OS4001"
+
+
+def test_execute_ir_without_budget_unchanged(dataset):
+    # budget is optional — omitting it keeps the pre-parity behavior.
+    out = _run("plot(ta.ema(close, 20))", dataset)
+    _close(_line(out), ta.ema(dataset["close"], 20))
