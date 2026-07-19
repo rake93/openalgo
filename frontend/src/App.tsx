@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { Providers } from '@/app/providers'
 import { AuthSync } from '@/components/auth/AuthSync'
 import { FullWidthLayout } from '@/components/layout/FullWidthLayout'
+import { FullWidthNavLayout } from '@/components/layout/FullWidthNavLayout'
 import { Layout } from '@/components/layout/Layout'
 import { PageLoader } from '@/components/ui/page-loader'
 import { usePageTitle } from '@/hooks/usePageTitle'
@@ -50,7 +51,6 @@ const SandboxPnL = lazy(() => import('@/pages/SandboxPnL'))
 const Analyzer = lazy(() => import('@/pages/Analyzer'))
 const WebSocketTest = lazy(() => import('@/pages/WebSocketTest'))
 const WebSocketOrder = lazy(() => import('@/pages/WebSocketOrder'))
-const ChartTest = lazy(() => import('@/pages/ChartTest'))
 const Playground = lazy(() => import('@/pages/Playground'))
 const Trading = lazy(() => import('@/pages/Trading'))
 const ChartWorkspace = lazy(() => import('@/pages/charts/ChartWorkspace'))
@@ -227,7 +227,6 @@ function App() {
                 />
                 <Route path="/websocket/test" element={<WebSocketTest />} />
                 <Route path="/websocket/order" element={<WebSocketOrder />} />
-                <Route path="/chart/test" element={<ChartTest />} />
                 <Route path="/websocket/test/20" element={<WebSocketTest depthLevel={20} />} />
                 <Route path="/websocket/test/30" element={<WebSocketTest depthLevel={30} />} />
                 <Route path="/websocket/test/50" element={<WebSocketTest depthLevel={50} />} />
@@ -287,14 +286,18 @@ function App() {
               <Route element={<FullWidthLayout />}>
                 <Route path="/playground" element={<Playground />} />
                 <Route path="/trading" element={<Trading />} />
-                <Route path="/charts" element={<ChartWorkspace />} />
-                <Route path="/charts/editor" element={<ChartEditor />} />
-                <Route path="/charts/editor/:scriptId" element={<ChartEditor />} />
                 <Route path="/historify" element={<Historify />} />
                 <Route path="/historify/charts" element={<HistorifyCharts />} />
                 <Route path="/historify/charts/:symbol" element={<HistorifyCharts />} />
                 {/* Flow Editor (full-width for canvas) */}
                 <Route path="/flow/editor/:id" element={<FlowEditor />} />
+              </Route>
+
+              {/* Full-width routes WITH the OpenAlgo navbar (chart workspace) */}
+              <Route element={<FullWidthNavLayout />}>
+                <Route path="/charts" element={<ChartWorkspace />} />
+                <Route path="/charts/editor" element={<ChartEditor />} />
+                <Route path="/charts/editor/:scriptId" element={<ChartEditor />} />
               </Route>
 
               {/* 404 Not Found */}

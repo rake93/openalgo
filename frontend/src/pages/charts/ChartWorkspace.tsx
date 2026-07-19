@@ -6,18 +6,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useThemeStore } from '@/stores/themeStore'
-import {
-  createLayout,
-  listLayouts,
-  updateLayout,
-  type ChartLayoutState,
-} from '@/api/indicators'
+import { type ChartLayoutState, createLayout, listLayouts, updateLayout } from '@/api/indicators'
+import { DataWindow } from '@/components/charts/DataWindow'
 import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
 import {
   ChartWorkspaceController,
+  type CrosshairData,
   type IndicatorInstance,
 } from '@/lib/charts/workspace'
+import { useThemeStore } from '@/stores/themeStore'
 
 const INTERVALS = ['1m', '3m', '5m', '15m', '30m', '1h', 'D', 'W'] as const
 const DEFAULT_SYMBOL = { symbol: 'NIFTY', exchange: 'NSE_INDEX' }
@@ -39,6 +36,7 @@ export default function ChartWorkspace() {
   const [ready, setReady] = useState(false)
   const [noApiKey, setNoApiKey] = useState(false)
   const [status, setStatus] = useState('Connecting…')
+  const [crosshair, setCrosshair] = useState<CrosshairData | null>(null)
   const [wsState, setWsState] = useState('idle')
   const [interval, setIntervalValue] = useState('5m')
   const [active, setActive] = useState(DEFAULT_SYMBOL)
@@ -80,6 +78,7 @@ export default function ChartWorkspace() {
           },
         })
         controllerRef.current = controller
+        controller.subscribeCrosshair(setCrosshair)
         setReady(true)
 
         // Restore the auto-saved default layout (symbol/interval/indicators).
@@ -94,7 +93,9 @@ export default function ChartWorkspace() {
               restored = true
             }
             for (const item of saved.layout?.indicators ?? []) {
-              await controller.addIndicator(item.definitionId, item.inputs).catch(() => undefined)
+              await controller
+                .addIndicator(item.definitionId, item.inputs, item.styleOverrides, item.visibility)
+                .catch(() => undefined)
             }
           }
         } catch {
@@ -189,7 +190,7 @@ export default function ChartWorkspace() {
   const manifest = controllerRef.current?.manifest ?? []
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] flex-col bg-background text-foreground">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background text-foreground">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <div className="relative">
@@ -288,6 +289,7 @@ export default function ChartWorkspace() {
       {/* Chart */}
       <div className="relative min-h-0 flex-1">
         <div ref={containerRef} className="absolute inset-0" />
+        {ready && <DataWindow data={crosshair} />}
         {noApiKey && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
             Generate an API key at /apikey to use the chart workspace.
@@ -309,9 +311,11 @@ export default function ChartWorkspace() {
       <IndicatorSettingsDialog
         instance={settingsFor}
         manifest={manifest}
-        onSave={(instanceId, inputs) =>
-          controllerRef.current?.updateIndicatorInputs(instanceId, inputs)
-        }
+        onSave={(instanceId, inputs, styleOverrides, visibility) => {
+          controllerRef.current?.updateIndicatorStyle(instanceId, styleOverrides)
+          controllerRef.current?.updateIndicatorVisibility(instanceId, visibility)
+          void controllerRef.current?.updateIndicatorInputs(instanceId, inputs)
+        }}
         onClose={() => setSettingsFor(null)}
       />
     </div>

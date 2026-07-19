@@ -1,5 +1,6 @@
 /** Indicator engine session APIs (CSRF-protected web routes). */
 
+import type { StyleOverrides, TimeframeVisibility } from '@/lib/charts/indicator-host'
 import { webClient } from './client'
 
 export interface ChartLayoutRecord {
@@ -14,7 +15,12 @@ export interface ChartLayoutRecord {
 
 /** Serializable workspace state stored in layout_json. */
 export interface ChartLayoutState {
-  indicators: { definitionId: string; inputs: Record<string, unknown> }[]
+  indicators: {
+    definitionId: string
+    inputs: Record<string, unknown>
+    styleOverrides?: StyleOverrides
+    visibility?: TimeframeVisibility
+  }[]
 }
 
 interface ApiEnvelope<T> {
@@ -44,7 +50,13 @@ export async function createLayout(payload: {
 
 export async function updateLayout(
   id: number,
-  payload: Partial<{ name: string; symbol: string; exchange: string; timeframe: string; layout: ChartLayoutState }>
+  payload: Partial<{
+    name: string
+    symbol: string
+    exchange: string
+    timeframe: string
+    layout: ChartLayoutState
+  }>
 ): Promise<void> {
   await webClient.put(`/indicators/api/layouts/${id}`, payload)
 }
@@ -84,7 +96,10 @@ export async function createScript(payload: {
   description?: string
   source: string
 }): Promise<ScriptRecord | undefined> {
-  const { data } = await webClient.post<ApiEnvelope<ScriptRecord>>('/indicators/api/scripts', payload)
+  const { data } = await webClient.post<ApiEnvelope<ScriptRecord>>(
+    '/indicators/api/scripts',
+    payload
+  )
   return data.data
 }
 
@@ -92,12 +107,47 @@ export async function updateScript(
   id: number,
   payload: Partial<{ name: string; description: string; source: string }>
 ): Promise<ScriptRecord | undefined> {
-  const { data } = await webClient.put<ApiEnvelope<ScriptRecord>>(`/indicators/api/scripts/${id}`, payload)
+  const { data } = await webClient.put<ApiEnvelope<ScriptRecord>>(
+    `/indicators/api/scripts/${id}`,
+    payload
+  )
   return data.data
 }
 
 export async function deleteScript(id: number): Promise<void> {
   await webClient.delete(`/indicators/api/scripts/${id}`)
+}
+
+/** One immutable version in a script's history (source omitted for the list). */
+export interface ScriptVersion {
+  id: number
+  version_number: number
+  source_hash: string
+  compiler_version: string
+  created_at: string | null
+  is_current: boolean
+}
+
+/** A single version fetched with its full source (for preview / restore). */
+export interface ScriptVersionDetail extends ScriptVersion {
+  source_code: string
+}
+
+export async function listVersions(scriptId: number): Promise<ScriptVersion[]> {
+  const { data } = await webClient.get<ApiEnvelope<ScriptVersion[]>>(
+    `/indicators/api/scripts/${scriptId}/versions`
+  )
+  return data.data ?? []
+}
+
+export async function getVersion(
+  scriptId: number,
+  versionId: number
+): Promise<ScriptVersionDetail | undefined> {
+  const { data } = await webClient.get<ApiEnvelope<ScriptVersionDetail>>(
+    `/indicators/api/scripts/${scriptId}/versions/${versionId}`
+  )
+  return data.data
 }
 
 /* ── Indicator alerts ───────────────────────────────────────────────────── */
@@ -141,7 +191,10 @@ export async function updateAlert(
   id: number,
   payload: Partial<{ is_active: boolean; inputs: Record<string, unknown>; timeframe: string }>
 ): Promise<AlertRecord | undefined> {
-  const { data } = await webClient.put<ApiEnvelope<AlertRecord>>(`/indicators/api/alerts/${id}`, payload)
+  const { data } = await webClient.put<ApiEnvelope<AlertRecord>>(
+    `/indicators/api/alerts/${id}`,
+    payload
+  )
   return data.data
 }
 

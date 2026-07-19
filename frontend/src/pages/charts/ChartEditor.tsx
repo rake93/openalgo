@@ -10,8 +10,8 @@
  * `/charts/editor/:scriptId` loads a saved script.
  */
 
-import { compile } from '@openalgo/indicator-engine/compiler'
 import type { Diagnostic } from '@openalgo/indicator-engine'
+import { compile } from '@openalgo/indicator-engine/compiler'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
@@ -19,12 +19,15 @@ import {
   createScript,
   getScript,
   listScripts,
-  updateScript,
   type ScriptRecord,
+  updateScript,
 } from '@/api/indicators'
-import { CreateAlertDialog, type AlertCondition } from '@/components/charts/CreateAlertDialog'
+import { type AlertCondition, CreateAlertDialog } from '@/components/charts/CreateAlertDialog'
+import { DataWindow } from '@/components/charts/DataWindow'
 import { OpenScriptEditor } from '@/components/charts/OpenScriptEditor'
-import { ChartWorkspaceController } from '@/lib/charts/workspace'
+import { ScriptMenu } from '@/components/charts/ScriptMenu'
+import { VersionHistoryDialog } from '@/components/charts/VersionHistoryDialog'
+import { ChartWorkspaceController, type CrosshairData } from '@/lib/charts/workspace'
 import { useThemeStore } from '@/stores/themeStore'
 
 const DEFAULT_SYMBOL = { symbol: 'NIFTY', exchange: 'NSE_INDEX' }
@@ -64,6 +67,8 @@ export default function ChartEditor() {
   const compileTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sourceRef = useRef(SAMPLE)
   const savedSourceRef = useRef('')
+  const savedNameRef = useRef('')
+  const nameInputRef = useRef<HTMLInputElement | null>(null)
   const mode = useThemeStore((s) => s.mode)
 
   const [ready, setReady] = useState(false)
@@ -77,12 +82,14 @@ export default function ChartEditor() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchRow[]>([])
   const [scripts, setScripts] = useState<ScriptRecord[]>([])
-  const [showLibrary, setShowLibrary] = useState(false)
+  const [showMenu, setShowMenu] = useState(false)
+  const [showVersions, setShowVersions] = useState(false)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [currentVersionId, setCurrentVersionId] = useState<number | null>(null)
   const [alertConditions, setAlertConditions] = useState<AlertCondition[]>([])
   const [showAlerts, setShowAlerts] = useState(false)
+  const [crosshair, setCrosshair] = useState<CrosshairData | null>(null)
 
   const setSource = useCallback((next: string) => {
     sourceRef.current = next
@@ -138,6 +145,7 @@ export default function ChartEditor() {
           },
         })
         controllerRef.current = controller
+        controller.subscribeCrosshair(setCrosshair)
         await controller.load(DEFAULT_SYMBOL.symbol, DEFAULT_SYMBOL.exchange, '5m')
         if (alive) setReady(true)
       } catch (err) {
@@ -163,6 +171,7 @@ export default function ChartEditor() {
         if (!alive) return
         if (s && s.source !== undefined) {
           savedSourceRef.current = s.source
+          savedNameRef.current = s.name
           sourceRef.current = s.source
           setSourceState(s.source)
           setScriptName(s.name)
@@ -225,12 +234,14 @@ export default function ChartEditor() {
       if (scriptId) {
         const updated = await updateScript(scriptId, { name, source: src })
         savedSourceRef.current = src
+        savedNameRef.current = name
         setDirty(false)
         if (updated) setCurrentVersionId(updated.current_version_id)
       } else {
         const created = await createScript({ name, source: src })
         if (created) {
           savedSourceRef.current = src
+          savedNameRef.current = created.name
           setScriptName(created.name)
           setCurrentVersionId(created.current_version_id)
           setDirty(false)
@@ -244,31 +255,89 @@ export default function ChartEditor() {
     }
   }, [scriptId, scriptName, navigate])
 
-  const toggleLibrary = useCallback(async () => {
-    const next = !showLibrary
-    setShowLibrary(next)
+  const toggleMenu = useCallback(async () => {
+    const next = !showMenu
+    setShowMenu(next)
     if (next) {
       setScripts(await listScripts().catch(() => []))
     }
-  }, [showLibrary])
+  }, [showMenu])
 
   const openScript = useCallback(
     (id: number) => {
-      setShowLibrary(false)
+      setShowMenu(false)
       navigate(`/charts/editor/${id}`)
     },
     [navigate]
   )
 
   const newScript = useCallback(() => {
-    setShowLibrary(false)
+    setShowMenu(false)
     savedSourceRef.current = ''
+    savedNameRef.current = ''
     setScriptName('')
     setCurrentVersionId(null)
     setSource(SAMPLE)
     navigate('/charts/editor')
     compileAndPreview(SAMPLE)
   }, [setSource, navigate, compileAndPreview])
+
+  // Fork the current buffer into a brand-new script ("… copy") and open it.
+  const makeCopy = useCallback(async () => {
+    const src = sourceRef.current
+    const base = scriptName.trim() || 'Untitled indicator'
+    setSaving(true)
+    try {
+      const created = await createScript({ name: `${base} copy`, source: src })
+      if (created) {
+        savedSourceRef.current = src
+        savedNameRef.current = created.name
+        setScriptName(created.name)
+        setCurrentVersionId(created.current_version_id)
+        setDirty(false)
+        navigate(`/charts/editor/${created.id}`)
+      }
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'copy failed')
+    } finally {
+      setSaving(false)
+    }
+  }, [scriptName, navigate])
+
+  // Rename = focus the name field; the field commits a name-only update on blur
+  // (name-only PUT does not append a version — the source is untouched).
+  const renameFocus = useCallback(() => {
+    nameInputRef.current?.focus()
+    nameInputRef.current?.select()
+  }, [])
+
+  const commitRename = useCallback(async () => {
+    const name = scriptName.trim()
+    if (!scriptId || !name || name === savedNameRef.current) {
+      return
+    }
+    try {
+      const updated = await updateScript(scriptId, { name })
+      if (updated) {
+        setScriptName(updated.name)
+        savedNameRef.current = updated.name
+      }
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'rename failed')
+    }
+  }, [scriptId, scriptName])
+
+  // Load a historical version's source into the buffer as an unsaved change;
+  // saving then appends it as a new version (immutable history is never edited).
+  const restoreVersion = useCallback(
+    (src: string, versionNumber: number) => {
+      setShowVersions(false)
+      setSource(src)
+      compileAndPreview(src)
+      setStatus(`Loaded version ${versionNumber} — save to keep it as a new version`)
+    },
+    [setSource, compileAndPreview]
+  )
 
   const handleCreateAlert = useCallback(
     async ({ conditionId, triggerMode }: { conditionId: string; triggerMode: string }) => {
@@ -299,17 +368,17 @@ export default function ChartEditor() {
         void save()
       } else if (key === 'o') {
         e.preventDefault()
-        void toggleLibrary()
+        void toggleMenu()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [save, toggleLibrary])
+  }, [save, toggleMenu])
 
   const errorCount = diagnostics.filter((d) => d.severity === 'error').length
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] flex-col bg-background text-foreground">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background text-foreground">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <Link
@@ -320,8 +389,13 @@ export default function ChartEditor() {
         </Link>
         <span className="text-sm font-semibold">ƒx</span>
         <input
+          ref={nameInputRef}
           value={scriptName}
           onChange={(e) => setScriptName(e.target.value)}
+          onBlur={() => void commitRename()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') nameInputRef.current?.blur()
+          }}
           placeholder="Untitled indicator"
           className="h-8 w-48 rounded border border-border bg-card px-2 text-sm outline-none focus:border-primary"
         />
@@ -333,50 +407,28 @@ export default function ChartEditor() {
         >
           {saving ? 'Saving…' : dirty ? 'Save •' : 'Save'}
         </button>
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => void toggleLibrary()}
-            className="h-8 rounded bg-card px-3 text-sm font-medium hover:bg-accent"
-          >
-            Open
-          </button>
-          {showLibrary && (
-            <div className="absolute z-50 mt-1 max-h-80 w-72 overflow-auto rounded border border-border bg-card shadow-lg">
-              {scripts.length === 0 ? (
-                <div className="px-3 py-2 text-sm text-muted-foreground">No saved scripts yet.</div>
-              ) : (
-                scripts.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => openScript(s.id)}
-                    className={`flex w-full items-center justify-between px-2 py-1.5 text-left text-sm hover:bg-accent ${
-                      s.id === scriptId ? 'bg-accent/60' : ''
-                    }`}
-                  >
-                    <span className="truncate font-medium">{s.name}</span>
-                    <span className="ml-2 shrink-0 text-xs text-muted-foreground">
-                      {s.updated_at ? new Date(s.updated_at).toLocaleDateString() : ''}
-                    </span>
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={newScript}
-          className="h-8 rounded bg-card px-3 text-sm font-medium hover:bg-accent"
-        >
-          New
-        </button>
+        <ScriptMenu
+          open={showMenu}
+          onToggle={() => void toggleMenu()}
+          onClose={() => setShowMenu(false)}
+          scripts={scripts}
+          currentScriptId={scriptId}
+          canManage={scriptId !== null}
+          onMakeCopy={() => void makeCopy()}
+          onRename={renameFocus}
+          onVersionHistory={() => setShowVersions(true)}
+          onCreateNew={newScript}
+          onOpen={openScript}
+        />
         <button
           type="button"
           onClick={() => setShowAlerts(true)}
           disabled={alertConditions.length === 0}
-          title={alertConditions.length === 0 ? 'Add an alertcondition() to enable alerts' : 'Create alerts'}
+          title={
+            alertConditions.length === 0
+              ? 'Add an alertcondition() to enable alerts'
+              : 'Create alerts'
+          }
           className="h-8 rounded bg-card px-3 text-sm font-medium hover:bg-accent disabled:opacity-40"
         >
           🔔 Alerts{alertConditions.length ? ` (${alertConditions.length})` : ''}
@@ -426,7 +478,9 @@ export default function ChartEditor() {
                 {errorCount} error{errorCount === 1 ? '' : 's'}
               </span>
             ) : (
-              <span className="rounded bg-green-500/15 px-2 py-1 font-medium text-green-500">Compiled ✓</span>
+              <span className="rounded bg-green-500/15 px-2 py-1 font-medium text-green-500">
+                Compiled ✓
+              </span>
             )}
           </span>
         </div>
@@ -448,7 +502,9 @@ export default function ChartEditor() {
                     key={`${d.code}-${d.span.start}-${i}`}
                     className="flex gap-2 border-b border-border/50 px-3 py-1.5 last:border-0"
                   >
-                    <span className={d.severity === 'error' ? 'text-destructive' : 'text-yellow-500'}>
+                    <span
+                      className={d.severity === 'error' ? 'text-destructive' : 'text-yellow-500'}
+                    >
                       {d.severity === 'error' ? '✕' : '⚠'}
                     </span>
                     <span className="font-mono text-muted-foreground">
@@ -465,6 +521,7 @@ export default function ChartEditor() {
 
         <div className="relative min-h-0 flex-1">
           <div ref={containerRef} className="absolute inset-0" />
+          {ready && <DataWindow data={crosshair} />}
           {noApiKey && (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
               Generate an API key at /apikey to use the editor preview.
@@ -487,6 +544,14 @@ export default function ChartEditor() {
         canCreate={!!currentVersionId && !dirty}
         onCreate={handleCreateAlert}
         onClose={() => setShowAlerts(false)}
+      />
+
+      <VersionHistoryDialog
+        open={showVersions}
+        scriptId={scriptId}
+        currentVersionId={currentVersionId}
+        onRestore={restoreVersion}
+        onClose={() => setShowVersions(false)}
       />
     </div>
   )

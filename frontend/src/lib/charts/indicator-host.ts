@@ -8,18 +8,105 @@
  * remove panes) and dataset switches (symbol/interval changes).
  */
 
-import type { Chart, Bar, SeriesApi } from 'openalgo-charts'
 import type {
   IndicatorManifestEntry,
   IndicatorOutput,
   IRProgram,
   OHLCVBar,
 } from '@openalgo/indicator-engine'
-import { datasetFromBars, toDatasetBuffers, datasetKey } from '@openalgo/indicator-engine'
+import { datasetFromBars, datasetKey, toDatasetBuffers } from '@openalgo/indicator-engine'
 import { registryManifest } from '@openalgo/indicator-engine/registry'
 import { OpenAlgoChartsRenderer } from '@openalgo/indicator-engine/render/openalgo-charts'
 import type { EngineWorkerClient } from '@openalgo/indicator-engine/worker-client'
+import type { Bar, Chart, SeriesApi } from 'openalgo-charts'
 import { getEngine } from './engine'
+
+/** Per-output style override, applied on the main thread before rendering. */
+export interface OutputStyleOverride {
+  color?: string
+  lineWidth?: number
+  lineStyle?: 'solid' | 'dashed' | 'dotted'
+  /** 0..1; folded into the color's alpha channel. */
+  opacity?: number
+  /** Default true; false removes the output's series (Visibility tab). */
+  visible?: boolean
+}
+
+/** Style overrides keyed by IndicatorOutput.id. */
+export type StyleOverrides = Record<string, OutputStyleOverride>
+
+/** One indicator output's value at a bar index (crosshair data window). */
+export interface DataWindowValue {
+  id: string
+  title: string
+  value: number
+  color: string
+}
+
+/** An active indicator's values at a bar index (crosshair data window). */
+export interface DataWindowRow {
+  instanceId: string
+  name: string
+  values: DataWindowValue[]
+}
+
+/** One ranged timeframe category (e.g. minutes 1–59) in the Visibility tab. */
+export interface RangeVisibility {
+  on: boolean
+  min: number
+  max: number
+}
+
+/**
+ * Per-indicator timeframe visibility (Visibility tab) — the indicator renders
+ * only when the current chart interval's category is enabled and its value is
+ * within [min,max]. Undefined = always visible. Ticks/Ranges have no OpenAlgo
+ * interval so they never gate the standard resolutions.
+ */
+export interface TimeframeVisibility {
+  ticks: boolean
+  seconds: RangeVisibility
+  minutes: RangeVisibility
+  hours: RangeVisibility
+  days: RangeVisibility
+  weeks: RangeVisibility
+  months: RangeVisibility
+  ranges: boolean
+}
+
+export const DEFAULT_TF_VISIBILITY: TimeframeVisibility = {
+  ticks: true,
+  seconds: { on: true, min: 1, max: 59 },
+  minutes: { on: true, min: 1, max: 59 },
+  hours: { on: true, min: 1, max: 24 },
+  days: { on: true, min: 1, max: 366 },
+  weeks: { on: true, min: 1, max: 52 },
+  months: { on: true, min: 1, max: 12 },
+  ranges: true,
+}
+
+type RangeCategory = 'seconds' | 'minutes' | 'hours' | 'days' | 'weeks' | 'months'
+
+/** Parse an OpenAlgo interval string (e.g. '5m', '1h', 'D', 'W', 'M') to a
+ *  ranged category + numeric value, or null when it maps to no category. */
+function parseInterval(tf: string): { cat: RangeCategory; value: number } | null {
+  const t = tf.trim()
+  const sub = /^(\d+)(s|m|h)$/.exec(t)
+  if (sub) {
+    const n = Number(sub[1])
+    if (sub[2] === 's') return { cat: 'seconds', value: n }
+    if (sub[2] === 'm') return { cat: 'minutes', value: n }
+    return { cat: 'hours', value: n }
+  }
+  const period = /^(\d+)?([DWM])$/.exec(t)
+  if (period) {
+    const n = period[1] ? Number(period[1]) : 1
+    if (period[2] === 'D') return { cat: 'days', value: n }
+    if (period[2] === 'W') return { cat: 'weeks', value: n }
+    return { cat: 'months', value: n }
+  }
+  return null
+}
 
 export interface IndicatorInstance {
   instanceId: string
@@ -31,6 +118,10 @@ export interface IndicatorInstance {
   error?: string
   /** Present for custom OpenScript indicators — runs as an IR session. */
   ir?: IRProgram
+  /** Per-output color/width/opacity/visibility overrides (Style tab). */
+  styleOverrides?: StyleOverrides
+  /** Timeframe visibility (Visibility tab); undefined = always visible. */
+  visibility?: TimeframeVisibility
 }
 
 export interface IndicatorHostCallbacks {
@@ -55,6 +146,8 @@ export class IndicatorHost {
 
   private readonly instances = new Map<string, IndicatorInstance>()
   private readonly renderers = new Map<string, OpenAlgoChartsRenderer>()
+  /** Last full outputs per session — lets a style change re-render with no worker recompute. */
+  private readonly lastOutputs = new Map<string, IndicatorOutput[]>()
   private times: Float64Array = new Float64Array(0)
   private barCount = 0
   private currentKey = ''
@@ -77,15 +170,68 @@ export class IndicatorHost {
     return [...this.instances.values()].map((i) => ({ ...i }))
   }
 
+  /** Per-indicator output values at a bar index — feeds the crosshair data window. */
+  valuesAtIndex(index: number): DataWindowRow[] {
+    const rows: DataWindowRow[] = []
+    for (const inst of this.instances.values()) {
+      const outputs = this.lastOutputs.get(inst.instanceId)
+      if (!outputs) continue
+      const values: DataWindowValue[] = []
+      for (const o of outputs) {
+        const ov = inst.styleOverrides?.[o.id]
+        if (ov?.visible === false) continue
+        let value: number | undefined
+        let color = ''
+        if (o.kind === 'line' || o.kind === 'histogram') {
+          if (index >= 0 && index < o.values.length) value = o.values[index]
+          color = ov?.color ?? o.style.color
+        } else if (o.kind === 'candle') {
+          if (index >= 0 && index < o.close.length) value = o.close[index]
+          color = ov?.color ?? o.style.upColor
+        } else {
+          continue
+        }
+        if (value === undefined || Number.isNaN(value)) continue
+        values.push({ id: o.id, title: o.title, value, color })
+      }
+      if (values.length > 0) rows.push({ instanceId: inst.instanceId, name: inst.name, values })
+    }
+    return rows
+  }
+
   /** Serializable state for persistence (localStorage / layouts API). */
-  snapshot(): { definitionId: string; inputs: Record<string, unknown> }[] {
-    return this.list().map((i) => ({ definitionId: i.definitionId, inputs: i.inputs }))
+  snapshot(): {
+    definitionId: string
+    inputs: Record<string, unknown>
+    styleOverrides?: StyleOverrides
+    visibility?: TimeframeVisibility
+  }[] {
+    return this.list().map((i) => {
+      const item: {
+        definitionId: string
+        inputs: Record<string, unknown>
+        styleOverrides?: StyleOverrides
+        visibility?: TimeframeVisibility
+      } = {
+        definitionId: i.definitionId,
+        inputs: i.inputs,
+      }
+      if (i.styleOverrides && Object.keys(i.styleOverrides).length > 0) {
+        item.styleOverrides = i.styleOverrides
+      }
+      if (i.visibility) {
+        item.visibility = i.visibility
+      }
+      return item
+    })
   }
 
   private async ensureEngine(): Promise<EngineWorkerClient> {
     if (!this.engine) {
       this.engine = await getEngine()
-      this.offOutputs = this.engine.onOutputs((e) => this.applyOutputs(e.sessionId, e.outputs, e.scope))
+      this.offOutputs = this.engine.onOutputs((e) =>
+        this.applyOutputs(e.sessionId, e.outputs, e.scope)
+      )
       this.offErrors = this.engine.onError((e) => {
         if (e.sessionId) {
           const inst = this.instances.get(e.sessionId)
@@ -118,7 +264,10 @@ export class IndicatorHost {
   }
 
   /** Load/replace the dataset and recompute every active indicator. */
-  async setDataset(bars: readonly Bar[], meta: { symbol: string; exchange: string; interval: string }): Promise<void> {
+  async setDataset(
+    bars: readonly Bar[],
+    meta: { symbol: string; exchange: string; interval: string }
+  ): Promise<void> {
     if (this.disposed) return
     const engine = await this.ensureEngine()
     this.times = Float64Array.from(bars, (b) => b.time)
@@ -153,13 +302,25 @@ export class IndicatorHost {
     }
     void this.engine.updateBar(
       this.currentKey,
-      { time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume ?? 0 },
+      {
+        time: bar.time,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: bar.volume ?? 0,
+      },
       isNew
     )
   }
 
   /** Add an indicator; returns whether a chart rebuild is required (never on add). */
-  async add(definitionId: string, inputs?: Record<string, unknown>): Promise<string> {
+  async add(
+    definitionId: string,
+    inputs?: Record<string, unknown>,
+    styleOverrides?: StyleOverrides,
+    visibility?: TimeframeVisibility
+  ): Promise<string> {
     const entry = this.manifest.find((m) => m.id === definitionId)
     if (!entry) {
       throw new Error(`unknown indicator: ${definitionId}`)
@@ -172,6 +333,8 @@ export class IndicatorHost {
       name: entry.shortName,
       overlay: entry.overlay,
       inputs: { ...Object.fromEntries(entry.inputs.map((i) => [i.id, i.defaultValue])), ...inputs },
+      styleOverrides,
+      visibility,
     }
     if (!entry.overlay) {
       instance.pane = this.nextPane
@@ -190,7 +353,11 @@ export class IndicatorHost {
    * Add a custom OpenScript indicator from a compiled IRProgram. Mirrors `add()`
    * but takes declaration/inputs from the IR instead of the builtin manifest.
    */
-  async addIr(ir: IRProgram, inputs?: Record<string, unknown>): Promise<string> {
+  async addIr(
+    ir: IRProgram,
+    inputs?: Record<string, unknown>,
+    styleOverrides?: StyleOverrides
+  ): Promise<string> {
     this.seq += 1
     const instanceId = `${this.hostId}i${this.seq}`
     const instance: IndicatorInstance = {
@@ -200,6 +367,7 @@ export class IndicatorHost {
       overlay: ir.declaration.overlay,
       inputs: { ...Object.fromEntries(ir.inputs.map((i) => [i.id, i.defaultValue])), ...inputs },
       ir,
+      styleOverrides,
     }
     if (!ir.declaration.overlay) {
       instance.pane = this.nextPane
@@ -225,6 +393,52 @@ export class IndicatorHost {
   }
 
   /**
+   * Apply per-output style overrides (color/width/line-style/opacity/visibility)
+   * without a worker recompute — re-renders from the last emitted outputs.
+   */
+  setStyleOverrides(instanceId: string, overrides: StyleOverrides): void {
+    const instance = this.instances.get(instanceId)
+    if (!instance) return
+    instance.styleOverrides = Object.keys(overrides).length > 0 ? overrides : undefined
+    this.emit()
+    this.rerenderInstance(instanceId)
+  }
+
+  /** Set timeframe visibility (Visibility tab); hides/shows at the current interval. */
+  setVisibility(instanceId: string, visibility: TimeframeVisibility | undefined): void {
+    const instance = this.instances.get(instanceId)
+    if (!instance) return
+    instance.visibility = visibility
+    this.emit()
+    this.rerenderInstance(instanceId)
+  }
+
+  /**
+   * Rebuild an instance's renderer from its last outputs — style is baked at
+   * series-create time, so this reverts cleared overrides, re-applies timeframe
+   * visibility, and rebuilds the marker pane anchor cleanly (no worker recompute).
+   */
+  private rerenderInstance(instanceId: string): void {
+    const instance = this.instances.get(instanceId)
+    const outputs = this.lastOutputs.get(instanceId)
+    if (!instance || !outputs) return
+    this.renderers.get(instanceId)?.dispose()
+    this.renderers.delete(instanceId)
+    this.createRenderer(instance)
+    this.applyOutputs(instanceId, outputs, 'full')
+  }
+
+  /** Whether an instance is visible on the current chart interval (Visibility tab). */
+  private instanceVisibleAtInterval(instance: IndicatorInstance): boolean {
+    const v = instance.visibility
+    if (!v) return true
+    const parsed = parseInterval(this.meta.timeframe)
+    if (!parsed) return true
+    const r = v[parsed.cat]
+    return r.on && parsed.value >= r.min && parsed.value <= r.max
+  }
+
+  /**
    * Remove an indicator. Returns true when the caller must rebuild the chart
    * (own-pane instance — openalgo-charts panes are not removable) and then
    * call attachChart + recreateSessions (or use the host's rebuild helper).
@@ -233,6 +447,7 @@ export class IndicatorHost {
     const instance = this.instances.get(instanceId)
     if (!instance) return false
     this.instances.delete(instanceId)
+    this.lastOutputs.delete(instanceId)
     await this.engine?.disposeSession(instanceId).catch(() => undefined)
     const renderer = this.renderers.get(instanceId)
     this.renderers.delete(instanceId)
@@ -267,6 +482,7 @@ export class IndicatorHost {
     }
     this.renderers.clear()
     this.instances.clear()
+    this.lastOutputs.clear()
   }
 
   private createRenderer(instance: IndicatorInstance): void {
@@ -293,7 +509,9 @@ export class IndicatorHost {
       const result = await engine.createSession({
         sessionId: instance.instanceId,
         datasetKey: this.currentKey,
-        program: instance.ir ? { kind: 'ir', ir: instance.ir } : { kind: 'builtin', id: instance.definitionId },
+        program: instance.ir
+          ? { kind: 'ir', ir: instance.ir }
+          : { kind: 'builtin', id: instance.definitionId },
         inputs: instance.inputs,
         mode: 'realtime',
         meta: this.meta,
@@ -305,19 +523,93 @@ export class IndicatorHost {
     }
   }
 
-  private applyOutputs(sessionId: string, outputs: IndicatorOutput[], scope: 'full' | 'update'): void {
+  private applyOutputs(
+    sessionId: string,
+    outputs: IndicatorOutput[],
+    scope: 'full' | 'update'
+  ): void {
     const renderer = this.renderers.get(sessionId)
     if (!renderer) return
+    const instance = this.instances.get(sessionId)
+    // Cache the full snapshot so a later style change can re-render without a worker recompute.
+    if (scope === 'full') this.lastOutputs.set(sessionId, outputs)
+    // Timeframe visibility (Visibility tab): hide every series off-timeframe.
+    if (instance && !this.instanceVisibleAtInterval(instance)) {
+      for (const output of outputs) renderer.remove(output.id)
+      return
+    }
+    const overrides = instance?.styleOverrides
     for (const output of outputs) {
+      const override = overrides?.[output.id]
+      if (override?.visible === false) {
+        // Hidden: drop the series and skip re-adding it (idempotent on ticks too).
+        renderer.remove(output.id)
+        continue
+      }
+      // Style is applied at series-create time (add / setStyleOverrides /
+      // attachChart); replace/update only carry data, so a live style change
+      // goes through setStyleOverrides' renderer rebuild rather than here.
+      const styled = override ? styleOutput(output, override) : output
       if (scope === 'full') {
-        renderer.replace(output)
+        renderer.replace(styled)
       } else {
-        renderer.update(output, Math.max(0, this.barCount - 1))
+        renderer.update(styled, Math.max(0, this.barCount - 1))
       }
     }
   }
 
   private emit(): void {
     this.cb.onIndicators(this.list())
+  }
+}
+
+/** Fold an alpha (0..1) into a hex or rgb(a) color; returns the input unchanged
+ *  when opacity is full or the color can't be parsed (e.g. named colors). */
+function withAlpha(color: string, alpha: number): string {
+  if (!(alpha < 1)) return color
+  const a = Math.max(0, Math.min(1, alpha))
+  if (color.startsWith('#')) {
+    let hex = color.slice(1)
+    if (hex.length === 3) hex = hex.replace(/./g, (c) => c + c)
+    if (hex.length >= 6) {
+      const r = Number.parseInt(hex.slice(0, 2), 16)
+      const g = Number.parseInt(hex.slice(2, 4), 16)
+      const b = Number.parseInt(hex.slice(4, 6), 16)
+      return `rgba(${r}, ${g}, ${b}, ${a})`
+    }
+  }
+  const m = color.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i)
+  if (m) return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${a})`
+  return color
+}
+
+/** Return a shallow copy of an output with the override merged into its style.
+ *  Only stylable kinds (line/hline/histogram/fill) are touched; values arrays
+ *  are shared by reference (never mutated). */
+function styleOutput(output: IndicatorOutput, o: OutputStyleOverride): IndicatorOutput {
+  switch (output.kind) {
+    case 'line':
+    case 'hline': {
+      const style = { ...output.style }
+      if (o.color) style.color = o.color
+      if (o.opacity != null) style.color = withAlpha(style.color, o.opacity)
+      if (o.lineWidth != null) style.lineWidth = o.lineWidth
+      if (o.lineStyle) style.lineStyle = o.lineStyle
+      return { ...output, style }
+    }
+    case 'histogram': {
+      const style = { ...output.style }
+      if (o.color) style.color = o.color
+      if (o.opacity != null) style.color = withAlpha(style.color, o.opacity)
+      return { ...output, style }
+    }
+    case 'fill': {
+      const style = { ...output.style }
+      if (o.color) style.color = o.color
+      if (o.opacity != null) style.opacity = o.opacity
+      return { ...output, style }
+    }
+    default:
+      return output
   }
 }

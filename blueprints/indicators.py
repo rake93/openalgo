@@ -334,6 +334,44 @@ def list_script_versions(script_id: int):
         db_session.remove()
 
 
+@indicators_bp.route("/scripts/<int:script_id>/versions/<int:version_id>", methods=["GET"])
+@check_session_validity
+def get_script_version(script_id: int, version_id: int):
+    """Fetch a single immutable version *with its source* — the list endpoint
+    omits source to stay lightweight, so the version-history panel loads a
+    version's code (to preview / restore into the editor) through here."""
+    try:
+        script = IndicatorScript.query.filter_by(id=script_id, user_id=_user()).first()
+        if not script:
+            return jsonify({"status": "error", "message": "script not found"}), 404
+        version = IndicatorScriptVersion.query.filter_by(
+            id=version_id, script_id=script.id
+        ).first()
+        if not version:
+            return jsonify({"status": "error", "message": "version not found"}), 404
+        meta = version.metadata_json or {}
+        return jsonify(
+            {
+                "status": "success",
+                "data": {
+                    "id": version.id,
+                    "version_number": version.version_number,
+                    "source_code": version.source_code,
+                    "source_hash": version.source_hash,
+                    "compiler_version": version.compiler_version,
+                    "created_at": version.created_at.isoformat() if version.created_at else None,
+                    "is_current": version.id == script.current_version_id,
+                    "diagnostics": meta.get("diagnostics", []),
+                },
+            }
+        )
+    except Exception as e:
+        logger.exception(f"Error fetching version {version_id} of script {script_id}: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        db_session.remove()
+
+
 # ── Indicator alerts (headless bar-close evaluation) ─────────────────────────
 
 

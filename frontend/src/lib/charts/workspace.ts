@@ -11,22 +11,35 @@
  * triggers a chart rebuild from current state.
  */
 
+import type { IRProgram } from '@openalgo/indicator-engine'
 import {
+  type Bar,
   CandleBuilder,
   createChart,
   darkTheme,
-  lightTheme,
   intervalToSeconds,
+  type LtpEvent,
+  lightTheme,
   OpenAlgoDataFeed,
   OpenAlgoWsFeed,
-  type Bar,
-  type LtpEvent,
   type SeriesApi,
 } from 'openalgo-charts'
-import type { IRProgram } from '@openalgo/indicator-engine'
-import { IndicatorHost, type IndicatorInstance } from './indicator-host'
+import {
+  type DataWindowRow,
+  IndicatorHost,
+  type IndicatorInstance,
+  type StyleOverrides,
+  type TimeframeVisibility,
+} from './indicator-host'
 
 export type { IndicatorInstance } from './indicator-host'
+
+/** Crosshair snapshot: the hovered price bar + each indicator's values there. */
+export interface CrosshairData {
+  time: number | null
+  bar: Bar
+  rows: DataWindowRow[]
+}
 
 export interface WorkspaceCallbacks {
   onStatus(text: string): void
@@ -79,6 +92,7 @@ export class ChartWorkspaceController {
   private interval = '5m'
   private destroyed = false
   private previewId: string | null = null
+  private crosshairCb: ((data: CrosshairData | null) => void) | null = null
 
   get manifest() {
     return this.indicators.manifest
@@ -110,6 +124,26 @@ export class ChartWorkspaceController {
       style: { priceLineVisible: false, lastValueVisible: false },
     })
     this.indicators.attachChart({ chart: this.chart, anchorSeries: this.price, basePane: 2 })
+    this.attachCrosshair()
+  }
+
+  /** Wire (or re-wire, after a chart rebuild) the crosshair → data-window feed. */
+  private attachCrosshair(): void {
+    const cb = this.crosshairCb
+    if (!cb || !this.chart) return
+    this.chart.subscribeCrosshairMove((e) => {
+      if (e.index == null || !e.bar) {
+        cb(null)
+        return
+      }
+      cb({ time: e.time, bar: e.bar, rows: this.indicators.valuesAtIndex(e.index) })
+    })
+  }
+
+  /** Subscribe to crosshair moves for the OHLC + indicator data window. */
+  subscribeCrosshair(cb: (data: CrosshairData | null) => void): void {
+    this.crosshairCb = cb
+    this.attachCrosshair()
   }
 
   setTheme(): void {
@@ -155,13 +189,24 @@ export class ChartWorkspaceController {
 
     await this.indicators.setDataset(this.bars, { symbol, exchange, interval: nextInterval })
 
-    this.opts.callbacks.onSymbolLoaded({ symbol, exchange, interval: nextInterval, bars: this.bars.length })
+    this.opts.callbacks.onSymbolLoaded({
+      symbol,
+      exchange,
+      interval: nextInterval,
+      bars: this.bars.length,
+    })
     this.opts.callbacks.onStatus(`${symbol} ${nextInterval} — ${this.bars.length} bars`)
   }
 
   private setVolumeData(): void {
     this.volume?.setData(
-      this.bars.map((b) => ({ time: b.time, open: 0, high: b.volume || 0, low: 0, close: b.volume || 0 }))
+      this.bars.map((b) => ({
+        time: b.time,
+        open: 0,
+        high: b.volume || 0,
+        low: 0,
+        close: b.volume || 0,
+      }))
     )
   }
 
@@ -181,18 +226,37 @@ export class ChartWorkspaceController {
       this.bars[this.bars.length - 1] = bar
     }
     this.price?.update(bar)
-    this.volume?.update({ time: bar.time, open: 0, high: bar.volume || 0, low: 0, close: bar.volume || 0 })
+    this.volume?.update({
+      time: bar.time,
+      open: 0,
+      high: bar.volume || 0,
+      low: 0,
+      close: bar.volume || 0,
+    })
     this.indicators.onBar(bar, isNew)
   }
 
   /* ── indicators (delegated to the shared host) ─────────────────────── */
 
-  async addIndicator(definitionId: string, inputs?: Record<string, unknown>): Promise<void> {
-    await this.indicators.add(definitionId, inputs)
+  async addIndicator(
+    definitionId: string,
+    inputs?: Record<string, unknown>,
+    styleOverrides?: StyleOverrides,
+    visibility?: TimeframeVisibility
+  ): Promise<void> {
+    await this.indicators.add(definitionId, inputs, styleOverrides, visibility)
   }
 
   async updateIndicatorInputs(instanceId: string, inputs: Record<string, unknown>): Promise<void> {
     await this.indicators.setInputs(instanceId, inputs)
+  }
+
+  updateIndicatorStyle(instanceId: string, styleOverrides: StyleOverrides): void {
+    this.indicators.setStyleOverrides(instanceId, styleOverrides)
+  }
+
+  updateIndicatorVisibility(instanceId: string, visibility: TimeframeVisibility | undefined): void {
+    this.indicators.setVisibility(instanceId, visibility)
   }
 
   async removeIndicator(instanceId: string): Promise<void> {
@@ -240,7 +304,9 @@ export class ChartWorkspaceController {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apikey: this.opts.apiKey, query }),
       })
-      const j = (await res.json()) as { data?: { symbol: string; exchange: string; name?: string }[] }
+      const j = (await res.json()) as {
+        data?: { symbol: string; exchange: string; name?: string }[]
+      }
       return (j.data || []).slice(0, 30)
     } catch {
       return []

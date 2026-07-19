@@ -34,9 +34,16 @@ type ChartInstance = ReturnType<typeof createChart>
 type BuySellButtonsInstance = InstanceType<typeof BuySellButtons>
 type TradeFeedInstance = InstanceType<typeof OpenAlgoTradeFeed>
 
+import {
+  IndicatorHost,
+  type IndicatorInstance,
+  type StyleOverrides,
+  type TimeframeVisibility,
+} from '@/lib/charts/indicator-host'
 import type { AppMode, ThemeMode } from '@/stores/themeStore'
-import { IndicatorHost, type IndicatorInstance } from '@/lib/charts/indicator-host'
+
 export type { IndicatorInstance } from '@/lib/charts/indicator-host'
+
 import { buildChartTheme, isLightTheme, volumeColor } from './chartTheme'
 import { CHART_TYPES } from './chartTypes'
 import { fmtPrice, money, priceDp, snapTick, tickSize } from './format'
@@ -1106,12 +1113,25 @@ export class TradingTerminal {
     return this.indicators.list()
   }
 
-  async addIndicator(definitionId: string, inputs?: Record<string, unknown>): Promise<void> {
-    await this.indicators.add(definitionId, inputs)
+  async addIndicator(
+    definitionId: string,
+    inputs?: Record<string, unknown>,
+    styleOverrides?: StyleOverrides,
+    visibility?: TimeframeVisibility
+  ): Promise<void> {
+    await this.indicators.add(definitionId, inputs, styleOverrides, visibility)
   }
 
   async setIndicatorInputs(instanceId: string, inputs: Record<string, unknown>): Promise<void> {
     await this.indicators.setInputs(instanceId, inputs)
+  }
+
+  setIndicatorStyle(instanceId: string, styleOverrides: StyleOverrides): void {
+    this.indicators.setStyleOverrides(instanceId, styleOverrides)
+  }
+
+  setIndicatorVisibility(instanceId: string, visibility: TimeframeVisibility | undefined): void {
+    this.indicators.setVisibility(instanceId, visibility)
   }
 
   async removeIndicator(instanceId: string): Promise<void> {
@@ -1137,9 +1157,13 @@ export class TradingTerminal {
         const saved = JSON.parse(localStorage.getItem(`${this.sk}-indicators`) || '[]') as {
           definitionId: string
           inputs: Record<string, unknown>
+          styleOverrides?: StyleOverrides
+          visibility?: TimeframeVisibility
         }[]
         for (const item of saved) {
-          await this.indicators.add(item.definitionId, item.inputs).catch(() => undefined)
+          await this.indicators
+            .add(item.definitionId, item.inputs, item.styleOverrides, item.visibility)
+            .catch(() => undefined)
         }
       }
     } catch (e) {

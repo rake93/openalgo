@@ -1,5 +1,6 @@
 import { ChevronDown, RefreshCw, Search } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -13,12 +14,11 @@ import { CHART_TYPE_GROUPS, CHART_TYPES, chartTypeIcon } from '@/lib/trading/cha
 import type { IntervalGroup } from '@/lib/trading/intervals'
 import {
   type CtxItem,
+  type IndicatorInstance,
   type SymbolView,
   type TerminalCallbacks,
   TradingTerminal,
-  type IndicatorInstance,
 } from '@/lib/trading/terminal'
-import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/themeStore'
 import { showToast } from '@/utils/toast'
@@ -461,7 +461,11 @@ export function ChartPane({ paneId, apiKey, wsUrl, style }: Props) {
       <IndicatorSettingsDialog
         instance={settingsFor}
         manifest={terminalRef.current?.indicatorManifest ?? []}
-        onSave={(instanceId, inputs) => terminalRef.current?.setIndicatorInputs(instanceId, inputs)}
+        onSave={(instanceId, inputs, styleOverrides, visibility) => {
+          terminalRef.current?.setIndicatorStyle(instanceId, styleOverrides)
+          terminalRef.current?.setIndicatorVisibility(instanceId, visibility)
+          void terminalRef.current?.setIndicatorInputs(instanceId, inputs)
+        }}
         onClose={() => setSettingsFor(null)}
       />
     </section>
