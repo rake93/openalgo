@@ -122,6 +122,10 @@ def _binop(op, a, b):
 
 
 def _unop(op, v):
+    if op == "isna":
+        if not _is_series(v):
+            return 1.0 if math.isnan(v) else 0.0
+        return np.isnan(v).astype(float)
     if not _is_series(v):
         return -v if op == "-" else (0.0 if _truthy_scalar(v) else 1.0)
     if op == "-":
@@ -203,7 +207,88 @@ def _eval_node(node, values, dataset, inputs, decls, n, ta_cache):
         return _hist(values[node["arg"]], node["offset"], n)
     if op == "nz":
         return _nz(values[node["arg"]], node.get("replacement", 0), n)
+    if op == "scan":
+        return _eval_scan(node, values, n)
     return _call(node, values, ta_cache)
+
+
+_SCAN_MATH_UNARY = {
+    "abs": abs, "sign": lambda x: math.nan if math.isnan(x) else float((x > 0) - (x < 0)),
+    "sqrt": lambda x: math.sqrt(x) if x >= 0 else math.nan,
+    "exp": math.exp, "log": lambda x: math.log(x) if x > 0 else (-math.inf if x == 0 else math.nan),
+    "log10": lambda x: math.log10(x) if x > 0 else (-math.inf if x == 0 else math.nan),
+    "round": lambda x: math.nan if math.isnan(x) else float(int(x + 0.5) if x >= 0 else -int(-x + 0.5)),
+    "floor": lambda x: math.nan if math.isnan(x) else math.floor(x),
+    "ceil": lambda x: math.nan if math.isnan(x) else math.ceil(x),
+}
+_SCAN_MATH_BINARY = {
+    "pow": lambda a, b: a**b,
+    "max": lambda a, b: math.nan if math.isnan(a) or math.isnan(b) else max(a, b),
+    "min": lambda a, b: math.nan if math.isnan(a) or math.isnan(b) else min(a, b),
+}
+
+
+def _scan_at(v, t: int) -> float:
+    return float(v[t]) if _is_series(v) else float(v)
+
+
+def _eval_scan(node, values, n) -> np.ndarray:
+    """Single-lane recurrence: state[t] = expr(state[t-1], inputs[.][t]).
+    `prev` (bare self) starts at the seed on bar 0; `prevh` (x[1]) starts at
+    NaN, mirroring Pine history. Both track the committed value afterwards."""
+    inputs = [values[i] for i in node["inputs"]]
+    out = np.empty(n)
+    prev = math.nan if node.get("init") is None else float(node["init"])
+    prevh = math.nan
+
+    def ev(e, prev_v, prevh_v, t):
+        k = e["k"]
+        if k == "const":
+            return math.nan if e["v"] is None else float(e["v"])
+        if k == "input":
+            return _scan_at(inputs[e["i"]], t)
+        if k == "prev":
+            return prev_v
+        if k == "prevh":
+            return prevh_v
+        if k == "bin":
+            return _scalar_binop(e["op"], ev(e["a"], prev_v, prevh_v, t), ev(e["b"], prev_v, prevh_v, t))
+        if k == "un":
+            a = ev(e["a"], prev_v, prevh_v, t)
+            if e["op"] == "-":
+                return -a
+            if e["op"] == "isna":
+                return 1.0 if math.isnan(a) else 0.0
+            return 0.0 if _truthy_scalar(a) else 1.0
+        if k == "select":
+            if _truthy_scalar(ev(e["c"], prev_v, prevh_v, t)):
+                return ev(e["t"], prev_v, prevh_v, t)
+            return ev(e["e"], prev_v, prevh_v, t)
+        if k == "nz":
+            a = ev(e["a"], prev_v, prevh_v, t)
+            if not math.isnan(a):
+                return a
+            return ev(e["b"], prev_v, prevh_v, t) if "b" in e else 0.0
+        if k == "math":
+            fn = e["fn"]
+            args = [ev(a, prev_v, prevh_v, t) for a in e["args"]]
+            un = _SCAN_MATH_UNARY.get(fn)
+            if un is not None and len(args) == 1:
+                a0 = args[0]
+                return math.nan if math.isnan(a0) and fn not in () else un(a0) if not math.isnan(a0) else math.nan
+            bi = _SCAN_MATH_BINARY.get(fn)
+            if bi is not None and len(args) == 2:
+                return bi(args[0], args[1])
+            return math.nan
+        return math.nan
+
+    expr = node["expr"]
+    for t in range(n):
+        cur = ev(expr, prev, prevh, t)
+        out[t] = cur
+        prev = cur
+        prevh = cur
+    return out
 
 
 def _as_series(v, n) -> np.ndarray:

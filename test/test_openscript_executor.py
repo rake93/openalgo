@@ -280,6 +280,125 @@ def test_plot_handle_misuse_is_os2012(dataset):
     assert "OS2012" in [d.code for d in result.diagnostics]
 
 
+# ── P3 scan primitive (var + :=) ───────────────────────────────────────────
+
+
+def test_scan_counter_from_seed(dataset):
+    vals = _line(_run("var c = 0\nc := c + 1\nplot(c)", dataset))
+    for i in range(len(vals)):
+        assert vals[i] == i + 1
+
+
+def test_scan_prevh_is_na_on_bar0(dataset):
+    vals = _line(_run("var x = 0\nx := na(x[1]) ? 100 : x[1] + 1\nplot(x)", dataset))
+    assert vals[0] == 100
+    for i in range(1, len(vals)):
+        assert vals[i] == 100 + i
+
+
+def test_scan_signal_persistence(dataset):
+    vals = _line(
+        _run("var s = 0\ns := close > open ? 1 : close < open ? 0 - 1 : nz(s[1])\nplot(s)", dataset)
+    )
+    expected = 0
+    for i in range(len(vals)):
+        c, o = dataset["close"][i], dataset["open"][i]
+        expected = 1 if c > o else -1 if c < o else expected
+        assert vals[i] == expected
+
+
+def test_scan_counter_with_reset(dataset):
+    vals = _line(_run("var held = 0\nheld := close > open ? 0 : held + 1\nplot(held)", dataset))
+    expected = 0
+    for i in range(len(vals)):
+        expected = 0 if dataset["close"][i] > dataset["open"][i] else expected + 1
+        assert vals[i] == expected
+
+
+def test_scan_running_max(dataset):
+    vals = _line(_run("var hi = 0\nhi := math.max(nz(hi[1], low), high)\nplot(hi)", dataset))
+    expected = math.nan
+    for i in range(len(vals)):
+        seed = dataset["low"][i] if math.isnan(expected) else expected
+        expected = max(seed, dataset["high"][i])
+        assert abs(vals[i] - expected) < 1e-9
+
+
+def test_scan_supertrend_band_carry(dataset):
+    source = "\n".join(
+        [
+            "basis = hlc3",
+            "dev = 2 * ta.atr(10)",
+            "ub0 = basis + dev",
+            "lb0 = basis - dev",
+            "var ub = 0",
+            "var lb = 0",
+            "var d = 0",
+            "ub := na(ub[1]) ? ub0 : (ub0 < ub[1] or close[1] > ub[1] ? ub0 : ub[1])",
+            "lb := na(lb[1]) ? lb0 : (lb0 > lb[1] or close[1] < lb[1] ? lb0 : lb[1])",
+            "d := na(d[1]) ? 1 : d[1] == 0 - 1 and close > ub[1] ? 1 : "
+            "d[1] == 1 and close < lb[1] ? 0 - 1 : d[1]",
+            "plot(ub)",
+            "plot(lb)",
+            "plot(d)",
+        ]
+    )
+    out = _run(source, dataset)
+    ub_vals, lb_vals, d_vals = _line(out, 0), _line(out, 1), _line(out, 2)
+
+    atr = ta.atr(dataset["high"], dataset["low"], dataset["close"], 10)
+    pu = pl = pd_ = math.nan
+    for i in range(len(dataset["close"])):
+        basis = (dataset["high"][i] + dataset["low"][i] + dataset["close"][i]) / 3
+        dev = 2 * atr[i]
+        ub0, lb0 = basis + dev, basis - dev
+        prev_close = dataset["close"][i - 1] if i > 0 else math.nan
+        cu = ub0 if math.isnan(pu) else (ub0 if (ub0 < pu or prev_close > pu) else pu)
+        cl = lb0 if math.isnan(pl) else (lb0 if (lb0 > pl or prev_close < pl) else pl)
+        if math.isnan(pd_):
+            cd = 1.0
+        elif pd_ == -1 and dataset["close"][i] > pu:
+            cd = 1.0
+        elif pd_ == 1 and dataset["close"][i] < pl:
+            cd = -1.0
+        else:
+            cd = pd_
+        if math.isnan(cu):
+            assert math.isnan(ub_vals[i])
+        else:
+            assert abs(ub_vals[i] - cu) < 1e-9
+        if math.isnan(cl):
+            assert math.isnan(lb_vals[i])
+        else:
+            assert abs(lb_vals[i] - cl) < 1e-9
+        assert d_vals[i] == cd
+        pu, pl, pd_ = cu, cl, cd
+
+
+def test_scan_output_feeds_ta(dataset):
+    vals = _line(_run("var c = 0\nc := c + 1\nplot(ta.sma(c, 5))", dataset))
+    for i in range(4, 20):
+        assert abs(vals[i] - (5 * (i + 1) - 10) / 5) < 1e-9
+
+
+def test_na_predicate_in_dag(dataset):
+    vals = _line(_run("plot(na(close[1]) ? 1 : 0)", dataset))
+    assert vals[0] == 1
+    assert all(v == 0 for v in vals[1:10])
+
+
+def test_scan_diagnostics_os2016(dataset):
+    for src in (
+        "x := 1",
+        "var x = close\nx := x + 1",
+        "var x = 0\ny = x + 1\nx := x + 1\nplot(y)",
+        "var x = 0\nx := ta.sma(x, 5)",
+        "var x = 0\nx := x[2] + 1",
+    ):
+        result = openscript.compile(src)
+        assert "OS2016" in [d.code for d in result.diagnostics], src
+
+
 # ── LC-1 ta/math plumbing ──────────────────────────────────────────────────
 
 

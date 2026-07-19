@@ -34,9 +34,19 @@ class Analyzer:
         self._alert_titles: set[str] = set()
         # Names bound to `p = plot(...)` — usable only as fill() args (OS2012).
         self._plot_handles: set[str] = set()
+        # Scan state per `:=` target: decl seen (const-init) / reassign visited.
+        self._scan_vars: dict[str, dict] = {}
+        # The scan var whose Reassign RHS we are currently inside.
+        self._current_scan_var: str | None = None
+        # Depth of ta.* / math.sum calls (self-refs inside are OS2016).
+        self._windowed_call_depth = 0
         self._current_function: str | None = None
 
     def analyze(self, program: ast.Program) -> list[Diagnostic]:
+        # Pre-pass: which names are reassigned with `:=` at top level.
+        for stmt in program.body:
+            if stmt.type == "Reassign" and stmt.name not in self._scan_vars:
+                self._scan_vars[stmt.name] = {"declared": False, "reassigned": False}
         for index, stmt in enumerate(program.body):
             if _is_indicator_call(stmt) and index != 0:
                 self._error("OS1005", stmt.span)
@@ -67,6 +77,16 @@ class Analyzer:
             self._declare_var(stmt.name, stmt.name_span)
             if _is_plot_call(stmt.value):
                 self._plot_handles.add(stmt.name)
+            scan = self._scan_vars.get(stmt.name)
+            if scan is not None:
+                if not top_level:
+                    self._error("OS2016", stmt.span, f"'{stmt.name}' is reassigned - declare it at top level")
+                elif not _is_const_seed(stmt.value):
+                    self._error("OS2016", stmt.span, f"'{stmt.name}' needs a constant initial value")
+                else:
+                    scan["declared"] = True
+        elif kind == "Reassign":
+            self._visit_reassign(stmt, top_level)
         elif kind == "TupleDecl":
             self._visit_expr(stmt.value, top_level)
             self._check_destructure(stmt.value, len(stmt.names), stmt.span)
@@ -76,6 +96,24 @@ class Analyzer:
             self._visit_function_decl(stmt)
         elif kind == "ExprStmt":
             self._visit_expr(stmt.expr, top_level)
+
+    def _visit_reassign(self, stmt, top_level: bool) -> None:
+        if not top_level:
+            self._error("OS2016", stmt.span, "':=' is only allowed at top level")
+            return
+        scan = self._scan_vars.get(stmt.name)
+        if scan is None or not scan["declared"]:
+            self._error(
+                "OS2016", stmt.name_span, f"'{stmt.name}' must be declared with a constant value before ':='"
+            )
+            return
+        if scan["reassigned"]:
+            self._error("OS2016", stmt.name_span, f"'{stmt.name}' is reassigned more than once")
+            return
+        self._current_scan_var = stmt.name
+        self._visit_expr(stmt.value, True)
+        self._current_scan_var = None
+        scan["reassigned"] = True
 
     def _visit_function_decl(self, fn: ast.FunctionDecl) -> None:
         if fn.name in self._functions or fn.name in self._scope():
@@ -104,6 +142,16 @@ class Analyzer:
             if e.name in self._plot_handles:
                 self._error("OS2012", e.span, e.name)
                 return
+            scan = self._scan_vars.get(e.name)
+            if scan is not None and not scan["reassigned"]:
+                if self._current_scan_var == e.name:
+                    if self._windowed_call_depth > 0:
+                        self._error(
+                            "OS2016", e.span, f"'{e.name}' cannot appear inside a windowed call in its own ':='"
+                        )
+                else:
+                    self._error("OS2016", e.span, f"'{e.name}' is used before its ':=' reassignment")
+                return
             if not self._is_var_in_scope(e.name) and e.name not in SOURCE_IDS:
                 self._error("OS2001", e.span, e.name)
         elif kind == "Member":
@@ -112,6 +160,16 @@ class Analyzer:
         elif kind == "Call":
             self._visit_call(e, top_level)
         elif kind == "Index":
+            if (
+                getattr(e.object, "type", None) == "Identifier"
+                and e.object.name == self._current_scan_var
+                and e.index.type == "Number"
+                and e.index.value >= 2
+            ):
+                self._error(
+                    "OS2016", e.span, f"only '{e.object.name}[1]' self-history is supported in ':='"
+                )
+                return
             self._visit_expr(e.object, top_level)
             self._visit_expr(e.index, top_level)
         elif kind == "Unary":
@@ -139,8 +197,12 @@ class Analyzer:
 
     def _visit_call(self, call: ast.CallExpr, top_level: bool) -> None:
         callee = call.callee
+        windowed = False
         if callee.type == "Member" and getattr(callee.object, "type", None) == "Identifier":
             self._visit_namespace_call(callee.object.name, callee.property, call, top_level)
+            windowed = callee.object.name == "ta" or (
+                callee.object.name == "math" and callee.property == "sum"
+            )
         elif callee.type == "Identifier":
             self._visit_bare_call(callee.name, call, top_level)
             if callee.name == "fill":
@@ -148,8 +210,12 @@ class Analyzer:
                 return
         else:
             self._error("OS2002", call.span)
+        if windowed:
+            self._windowed_call_depth += 1
         for arg in call.args:
             self._visit_expr(arg.value, top_level)
+        if windowed:
+            self._windowed_call_depth -= 1
 
     def _visit_fill_args(self, call: ast.CallExpr, top_level: bool) -> None:
         """fill(p1, p2, ...) — the first two positional args must be plot
@@ -202,8 +268,10 @@ class Analyzer:
         if name == "indicator":
             return
         if name in SPECIAL_FUNCTIONS:
-            if len(call.args) < 1 or len(call.args) > 2:
-                self._error("OS2003", call.span, f"got {len(call.args)}, expected 1 or 2")
+            max_args = 1 if name == "na" else 2
+            if len(call.args) < 1 or len(call.args) > max_args:
+                hint = "1 or 2" if max_args == 2 else "1"
+                self._error("OS2003", call.span, f"got {len(call.args)}, expected {hint}")
             return
         if name in OUTPUT_FUNCTIONS:
             if not top_level:
@@ -241,6 +309,13 @@ class Analyzer:
             self._error(code, call.span, title)
             return
         seen.add(title)
+
+
+def _is_const_seed(e: ast.Expr) -> bool:
+    """A valid scan seed: number / bool / na, optionally negated."""
+    if e.type in ("Number", "Bool", "Na"):
+        return True
+    return e.type == "Unary" and e.op == "-" and e.operand.type == "Number"
 
 
 def _is_plot_call(e: ast.Expr) -> bool:

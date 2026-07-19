@@ -156,7 +156,19 @@ class VarDecl:
     name_span: Span
     value: Expr
     span: Span
+    is_var: bool = False
     type: ClassVar[str] = "VarDecl"
+
+
+@dataclass
+class Reassign:
+    """`name := expr` — per-bar reassignment of a declared var (scan lane)."""
+
+    name: str
+    name_span: Span
+    value: Expr
+    span: Span
+    type: ClassVar[str] = "Reassign"
 
 
 @dataclass
@@ -184,7 +196,7 @@ class ExprStmt:
     type: ClassVar[str] = "ExprStmt"
 
 
-Stmt = VarDecl | TupleDecl | FunctionDecl | ExprStmt
+Stmt = VarDecl | Reassign | TupleDecl | FunctionDecl | ExprStmt
 
 
 @dataclass

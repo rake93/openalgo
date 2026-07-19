@@ -144,6 +144,9 @@ class IRGenerator:
         self._plot_handles: dict[str, int] = {}
         # Interned colors; color-valued nodes are const palette indices.
         self._palette: list[str] = []
+        # Names reassigned with `:=` (scan lanes) and their declared seeds.
+        self._scan_targets: set[str] = set()
+        self._scan_seeds: dict[str, float | None] = {}
         self._declaration = {"name": "Untitled", "overlay": False}
         self._diagnostics: list[Diagnostic] = []
 
@@ -179,7 +182,13 @@ class IRGenerator:
     def _lower_top_stmt(self, stmt: ast.Stmt) -> None:
         kind = stmt.type
         if kind == "VarDecl":
-            if _is_input_call(stmt.value):
+            if stmt.name in self._scan_targets:
+                # Seed for a `:=` scan lane — recorded, bound at the Reassign.
+                seed = _resolve_const(stmt.value)
+                if isinstance(seed, bool):
+                    seed = 1.0 if seed else 0.0
+                self._scan_seeds[stmt.name] = float(seed) if isinstance(seed, (int, float)) else None
+            elif _is_input_call(stmt.value):
                 self._bind(stmt.name, self._lower_input(stmt.value, stmt.name))
             elif _is_plot_binding(stmt.value):
                 # p = plot(...) — emit the plot output and record the handle.
@@ -187,6 +196,8 @@ class IRGenerator:
                 self._plot_handles[stmt.name] = len(self._outputs) - 1
             else:
                 self._bind(stmt.name, self._lower_expr(stmt.value))
+        elif kind == "Reassign":
+            self._bind(stmt.name, self._lower_scan(stmt))
         elif kind == "TupleDecl":
             call = stmt.value
             fn = call.callee.property
@@ -303,6 +314,11 @@ class IRGenerator:
         if callee.type == "Identifier":
             if callee.name == "nz":
                 return self._lower_nz(call)
+            if callee.name == "na":
+                arg = self._lower_expr(call.args[0].value)
+                return self._emit(
+                    {"op": "unop", "operator": "isna", "arg": arg}, call.span, self._warmups[arg]
+                )
             fn = self._functions.get(callee.name)
             if fn is not None:
                 return self._inline_function(fn, call)
@@ -563,6 +579,82 @@ class IRGenerator:
         v = self._const_arg(call, positional, "title")
         return v if isinstance(v, str) else ""
 
+    def _lower_scan(self, stmt) -> int:
+        """Lower `x := expr` into a single-lane scan node. Self-references stay
+        in the body (`x` -> prev, `x[1]` -> prevh); every self-free subtree
+        lowers to an ordinary DAG node and becomes an input series."""
+        target = stmt.name
+        inputs: list[int] = []
+        input_slot: dict[int, int] = {}
+
+        def as_input(e) -> dict:
+            node_id = self._lower_expr(e)
+            slot = input_slot.get(node_id)
+            if slot is None:
+                slot = len(inputs)
+                inputs.append(node_id)
+                input_slot[node_id] = slot
+            return {"k": "input", "i": slot}
+
+        def self_ref(e) -> bool:
+            kind = e.type
+            if kind == "Identifier":
+                return e.name == target
+            if kind == "Index":
+                return self_ref(e.object) or self_ref(e.index)
+            if kind == "Unary":
+                return self_ref(e.operand)
+            if kind == "Binary":
+                return self_ref(e.left) or self_ref(e.right)
+            if kind == "Ternary":
+                return self_ref(e.cond) or self_ref(e.then) or self_ref(e.else_)
+            if kind == "Call":
+                return any(self_ref(a.value) for a in e.args)
+            return False
+
+        def body(e) -> dict:
+            if not self_ref(e):
+                if e.type == "Number":
+                    return {"k": "const", "v": e.value}
+                if e.type == "Na":
+                    return {"k": "const", "v": None}
+                if e.type == "Bool":
+                    return {"k": "const", "v": 1 if e.value else 0}
+                return as_input(e)
+            kind = e.type
+            if kind == "Identifier":
+                return {"k": "prev"}
+            if kind == "Index":
+                return {"k": "prevh"}
+            if kind == "Unary":
+                return {"k": "un", "op": "-" if e.op == "-" else "not", "a": body(e.operand)}
+            if kind == "Binary":
+                return {"k": "bin", "op": e.op, "a": body(e.left), "b": body(e.right)}
+            if kind == "Ternary":
+                return {"k": "select", "c": body(e.cond), "t": body(e.then), "e": body(e.else_)}
+            if kind == "Call":
+                callee = e.callee
+                if getattr(callee, "type", None) == "Identifier" and callee.name == "na":
+                    return {"k": "un", "op": "isna", "a": body(e.args[0].value)}
+                if getattr(callee, "type", None) == "Identifier" and callee.name == "nz":
+                    out = {"k": "nz", "a": body(e.args[0].value)}
+                    if len(e.args) > 1:
+                        out["b"] = body(e.args[1].value)
+                    return out
+                if (
+                    getattr(callee, "type", None) == "Member"
+                    and getattr(callee.object, "type", None) == "Identifier"
+                    and callee.object.name == "math"
+                ):
+                    return {"k": "math", "fn": callee.property, "args": [body(a.value) for a in e.args]}
+            # unsupported (semantic already reported) — degrade to na
+            return {"k": "const", "v": None}
+
+        expr = body(stmt.value)
+        init = self._scan_seeds.get(target)
+        warmup = max((self._warmups[i] for i in inputs), default=0)
+        return self._emit({"op": "scan", "init": init, "expr": expr, "inputs": inputs}, stmt.span, warmup)
+
     def _palette_const(self, hex_color: str, span: Span) -> int:
         """Intern a color and emit its palette-index const node."""
         try:
@@ -596,6 +688,9 @@ class IRGenerator:
 
 def generate_ir(source: str, program: ast.Program) -> tuple[dict | None, list[Diagnostic]]:
     gen = IRGenerator(source)
+    for stmt in program.body:
+        if stmt.type == "Reassign":
+            gen._scan_targets.add(stmt.name)
     for stmt in program.body:
         gen._lower_top_stmt(stmt)
     if gen._diagnostics:

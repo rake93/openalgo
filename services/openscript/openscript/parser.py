@@ -16,7 +16,7 @@ from .diagnostics import Diagnostic, Span, make_diagnostic
 from .lexer import tokenize
 from .token import Token
 
-RESERVED_KEYWORDS = frozenset({"var", "for", "while"})
+RESERVED_KEYWORDS = frozenset({"for", "while"})
 
 COMPARISON_OPS = {"lt": "<", "le": "<=", "gt": ">", "ge": ">=", "eq": "==", "ne": "!="}
 ADDITIVE_OPS = {"plus": "+", "minus": "-"}
@@ -152,8 +152,28 @@ class Parser:
         try:
             if self._check("identifier") and self._current().value in RESERVED_KEYWORDS:
                 self._fail("OS1009", self._current().span, self._current().value)
+            # `var name = expr` — persistent (scan-seed) declaration
+            if (
+                self._check("identifier")
+                and self._current().value == "var"
+                and self._peek(1).type == "identifier"
+                and self._peek(2).type == "assign"
+            ):
+                self._advance()  # 'var'
+                decl = self._parse_var_decl()
+                decl.is_var = True
+                return decl
+            # reassignment `name := expr`
             if self._check("identifier") and self._peek(1).type == "reassign":
-                self._fail("OS1010", self._peek(1).span)
+                name_tok = self._advance()
+                self._advance()  # ':='
+                value = self.parse_expression()
+                return ast.Reassign(
+                    name=name_tok.value,
+                    name_span=name_tok.span,
+                    value=value,
+                    span=self._span_tok(name_tok, self._prev()),
+                )
             if self._check("lbracket"):
                 return self._parse_bracket_statement()
             if allow_functions and self._check("identifier") and self._is_function_def():
@@ -222,7 +242,8 @@ class Parser:
         if self._check("assign"):
             self._fail("OS1007", self._current().span, "assignment target must be a name")
         if self._check("reassign"):
-            self._fail("OS1010", self._current().span)
+            # `:=` after a non-name expression (e.g. `x[1] := 2`)
+            self._fail("OS1007", self._current().span, "reassignment target must be a name")
         return ast.ExprStmt(expr=expr, span=self._span_tok(start, self._prev()))
 
     def _is_function_def(self) -> bool:
@@ -400,6 +421,9 @@ class Parser:
             return ast.BoolLiteral(value=False, span=t.span)
         if word == "na":
             self._advance()
+            # `na(x)` — the na predicate; the postfix pass wraps it into a Call.
+            if self._check("lparen"):
+                return ast.Identifier(name="na", span=t.span)
             return ast.NaLiteral(span=t.span)
         if word == "if":
             return self._parse_if_expr()
@@ -449,7 +473,7 @@ def _count_expr(e: ast.Expr) -> int:
 
 def _count_stmt(s: ast.Stmt) -> int:
     kind = s.type
-    if kind == "VarDecl":
+    if kind in ("VarDecl", "Reassign"):
         return 1 + _count_expr(s.value)
     if kind == "TupleDecl":
         return 1 + len(s.names) + _count_expr(s.value)

@@ -46,6 +46,7 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS2013": "Unknown source name",
     "OS2014": "Duplicate input id",
     "OS2015": "Duplicate alertcondition id",
+    "OS2016": "Invalid stateful declaration or reassignment",
     # Limits
     "OS3001": "Source exceeds maximum size",
     "OS3002": "Program exceeds maximum AST nodes",

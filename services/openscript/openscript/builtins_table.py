@@ -182,7 +182,7 @@ MATH_FUNCTIONS: dict[str, dict] = {
     }.items()
 }
 
-SPECIAL_FUNCTIONS = frozenset({"nz"})
+SPECIAL_FUNCTIONS = frozenset({"nz", "na"})
 INPUT_FUNCTIONS = frozenset({"int", "float", "bool", "string", "source"})
 OUTPUT_FUNCTIONS = frozenset(
     {
