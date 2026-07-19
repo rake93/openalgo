@@ -15,12 +15,14 @@ import type { Diagnostic } from '@openalgo/indicator-engine'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
+  createAlert,
   createScript,
   getScript,
   listScripts,
   updateScript,
   type ScriptRecord,
 } from '@/api/indicators'
+import { CreateAlertDialog, type AlertCondition } from '@/components/charts/CreateAlertDialog'
 import { OpenScriptEditor } from '@/components/charts/OpenScriptEditor'
 import { ChartWorkspaceController } from '@/lib/charts/workspace'
 import { useThemeStore } from '@/stores/themeStore'
@@ -78,6 +80,9 @@ export default function ChartEditor() {
   const [showLibrary, setShowLibrary] = useState(false)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [currentVersionId, setCurrentVersionId] = useState<number | null>(null)
+  const [alertConditions, setAlertConditions] = useState<AlertCondition[]>([])
+  const [showAlerts, setShowAlerts] = useState(false)
 
   const setSource = useCallback((next: string) => {
     sourceRef.current = next
@@ -88,6 +93,13 @@ export default function ChartEditor() {
   const compileAndPreview = useCallback((src: string) => {
     const result = compile(src)
     setDiagnostics(result.diagnostics)
+    const alerts: AlertCondition[] = []
+    for (const o of result.ir?.outputs ?? []) {
+      if (o.kind === 'alertcondition') {
+        alerts.push({ conditionId: o.conditionId, title: o.title, message: o.message })
+      }
+    }
+    setAlertConditions(alerts)
     if (result.ir && controllerRef.current) {
       void controllerRef.current.previewIr(result.ir).catch(() => undefined)
     }
@@ -154,6 +166,7 @@ export default function ChartEditor() {
           sourceRef.current = s.source
           setSourceState(s.source)
           setScriptName(s.name)
+          setCurrentVersionId(s.current_version_id)
           setDirty(false)
           compileAndPreview(s.source)
           return
@@ -210,14 +223,16 @@ export default function ChartEditor() {
     setSaving(true)
     try {
       if (scriptId) {
-        await updateScript(scriptId, { name, source: src })
+        const updated = await updateScript(scriptId, { name, source: src })
         savedSourceRef.current = src
         setDirty(false)
+        if (updated) setCurrentVersionId(updated.current_version_id)
       } else {
         const created = await createScript({ name, source: src })
         if (created) {
           savedSourceRef.current = src
           setScriptName(created.name)
+          setCurrentVersionId(created.current_version_id)
           setDirty(false)
           navigate(`/charts/editor/${created.id}`)
         }
@@ -249,10 +264,28 @@ export default function ChartEditor() {
     setShowLibrary(false)
     savedSourceRef.current = ''
     setScriptName('')
+    setCurrentVersionId(null)
     setSource(SAMPLE)
     navigate('/charts/editor')
     compileAndPreview(SAMPLE)
   }, [setSource, navigate, compileAndPreview])
+
+  const handleCreateAlert = useCallback(
+    async ({ conditionId, triggerMode }: { conditionId: string; triggerMode: string }) => {
+      if (!currentVersionId) {
+        throw new Error('Save the script first.')
+      }
+      await createAlert({
+        script_version_id: currentVersionId,
+        symbol: active.symbol,
+        exchange: active.exchange,
+        timeframe: interval,
+        condition_id: conditionId,
+        trigger_mode: triggerMode,
+      })
+    },
+    [currentVersionId, active, interval]
+  )
 
   const errorCount = diagnostics.filter((d) => d.severity === 'error').length
 
@@ -319,6 +352,15 @@ export default function ChartEditor() {
           className="h-8 rounded bg-card px-3 text-sm font-medium hover:bg-accent"
         >
           New
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowAlerts(true)}
+          disabled={alertConditions.length === 0}
+          title={alertConditions.length === 0 ? 'Add an alertcondition() to enable alerts' : 'Create alerts'}
+          className="h-8 rounded bg-card px-3 text-sm font-medium hover:bg-accent disabled:opacity-40"
+        >
+          🔔 Alerts{alertConditions.length ? ` (${alertConditions.length})` : ''}
         </button>
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -416,6 +458,17 @@ export default function ChartEditor() {
           )}
         </div>
       </div>
+
+      <CreateAlertDialog
+        open={showAlerts}
+        symbol={active.symbol}
+        exchange={active.exchange}
+        timeframe={interval}
+        conditions={alertConditions}
+        canCreate={!!currentVersionId && !dirty}
+        onCreate={handleCreateAlert}
+        onClose={() => setShowAlerts(false)}
+      />
     </div>
   )
 }
