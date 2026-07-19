@@ -410,6 +410,10 @@ class IRGenerator:
             self._outputs.append(self._hline_output(call))
         elif fn in ("plotshape", "plotchar"):
             self._outputs.append(self._marker_output(fn, call))
+        elif fn in ("plotcandle", "plotbar"):
+            out = self._candle_output(fn, call)
+            if out is not None:
+                self._outputs.append(out)
         elif fn in ("barcolor", "bgcolor"):
             self._outputs.append(self._tint_output(fn, call))
         elif fn == "alertcondition":
@@ -490,6 +494,28 @@ class IRGenerator:
             size = self._const_arg(call, None, "size")
             if isinstance(size, str):
                 out["size"] = size
+        return out
+
+    def _candle_output(self, fn: str, call: ast.CallExpr) -> dict | None:
+        """plotcandle/plotbar(open, high, low, close[, title][, color=...])."""
+        positionals = [a for a in call.args if a.name is None]
+        if len(positionals) < 4:
+            return None
+        color = self._const_arg(call, None, "color")
+        up_color = color if isinstance(color, str) else "#26a69a"
+        down_color = color if isinstance(color, str) else "#ef5350"
+        out: dict = {
+            "kind": "plotcandle",
+            "openNodeId": self._lower_expr(positionals[0].value),
+            "highNodeId": self._lower_expr(positionals[1].value),
+            "lowNodeId": self._lower_expr(positionals[2].value),
+            "closeNodeId": self._lower_expr(positionals[3].value),
+            "title": self._title(call, 4),
+            "upColor": up_color,
+            "downColor": down_color,
+        }
+        if fn == "plotbar":
+            out["bar"] = True
         return out
 
     def _tint_output(self, fn: str, call: ast.CallExpr) -> dict:

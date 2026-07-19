@@ -173,7 +173,18 @@ MATH_FUNCTIONS: dict[str, dict] = {
 SPECIAL_FUNCTIONS = frozenset({"nz"})
 INPUT_FUNCTIONS = frozenset({"int", "float", "bool", "string", "source"})
 OUTPUT_FUNCTIONS = frozenset(
-    {"plot", "hline", "fill", "plotshape", "plotchar", "barcolor", "bgcolor", "alertcondition"}
+    {
+        "plot",
+        "hline",
+        "fill",
+        "plotshape",
+        "plotchar",
+        "plotcandle",
+        "plotbar",
+        "barcolor",
+        "bgcolor",
+        "alertcondition",
+    }
 )
 
 CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {

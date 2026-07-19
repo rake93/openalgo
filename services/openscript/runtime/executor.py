@@ -328,6 +328,23 @@ def _collect_outputs(ir, values, n) -> list[dict]:
             outputs.append(
                 {"kind": kind, "id": oid, "title": o.get("title", ""), "bars": bars, "colors": colors}
             )
+        elif kind == "plotcandle":
+            style = {"upColor": o.get("upColor", ""), "downColor": o.get("downColor", "")}
+            if o.get("bar"):
+                style["bar"] = True
+            outputs.append(
+                {
+                    "kind": "candle",
+                    "id": oid,
+                    "title": o.get("title", ""),
+                    "pane": pane,
+                    "open": _as_series(values[o["openNodeId"]], n),
+                    "high": _as_series(values[o["highNodeId"]], n),
+                    "low": _as_series(values[o["lowNodeId"]], n),
+                    "close": _as_series(values[o["closeNodeId"]], n),
+                    "style": style,
+                }
+            )
         elif kind == "alertcondition":
             cond = _as_series(values[o["condNodeId"]], n)
             fired = [i for i in range(n) if _truthy_scalar(cond[i])]

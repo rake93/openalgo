@@ -234,6 +234,27 @@ def test_marker_na_color_hides_marker(dataset):
     assert o["bars"] == expected
 
 
+# ── P1.4 plotcandle / plotbar ──────────────────────────────────────────────
+
+
+def test_plotcandle_emits_candle_output(dataset):
+    out = _run('plotcandle(open, high, low, close, "PC")', dataset)
+    o = out[0]
+    assert o["kind"] == "candle"
+    _close(o["open"], dataset["open"])
+    _close(o["high"], dataset["high"])
+    _close(o["low"], dataset["low"])
+    _close(o["close"], dataset["close"])
+    assert o["title"] == "PC"
+    assert not o["style"].get("bar")
+
+
+def test_plotbar_sets_bar_flag(dataset):
+    out = _run('plotbar(open, high, low, close, "PB")', dataset)
+    assert out[0]["kind"] == "candle"
+    assert out[0]["style"]["bar"] is True
+
+
 # ── P1.2 fill() with plot handles ──────────────────────────────────────────
 
 
