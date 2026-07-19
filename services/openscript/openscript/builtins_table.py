@@ -201,7 +201,7 @@ MATH_FUNCTIONS: dict[str, dict] = {
 }
 
 SPECIAL_FUNCTIONS = frozenset({"nz", "na"})
-INPUT_FUNCTIONS = frozenset({"int", "float", "bool", "string", "source"})
+INPUT_FUNCTIONS = frozenset({"int", "float", "bool", "string", "source", "color", "timeframe"})
 OUTPUT_FUNCTIONS = frozenset(
     {
         "plot",

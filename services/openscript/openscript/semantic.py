@@ -42,6 +42,10 @@ class Analyzer:
         self._alert_titles: set[str] = set()
         # Names bound to `p = plot(...)` — usable only as fill() args (OS2012).
         self._plot_handles: set[str] = set()
+        # Names bound to `input.color(...)` — usable only as a `color=` argument (OS2017).
+        self._color_inputs: set[str] = set()
+        # True while visiting the direct value of a `color=` named argument.
+        self._in_color_arg_position = False
         # Scan state per `:=` target: decl seen (const-init) / reassign visited.
         self._scan_vars: dict[str, dict] = {}
         # The scan var whose Reassign RHS we are currently inside.
@@ -85,6 +89,8 @@ class Analyzer:
             self._declare_var(stmt.name, stmt.name_span)
             if _is_plot_call(stmt.value):
                 self._plot_handles.add(stmt.name)
+            if _is_input_color_call(stmt.value):
+                self._color_inputs.add(stmt.name)
             scan = self._scan_vars.get(stmt.name)
             if scan is not None:
                 if not top_level:
@@ -150,6 +156,9 @@ class Analyzer:
             if e.name in self._plot_handles:
                 self._error("OS2012", e.span, e.name)
                 return
+            if e.name in self._color_inputs and not self._in_color_arg_position:
+                self._error("OS2017", e.span, e.name)
+                return
             scan = self._scan_vars.get(e.name)
             if scan is not None and not scan["reassigned"]:
                 if self._current_scan_var == e.name:
@@ -194,6 +203,11 @@ class Analyzer:
             self._visit_block(e.then)
             if e.else_:
                 self._visit_block(e.else_)
+        elif kind == "ArrayLiteral":
+            # Only ever reachable as input.string's `options=` value
+            # (parser-gated); fully validated by _check_string_options when
+            # the enclosing call is visited.
+            return
 
     def _visit_member_value(self, ns: str, prop: str, span: Span) -> None:
         members = CONSTANT_NAMESPACES.get(ns)
@@ -223,9 +237,15 @@ class Analyzer:
         if windowed:
             self._windowed_call_depth += 1
         for arg in call.args:
-            self._visit_expr(arg.value, top_level)
+            self._visit_arg(arg, top_level)
         if windowed:
             self._windowed_call_depth -= 1
+
+    def _visit_arg(self, arg: ast.Argument, top_level: bool) -> None:
+        prev = self._in_color_arg_position
+        self._in_color_arg_position = arg.name == "color" and arg.value.type == "Identifier"
+        self._visit_expr(arg.value, top_level)
+        self._in_color_arg_position = prev
 
     def _visit_fill_args(self, call: ast.CallExpr, top_level: bool) -> None:
         """fill(p1, p2, ...) — the first two positional args must be plot
@@ -238,7 +258,7 @@ class Analyzer:
                 if v.type != "Identifier" or v.name not in self._plot_handles:
                     self._error("OS2012", v.span)
                 continue
-            self._visit_expr(arg.value, top_level)
+            self._visit_arg(arg, top_level)
         if positional_seen < 2:
             self._error("OS2012", call.span)
 
@@ -262,6 +282,8 @@ class Analyzer:
             if not top_level:
                 self._error("OS2005", call.span)
             self._register_title(call, self._input_titles, "OS2014")
+            if fn == "string":
+                self._check_string_options(call)
         elif ns in ("color", "shape", "location", "size", "plot"):
             return  # calling a constant-namespace member (e.g. color.new) — allowed
         else:
@@ -312,6 +334,30 @@ class Analyzer:
             expected = spec["outputs"] if spec else "?"
             self._error("OS2004", span, f"expected {expected} names, got {count}")
 
+    def _check_string_options(self, call: ast.CallExpr) -> None:
+        """`input.string(default, ..., options=[...])` (P4.4): every options
+        element must be a string literal (else OS2004), and when they all
+        are, `default` (the first argument) must be one of them (else
+        OS2004). Reuses OS2004 ('Type mismatch') rather than allocating a
+        new code — both are "argument doesn't match the expected shape"
+        cases."""
+        options_arg = next((a for a in call.args if a.name == "options"), None)
+        if options_arg is None or options_arg.value.type != "ArrayLiteral":
+            return
+        strings: list[str] = []
+        all_strings = True
+        for el in options_arg.value.elements:
+            if el.type == "String":
+                strings.append(el.value)
+            else:
+                all_strings = False
+                self._error("OS2004", el.span, "input.string options elements must be string literals")
+        if not all_strings:
+            return
+        default_arg = call.args[0] if call.args else None
+        if default_arg is not None and default_arg.value.type == "String" and default_arg.value.value not in strings:
+            self._error("OS2004", default_arg.span, "input.string default must be one of its declared options")
+
     def _register_title(self, call: ast.CallExpr, seen: set[str], code: str) -> None:
         title = _title_of(call)
         if title is None:
@@ -334,6 +380,16 @@ def _is_plot_call(e: ast.Expr) -> bool:
         e.type == "Call"
         and getattr(e.callee, "type", None) == "Identifier"
         and e.callee.name == "plot"
+    )
+
+
+def _is_input_color_call(e: ast.Expr) -> bool:
+    return (
+        e.type == "Call"
+        and e.callee.type == "Member"
+        and getattr(e.callee.object, "type", None) == "Identifier"
+        and e.callee.object.name == "input"
+        and e.callee.property == "color"
     )
 
 

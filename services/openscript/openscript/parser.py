@@ -34,6 +34,17 @@ def _to_number(text: str) -> float:
         return math.nan
 
 
+def _is_input_string_callee(e: ast.Expr) -> bool:
+    """True for the callee expression `input.string` — the one grammar
+    position that permits an array literal (its `options=` argument)."""
+    return (
+        e.type == "Member"
+        and getattr(e.object, "type", None) == "Identifier"
+        and e.object.name == "input"
+        and e.property == "string"
+    )
+
+
 class Parser:
     def __init__(self, tokens: list[Token], diagnostics: list[Diagnostic]):
         self._tokens = tokens
@@ -352,7 +363,7 @@ class Parser:
                 )
             elif self._check("lparen"):
                 self._advance()
-                args = self._parse_args()
+                args = self._parse_args(_is_input_string_callee(e))
                 self._expect("rparen", "OS1003")
                 e = ast.CallExpr(callee=e, args=args, span=self._span_from(start, self._prev()))
             elif self._check("lbracket"):
@@ -364,7 +375,12 @@ class Parser:
                 break
         return e
 
-    def _parse_args(self) -> list[ast.Argument]:
+    def _parse_args(self, allow_array_options: bool = False) -> list[ast.Argument]:
+        """`allow_array_options` is true only when the callee is exactly
+        `input.string` (P4.4) — it permits an array literal, but ONLY as the
+        value of the `options=` named argument. Every other position still
+        rejects `[` via `_parse_primary` (OS1011), including `options=` on
+        any other function."""
         args: list[ast.Argument] = []
         if self._check("rparen"):
             return args
@@ -377,13 +393,28 @@ class Parser:
                 name_span = self._current().span
                 self._advance()  # name
                 self._advance()  # '='
-            value = self.parse_expression()
+            if allow_array_options and name == "options" and self._check("lbracket"):
+                value = self._parse_array_literal()
+            else:
+                value = self.parse_expression()
             args.append(
                 ast.Argument(value=value, span=self._span_tok(start, self._prev()), name=name, name_span=name_span)
             )
             if not self._match("comma"):
                 break
         return args
+
+    def _parse_array_literal(self) -> ast.Expr:
+        """`[expr, expr, ...]` — only reachable from the gated `options=` position."""
+        lb = self._advance()  # '['
+        elements: list[ast.Expr] = []
+        if not self._check("rbracket"):
+            while True:
+                elements.append(self.parse_expression())
+                if not self._match("comma"):
+                    break
+        rb = self._expect("rbracket", "OS1003")
+        return ast.ArrayLiteralExpr(elements=elements, span=self._span_tok(lb, rb))
 
     def _parse_primary(self) -> ast.Expr:
         t = self._current()
@@ -468,6 +499,8 @@ def _count_expr(e: ast.Expr) -> int:
         return 1 + _count_expr(e.cond) + _count_expr(e.then) + _count_expr(e.else_)
     if kind == "If":
         return 1 + _count_expr(e.cond) + _count_block(e.then) + (_count_block(e.else_) if e.else_ else 0)
+    if kind == "ArrayLiteral":
+        return 1 + sum(_count_expr(el) for el in e.elements)
     return 1
 
 

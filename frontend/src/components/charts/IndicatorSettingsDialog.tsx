@@ -13,6 +13,7 @@
  */
 
 import type { IndicatorManifestEntry } from '@openalgo/openscript'
+import { Info } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { ColorPicker } from '@/components/charts/ColorPicker'
 import { DualRange } from '@/components/charts/DualRange'
@@ -36,6 +37,7 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type {
   IndicatorInstance,
   OutputStyleOverride,
@@ -48,6 +50,59 @@ import { DEFAULT_TF_VISIBILITY } from '@/lib/charts/indicator-host'
 const SOURCES = ['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4', 'hlcc4']
 const STYLABLE = new Set(['line', 'hline', 'histogram', 'fill'])
 const DEFAULT_COLOR = '#2196f3'
+/** Common OpenAlgo interval strings offered by `input.timeframe`'s select. */
+const COMMON_TIMEFRAMES = ['1', '3', '5', '15', '30', '60', '120', '240', 'D', 'W', 'M']
+
+/** Info affordance for `input.tooltip` — renders nothing when unset. */
+function InputTooltip({ text }: { text?: string }) {
+  if (!text) return null
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Info className="h-3.5 w-3.5 shrink-0 cursor-help text-muted-foreground" />
+      </TooltipTrigger>
+      <TooltipContent>{text}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+type InputDef = IndicatorManifestEntry['inputs'][number]
+
+/** One rendered row: inputs sharing an `inline` key render side by side. */
+interface InputRow {
+  rowKey: string
+  inputs: InputDef[]
+}
+
+/** One rendered section: inputs sharing a `group` render under one header, in
+ *  declaration order; ungrouped inputs each get their own headerless section. */
+interface InputSection {
+  group?: string
+  rows: InputRow[]
+}
+
+/** Bucket inputs into group sections, then inline rows within each section —
+ *  both in first-seen declaration order (P4.4). */
+function groupInputs(inputs: readonly InputDef[]): InputSection[] {
+  const sections: InputSection[] = []
+  const sectionByGroup = new Map<string, InputSection>()
+  for (const input of inputs) {
+    let section = input.group ? sectionByGroup.get(input.group) : undefined
+    if (!section) {
+      section = { group: input.group, rows: [] }
+      sections.push(section)
+      if (input.group) sectionByGroup.set(input.group, section)
+    }
+    const rowKey = input.inline ?? input.id
+    const row = input.inline ? section.rows.find((r) => r.rowKey === rowKey) : undefined
+    if (row) {
+      row.inputs.push(input)
+    } else {
+      section.rows.push({ rowKey, inputs: [input] })
+    }
+  }
+  return sections
+}
 
 /** Split a stored color input value into a hex color + 0..1 opacity for the picker. */
 function splitColor(value: string): { color: string; opacity: number } {
@@ -199,6 +254,166 @@ export function IndicatorSettingsDialog({
 
   const setInput = (id: string, value: unknown) => setValues((v) => ({ ...v, [id]: value }))
 
+  /** The bare control for one input (no label) — `compact` sizes it for an
+   *  inline row shared with other inputs. */
+  const renderControl = (input: InputDef, compact = false) => {
+    const value = values[input.id] ?? input.defaultValue
+    switch (input.type) {
+      case 'integer':
+      case 'float':
+        return (
+          <Input
+            id={`ind-${input.id}`}
+            type="number"
+            value={String(value)}
+            min={input.min}
+            max={input.max}
+            step={input.step ?? (input.type === 'integer' ? 1 : 0.1)}
+            onChange={(e) =>
+              setInput(
+                input.id,
+                input.type === 'integer'
+                  ? Math.round(Number(e.target.value))
+                  : Number(e.target.value)
+              )
+            }
+            className={compact ? 'h-8 w-20' : 'h-8'}
+          />
+        )
+      case 'bool':
+        return (
+          <Switch
+            id={`ind-${input.id}`}
+            checked={Boolean(value)}
+            onCheckedChange={(checked) => setInput(input.id, checked)}
+          />
+        )
+      case 'enum':
+      case 'source': {
+        const options = input.type === 'enum' ? input.options : SOURCES
+        return (
+          <Select value={String(value)} onValueChange={(v) => setInput(input.id, v)}>
+            <SelectTrigger className={compact ? 'h-8 w-28' : 'h-8'}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {options.map((o) => (
+                <SelectItem key={o} value={o}>
+                  {o}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )
+      }
+      case 'string': {
+        // input.string(options=[...]) renders a select; a bare input.string
+        // (no options) falls back to free text.
+        if (input.options && input.options.length > 0) {
+          const options = input.options
+          return (
+            <Select value={String(value)} onValueChange={(v) => setInput(input.id, v)}>
+              <SelectTrigger className={compact ? 'h-8 w-28' : 'h-8'}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {options.map((o) => (
+                  <SelectItem key={o} value={o}>
+                    {o}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )
+        }
+        return (
+          <Input
+            id={`ind-${input.id}`}
+            type="text"
+            value={String(value)}
+            onChange={(e) => setInput(input.id, e.target.value)}
+            className={compact ? 'h-8 w-28' : 'h-8'}
+          />
+        )
+      }
+      case 'timeframe': {
+        // A select of common intervals; the current value is appended when
+        // it isn't one of the presets so a saved custom timeframe is never lost.
+        const current = String(value)
+        const options = COMMON_TIMEFRAMES.includes(current)
+          ? COMMON_TIMEFRAMES
+          : [current, ...COMMON_TIMEFRAMES]
+        return (
+          <Select value={current} onValueChange={(v) => setInput(input.id, v)}>
+            <SelectTrigger className={compact ? 'h-8 w-20' : 'h-8'}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {options.map((o) => (
+                <SelectItem key={o} value={o}>
+                  {o}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )
+      }
+      case 'color': {
+        const c = splitColor(String(value))
+        return (
+          <ColorPicker
+            color={c.color}
+            opacity={c.opacity}
+            onChange={(color, opacity) => setInput(input.id, joinColor(color, opacity))}
+          />
+        )
+      }
+      default:
+        return null
+    }
+  }
+
+  /** One row: a single input (label | control), or several `inline`-sharing
+   *  inputs laid out side by side. */
+  const renderInputRow = (row: InputRow) => {
+    if (row.inputs.length === 1) {
+      const input = row.inputs[0] as InputDef
+      const label = (
+        <span className="flex items-center gap-1.5">
+          <Label htmlFor={`ind-${input.id}`}>{input.label}</Label>
+          <InputTooltip text={input.tooltip} />
+        </span>
+      )
+      if (input.type === 'bool') {
+        return (
+          <div key={row.rowKey} className="flex items-center justify-between">
+            {label}
+            {renderControl(input)}
+          </div>
+        )
+      }
+      return (
+        <div key={row.rowKey} className="grid grid-cols-2 items-center gap-2">
+          {label}
+          {renderControl(input)}
+        </div>
+      )
+    }
+    return (
+      <div key={row.rowKey} className="flex flex-wrap items-center gap-3">
+        {row.inputs.map((input) => (
+          <div key={input.id} className="flex items-center gap-1.5">
+            <span className="flex items-center gap-1 text-sm text-muted-foreground">
+              {input.label}
+              <InputTooltip text={input.tooltip} />
+            </span>
+            {renderControl(input, true)}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   const patch = (outputId: string, p: OutputStyleOverride) =>
     setOverrides((o) => ({ ...o, [outputId]: { ...o[outputId], ...p } }))
 
@@ -243,86 +458,21 @@ export function IndicatorSettingsDialog({
               {entry.inputs.length === 0 && (
                 <p className="text-sm text-muted-foreground">This indicator has no inputs.</p>
               )}
-              {entry.inputs.map((input) => {
-                const value = values[input.id] ?? input.defaultValue
-                switch (input.type) {
-                  case 'integer':
-                  case 'float':
-                    return (
-                      <div key={input.id} className="grid grid-cols-2 items-center gap-2">
-                        <Label htmlFor={`ind-${input.id}`}>{input.label}</Label>
-                        <Input
-                          id={`ind-${input.id}`}
-                          type="number"
-                          value={String(value)}
-                          min={input.min}
-                          max={input.max}
-                          step={input.step ?? (input.type === 'integer' ? 1 : 0.1)}
-                          onChange={(e) =>
-                            setInput(
-                              input.id,
-                              input.type === 'integer'
-                                ? Math.round(Number(e.target.value))
-                                : Number(e.target.value)
-                            )
-                          }
-                          className="h-8"
-                        />
-                      </div>
-                    )
-                  case 'bool':
-                    return (
-                      <div key={input.id} className="flex items-center justify-between">
-                        <Label htmlFor={`ind-${input.id}`}>{input.label}</Label>
-                        <Switch
-                          id={`ind-${input.id}`}
-                          checked={Boolean(value)}
-                          onCheckedChange={(checked) => setInput(input.id, checked)}
-                        />
-                      </div>
-                    )
-                  case 'enum':
-                  case 'source': {
-                    const options = input.type === 'enum' ? input.options : SOURCES
-                    return (
-                      <div key={input.id} className="grid grid-cols-2 items-center gap-2">
-                        <Label>{input.label}</Label>
-                        <Select value={String(value)} onValueChange={(v) => setInput(input.id, v)}>
-                          <SelectTrigger className="h-8">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {options.map((o) => (
-                              <SelectItem key={o} value={o}>
-                                {o}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    )
-                  }
-                  case 'color': {
-                    const c = splitColor(String(value))
-                    return (
-                      <div key={input.id} className="grid grid-cols-2 items-center gap-2">
-                        <Label>{input.label}</Label>
-                        <div>
-                          <ColorPicker
-                            color={c.color}
-                            opacity={c.opacity}
-                            onChange={(color, opacity) =>
-                              setInput(input.id, joinColor(color, opacity))
-                            }
-                          />
-                        </div>
-                      </div>
-                    )
-                  }
-                  default:
-                    return null
-                }
-              })}
+              {groupInputs(entry.inputs).map((section, i) =>
+                section.group ? (
+                  <div key={section.group} className="grid gap-2">
+                    <div className="pt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {section.group}
+                    </div>
+                    {section.rows.map((row) => renderInputRow(row))}
+                  </div>
+                ) : (
+                  // Ungrouped inputs render directly into the outer grid (no header).
+                  <div key={`ungrouped-${i}`} className="contents">
+                    {section.rows.map((row) => renderInputRow(row))}
+                  </div>
+                )
+              )}
             </div>
           </TabsContent>
 

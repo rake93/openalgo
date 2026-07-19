@@ -352,18 +352,28 @@ def _as_series(v, n) -> np.ndarray:
     return v if _is_series(v) else np.full(n, float(v))
 
 
-def _plot_output(o, series, oid, pane) -> dict:
+def _input_color(inputs: dict, color_input_id, base: str) -> str:
+    """Substitute a runtime `input.color` override for a baked-in default hex;
+    falls back to `base` when no colorInputId is set or no override exists."""
+    if color_input_id is None:
+        return base
+    v = inputs.get(color_input_id)
+    return v if isinstance(v, str) and v else base
+
+
+def _plot_output(o, series, oid, pane, inputs: dict) -> dict:
     """Mirror the TS collect-outputs plot lowering: bar-style variants become
     histogram outputs (base 0); stepline/area/circles/cross become line-style
     flags. Kind parity with the browser is pinned by tests."""
     style_in = o.get("style", {})
+    color = _input_color(inputs, style_in.get("colorInputId"), style_in.get("color", ""))
     variant = style_in.get("variant")
     if variant in ("histogram", "columns"):
-        style = {"color": style_in.get("color", ""), "base": 0}
+        style = {"color": color, "base": 0}
         if variant == "columns":
             style["column"] = True
         return {"kind": "histogram", "id": oid, "title": o["title"], "pane": pane, "values": series, "style": style}
-    style = {"color": style_in.get("color", ""), "lineWidth": style_in.get("lineWidth", 1)}
+    style = {"color": color, "lineWidth": style_in.get("lineWidth", 1)}
     if style_in.get("lineStyle"):
         style["lineStyle"] = style_in["lineStyle"]
     if variant == "stepline":
@@ -391,7 +401,7 @@ def _dynamic_colors(color_node_id, values, n, ir) -> list[str] | None:
     return colors
 
 
-def _split_plot_by_palette(o, values, n, idx, pane, ir) -> list[dict]:
+def _split_plot_by_palette(o, values, n, idx, pane, ir, inputs: dict) -> list[dict]:
     """Mirror of the TS splitPlotByPalette: one masked output per palette
     color; line variants keep a 1-bar connector so segments join."""
     palette = ir.get("palette", [])
@@ -415,12 +425,12 @@ def _split_plot_by_palette(o, values, n, idx, pane, ir) -> list[dict]:
         sub_style = {key: v for key, v in o["style"].items() if key != "colorNodeId"}
         sub_style["color"] = hex_color
         sub = {**o, "style": sub_style}
-        built = _plot_output(sub, masked, f"out_{idx}_c{k}", pane)
+        built = _plot_output(sub, masked, f"out_{idx}_c{k}", pane, inputs)
         outputs.append(built)
     return outputs
 
 
-def _collect_outputs(ir, values, n) -> list[dict]:
+def _collect_outputs(ir, values, n, inputs: dict) -> list[dict]:
     overlay = ir["declaration"].get("overlay", False)
     pane = "overlay" if overlay else 1
     outputs: list[dict] = []
@@ -428,9 +438,9 @@ def _collect_outputs(ir, values, n) -> list[dict]:
         kind = o["kind"]
         oid = f"out_{idx}"
         if kind == "plot" and o.get("style", {}).get("colorNodeId") is not None:
-            outputs.extend(_split_plot_by_palette(o, values, n, idx, pane, ir))
+            outputs.extend(_split_plot_by_palette(o, values, n, idx, pane, ir, inputs))
         elif kind == "plot":
-            outputs.append(_plot_output(o, _as_series(values[o["nodeId"]], n), oid, pane))
+            outputs.append(_plot_output(o, _as_series(values[o["nodeId"]], n), oid, pane, inputs))
         elif kind == "hline":
             outputs.append({"kind": "hline", "id": oid, "title": o["title"], "pane": pane, "price": o["price"]})
         elif kind == "fill":
@@ -447,7 +457,7 @@ def _collect_outputs(ir, values, n) -> list[dict]:
                         "bottomId": f"out_{o['bottomPlotIndex']}",
                         "top": _as_series(values[top["nodeId"]], n),
                         "bottom": _as_series(values[bottom["nodeId"]], n),
-                        "style": {"color": o.get("color", "")},
+                        "style": {"color": _input_color(inputs, o.get("colorInputId"), o.get("color", ""))},
                     }
                 )
         elif kind in ("plotshape", "plotchar"):
@@ -463,7 +473,7 @@ def _collect_outputs(ir, values, n) -> list[dict]:
         elif kind in ("barcolor", "bgcolor"):
             cond = _as_series(values[o["condNodeId"]], n)
             per_bar = _dynamic_colors(o.get("colorNodeId"), values, n, ir)
-            static = o.get("color", "")
+            static = _input_color(inputs, o.get("colorInputId"), o.get("color", ""))
             colors = [
                 (per_bar[i] if per_bar is not None else static) if _truthy_scalar(cond[i]) else ""
                 for i in range(n)
@@ -473,7 +483,10 @@ def _collect_outputs(ir, values, n) -> list[dict]:
                 {"kind": kind, "id": oid, "title": o.get("title", ""), "bars": bars, "colors": colors}
             )
         elif kind == "plotcandle":
-            style = {"upColor": o.get("upColor", ""), "downColor": o.get("downColor", "")}
+            style = {
+                "upColor": _input_color(inputs, o.get("colorInputId"), o.get("upColor", "")),
+                "downColor": _input_color(inputs, o.get("colorInputId"), o.get("downColor", "")),
+            }
             if o.get("bar"):
                 style["bar"] = True
             outputs.append(
@@ -515,4 +528,4 @@ def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None)
         if budget is not None:
             budget.step()
         values[node["id"]] = _eval_node(node, values, dataset, inputs, decls, n, ta_cache)
-    return _collect_outputs(ir, values, n)
+    return _collect_outputs(ir, values, n, inputs)

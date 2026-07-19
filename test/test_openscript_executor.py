@@ -234,6 +234,44 @@ def test_marker_na_color_hides_marker(dataset):
     assert o["bars"] == expected
 
 
+# ── P4.4 input.color runtime substitution ──────────────────────────────────
+
+
+def test_plot_uses_color_input_default(dataset):
+    out = _run('c = input.color(color.red, "C")\nplot(close, color=c)', dataset)
+    assert out[0]["style"]["color"] == "#ef5350"
+
+
+def test_plot_runtime_input_overrides_baked_color(dataset):
+    out = _run('c = input.color(color.red, "C")\nplot(close, color=c)', dataset, {"c": "#00ff00"})
+    assert out[0]["style"]["color"] == "#00ff00"
+
+
+def test_bgcolor_honors_color_input_override(dataset):
+    out = _run('c = input.color(color.blue, "C")\nbgcolor(volume > 0, color=c)', dataset, {"c": "#123456"})
+    o = out[0]
+    assert o["kind"] == "bgcolor"
+    assert any(c == "#123456" for c in o["colors"])
+    assert all(c in ("", "#123456") for c in o["colors"])
+
+
+def test_plotcandle_color_input_overrides_both_colors(dataset):
+    out = _run(
+        'c = input.color(color.green, "C")\nplotcandle(open, high, low, close, "PC", color=c)',
+        dataset,
+        {"c": "#abcdef"},
+    )
+    o = out[0]
+    assert o["kind"] == "candle"
+    assert o["style"]["upColor"] == "#abcdef"
+    assert o["style"]["downColor"] == "#abcdef"
+
+
+def test_empty_string_override_falls_back_to_default(dataset):
+    out = _run('c = input.color(color.red, "C")\nplot(close, color=c)', dataset, {"c": ""})
+    assert out[0]["style"]["color"] == "#ef5350"
+
+
 # ── P1.4 plotcandle / plotbar ──────────────────────────────────────────────
 
 

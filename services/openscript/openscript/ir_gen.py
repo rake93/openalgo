@@ -45,7 +45,27 @@ STYLE_MAP = {
     "style_linebr": "linebr",
 }
 MATH_CONST = {"pi": math.pi, "e": math.e, "phi": 1.618033988749895, "rphi": 0.6180339887498949}
-INPUT_TYPE = {"int": "integer", "float": "float", "bool": "bool", "string": "string", "source": "source"}
+INPUT_TYPE = {
+    "int": "integer", "float": "float", "bool": "bool", "string": "string", "source": "source",
+    "color": "color", "timeframe": "timeframe",
+}
+
+_HEX_BODY_LENGTHS = {3, 4, 6, 8}
+
+
+def _is_well_formed_hex(s: str) -> bool:
+    if not s.startswith("#"):
+        return False
+    body = s[1:]
+    return len(body) in _HEX_BODY_LENGTHS and all(ch in "0123456789abcdefABCDEF" for ch in body)
+
+
+def _normalize_hex(hex_color: str) -> str:
+    """Expand a 3/4-digit hex color to its 6/8-digit form; 6/8-digit pass through."""
+    h = hex_color[1:]
+    if len(h) in (3, 4):
+        h = "".join(ch * 2 for ch in h)
+    return f"#{h}"
 
 
 def _slug(s: str) -> str:
@@ -98,9 +118,7 @@ def _resolve_const(e: ast.Expr):
 
 def _with_transparency(hex_color: str, transp: float) -> str:
     """Expand a 3/4/6/8-digit hex color to #RRGGBBAA with Pine transparency."""
-    h = hex_color[1:]
-    if len(h) in (3, 4):
-        h = "".join(ch * 2 for ch in h)
+    h = _normalize_hex(hex_color)[1:]
     base_alpha = int(h[6:8], 16) / 255 if len(h) == 8 else 1.0
     clamped = min(100.0, max(0.0, transp))
     # int(x + 0.5) = JS Math.round (Python round() is banker's rounding).
@@ -282,6 +300,10 @@ class IRGenerator:
             el = self._lower_expr(e.else_)
             w = max(self._warmups[c], self._warmups[t], self._warmups[el])
             return self._emit({"op": "select", "cond": c, "then": t, "else": el}, e.span, w)
+        if kind == "ArrayLiteral":
+            # Only ever reachable as input.string's `options=` value, which
+            # `_lower_input` extracts directly — never lowered as a generic expr.
+            return self._na_node(e.span)
         # If
         c = self._lower_expr(e.cond)
         t = self._lower_block_value(e.then.statements, e.span)
@@ -420,8 +442,25 @@ class IRGenerator:
             decl["defaultValue"] = default is True
         elif type_ == "string":
             decl["defaultValue"] = default if isinstance(default, str) else ""
+            options_arg = next((a for a in call.args if a.name == "options"), None)
+            if options_arg is not None and options_arg.value.type == "ArrayLiteral":
+                # Semantic (OS2004) already guaranteed every element is a string literal.
+                options = [el.value for el in options_arg.value.elements if el.type == "String"]
+                if options:
+                    decl["options"] = options
+        elif type_ == "color":
+            decl["defaultValue"] = (
+                _normalize_hex(default) if isinstance(default, str) and _is_well_formed_hex(default) else "#000000"
+            )
+        elif type_ == "timeframe":
+            decl["defaultValue"] = default if isinstance(default, str) and default else "1"
         else:  # source
             decl["defaultValue"] = default if isinstance(default, str) else "close"
+
+        for key, field in (("group", "group"), ("tooltip", "tooltip"), ("inline", "inline")):
+            v = self._const_arg(call, None, key)
+            if isinstance(v, str):
+                decl[field] = v
 
         if not any(d["id"] == input_id for d in self._inputs):
             self._inputs.append(decl)
@@ -457,13 +496,17 @@ class IRGenerator:
         bottom = self._handle_index(positionals[1]) if len(positionals) > 1 else None
         if top is None or bottom is None:
             return None  # invalid handles — diagnostics already emitted
-        return {
+        color, color_input_id = self._color_with_input(call, "#2962ff33")
+        out: dict = {
             "kind": "fill",
             "topPlotIndex": top,
             "bottomPlotIndex": bottom,
-            "color": self._color(call, "#2962ff33"),
+            "color": color,
             "title": self._title(call, None),
         }
+        if color_input_id is not None:
+            out["colorInputId"] = color_input_id
+        return out
 
     def _handle_index(self, arg) -> int | None:
         if getattr(arg.value, "type", None) != "Identifier":
@@ -472,10 +515,12 @@ class IRGenerator:
 
     def _plot_output(self, call: ast.CallExpr) -> dict:
         node_id = self._lower_expr(call.args[0].value)
-        color, color_node = self._color_spec(call, "#2962ff")
+        color, color_node, color_input_id = self._color_spec(call, "#2962ff")
         style: dict = {"color": color}
         if color_node is not None:
             style["colorNodeId"] = color_node
+        if color_input_id is not None:
+            style["colorInputId"] = color_input_id
         lw = self._const_arg(call, None, "linewidth")
         if isinstance(lw, (int, float)) and not isinstance(lw, bool):
             style["lineWidth"] = lw
@@ -486,17 +531,21 @@ class IRGenerator:
 
     def _hline_output(self, call: ast.CallExpr) -> dict:
         price = _resolve_const(call.args[0].value) if call.args else None
+        color, color_input_id = self._color_with_input(call, "#787b86")
+        style: dict = {"color": color}
+        if color_input_id is not None:
+            style["colorInputId"] = color_input_id
         return {
             "kind": "hline",
             "price": price if isinstance(price, (int, float)) and not isinstance(price, bool) else 0,
             "title": self._title(call, 1),
-            "style": {"color": self._color(call, "#787b86")},
+            "style": style,
         }
 
     def _marker_output(self, fn: str, call: ast.CallExpr) -> dict:
         cond_node = self._lower_expr(call.args[0].value)
         location = self._const_arg(call, None, "location")
-        color, color_node = self._color_spec(call, "#2962ff")
+        color, color_node, color_input_id = self._color_spec(call, "#2962ff")
         out: dict = {
             "kind": fn,
             "condNodeId": cond_node,
@@ -506,6 +555,8 @@ class IRGenerator:
         }
         if color_node is not None:
             out["colorNodeId"] = color_node
+        if color_input_id is not None:
+            out["colorInputId"] = color_input_id
         text = self._const_arg(call, None, "text")
         if fn == "plotchar":
             ch = self._const_arg(call, None, "char")
@@ -527,9 +578,10 @@ class IRGenerator:
         positionals = [a for a in call.args if a.name is None]
         if len(positionals) < 4:
             return None
-        color = self._const_arg(call, None, "color")
-        up_color = color if isinstance(color, str) else "#26a69a"
-        down_color = color if isinstance(color, str) else "#ef5350"
+        color_from_input, color_input_id = self._color_with_input(call, "")
+        color = color_from_input if color_input_id is not None else self._const_arg(call, None, "color")
+        up_color = color if isinstance(color, str) and color else "#26a69a"
+        down_color = color if isinstance(color, str) and color else "#ef5350"
         out: dict = {
             "kind": "plotcandle",
             "openNodeId": self._lower_expr(positionals[0].value),
@@ -542,10 +594,12 @@ class IRGenerator:
         }
         if fn == "plotbar":
             out["bar"] = True
+        if color_input_id is not None:
+            out["colorInputId"] = color_input_id
         return out
 
     def _tint_output(self, fn: str, call: ast.CallExpr) -> dict:
-        color, color_node = self._color_spec(call, "#ff9800")
+        color, color_node, color_input_id = self._color_spec(call, "#ff9800")
         out: dict = {
             "kind": fn,
             "condNodeId": self._lower_expr(call.args[0].value),
@@ -554,6 +608,8 @@ class IRGenerator:
         }
         if color_node is not None:
             out["colorNodeId"] = color_node
+        if color_input_id is not None:
+            out["colorInputId"] = color_input_id
         return out
 
     def _alert_output(self, call: ast.CallExpr) -> dict:
@@ -674,22 +730,54 @@ class IRGenerator:
             self._palette.append(hex_color)
         return self._emit({"op": "const", "value": idx}, span, 0, idx)
 
-    def _color_spec(self, call: ast.CallExpr, fallback: str) -> tuple[str, int | None]:
-        """Resolve a color= argument: (static_color, None) via the const fast
-        path, or (fallback, colorNodeId) for a dynamic palette expression."""
+    def _color_input_id_of(self, expr) -> tuple[str, str] | None:
+        """Detects a `color=` argument that is a bare identifier bound to an
+        `input.color(...)` declaration (P4.4 v1 usage rule — semantic OS2017
+        already rejects every other usage). Returns (input_id, default_hex),
+        or None when the argument isn't a color input."""
+        if expr is None or getattr(expr, "type", None) != "Identifier":
+            return None
+        node_id = self._resolve_var(expr.name)
+        if node_id is None:
+            return None
+        node = self._nodes[node_id]
+        if node.get("op") != "input":
+            return None
+        decl = next((d for d in self._inputs if d["id"] == node["inputId"]), None)
+        if decl is None or decl["type"] != "color":
+            return None
+        return decl["id"], decl["defaultValue"]
+
+    def _color_with_input(self, call: ast.CallExpr, fallback: str) -> tuple[str, str | None]:
+        """color() with input.color detection — used by outputs whose IR
+        shape has no colorNodeId slot (hline, fill, plotcandle): static
+        color (with no colorInputId), or the input's default hex plus its id."""
+        ci = self._color_input_id_of(self._arg_expr(call, None, "color"))
+        if ci is not None:
+            return ci[1], ci[0]
+        return self._color(call, fallback), None
+
+    def _color_spec(self, call: ast.CallExpr, fallback: str) -> tuple[str, int | None, str | None]:
+        """Resolve a color= argument: (input_hex, None, colorInputId) for an
+        input.color binding, (static_color, None, None) via the const fast
+        path, or (fallback, colorNodeId, None) for a dynamic palette
+        expression."""
+        expr = self._arg_expr(call, None, "color")
+        ci = self._color_input_id_of(expr)
+        if ci is not None:
+            return ci[1], None, ci[0]
         v = self._const_arg(call, None, "color")
         if isinstance(v, str):
-            return v, None
-        expr = self._arg_expr(call, None, "color")
+            return v, None, None
         if expr is None:
-            return fallback, None
+            return fallback, None, None
         node_id = self._lower_expr(expr)
         node = self._nodes[node_id]
         if node.get("op") == "const" and isinstance(node.get("value"), (int, float)):
             idx = int(node["value"])
             if 0 <= idx < len(self._palette):
-                return self._palette[idx], None
-        return fallback, node_id
+                return self._palette[idx], None, None
+        return fallback, node_id, None
 
     def _color(self, call: ast.CallExpr, fallback: str) -> str:
         v = self._const_arg(call, None, "color")

@@ -125,6 +125,17 @@ class IfExpr:
     type: ClassVar[str] = "If"
 
 
+@dataclass
+class ArrayLiteralExpr:
+    """`[expr, expr, ...]` — RESERVED everywhere in v1 EXCEPT as the value of
+    the `options=` named argument of `input.string(...)` (the parser only
+    ever constructs this node in that one gated position; see parser.py)."""
+
+    elements: list[Expr]
+    span: Span
+    type: ClassVar[str] = "ArrayLiteral"
+
+
 Expr = (
     NumberLiteral
     | StringLiteral
@@ -139,6 +150,7 @@ Expr = (
     | BinaryExpr
     | TernaryExpr
     | IfExpr
+    | ArrayLiteralExpr
 )
 
 # ── Statements ───────────────────────────────────────────────────────────────
