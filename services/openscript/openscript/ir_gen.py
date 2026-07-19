@@ -108,7 +108,15 @@ def _with_transparency(hex_color: str, transp: float) -> str:
     return f"#{h[:6]}{alpha:02x}"
 
 
+# Price sources only — used to const-fold source *strings* (e.g. an
+# input.source default). Context series are NOT const-foldable sources.
 _SOURCES = frozenset({"open", "high", "low", "close", "volume", "hl2", "hlc3", "ohlc4", "hlcc4"})
+# Time/context series (P-time). Bare identifiers in _SERIES lower to a `source`
+# node; _CONTEXT_IDS resolve from the dataset time column + length at runtime.
+_CONTEXT_IDS = frozenset(
+    {"time", "bar_index", "last_bar_index", "dayofweek", "dayofmonth", "hour", "minute", "month", "year"}
+)
+_SERIES = _SOURCES | _CONTEXT_IDS
 
 
 def _is_input_call(e: ast.Expr) -> bool:
@@ -245,7 +253,7 @@ class IRGenerator:
         if kind == "Na":
             return self._na_node(e.span)
         if kind == "Identifier":
-            if e.name in _SOURCES:
+            if e.name in _SERIES:
                 return self._emit({"op": "source", "source": e.name}, e.span, 0)
             bound = self._resolve_var(e.name)
             return bound if bound is not None else self._na_node(e.span)

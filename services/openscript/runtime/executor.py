@@ -44,6 +44,60 @@ def _resolve_source(dataset: dict, source_id: str) -> np.ndarray:
     return c
 
 
+# Pine time/context series (P-time) — Python port of
+# openalgo-openscript/src/registry/resolve-context.ts. Bit-identical integers.
+_CONTEXT_IDS = frozenset(
+    {"time", "bar_index", "last_bar_index", "dayofweek", "dayofmonth", "hour", "minute", "month", "year"}
+)
+_IST_OFFSET_SECONDS = 19800  # +05:30, fixed (no DST)
+
+
+def _resolve_context(dataset: dict, cid: str) -> np.ndarray:
+    """Resolve a context/time series to a full float series.
+
+    `bar_index`/`last_bar_index` derive from the length; `time` and the IST
+    calendar fields derive from the dataset `time` column (epoch SECONDS, UTC).
+    Calendar math is fixed IST (UTC+05:30, no DST) via Howard Hinnant's
+    civil_from_days with floor division throughout — matching the TS runtime
+    integer-for-integer. All series are na-free from bar 0.
+    """
+    n = len(dataset["close"])
+    if cid == "bar_index":
+        return np.arange(n, dtype=float)
+    if cid == "last_bar_index":
+        return np.full(n, float(n - 1))
+    t_sec = np.asarray(dataset["time"], dtype=np.int64)
+    if cid == "time":
+        return (t_sec * 1000).astype(float)  # seconds → Pine milliseconds
+    ist = t_sec + _IST_OFFSET_SECONDS
+    days = ist // 86400  # days since 1970-01-01 in IST (floor)
+    sod = ist - days * 86400  # second-of-day, 0..86399
+    if cid == "hour":
+        return (sod // 3600).astype(float)
+    if cid == "minute":
+        return ((sod % 3600) // 60).astype(float)
+    if cid == "dayofweek":
+        # 1970-01-01 = Thursday. Pine dayofweek: 1=Sunday … 7=Saturday.
+        w = days % 7  # 0=Thu,1=Fri,2=Sat,3=Sun,4=Mon,5=Tue,6=Wed
+        return (((w + 4) % 7) + 1).astype(float)
+    # civil_from_days (Hinnant), floor division throughout.
+    z = days + 719468
+    era = z // 146097
+    doe = z - era * 146097  # [0, 146096]
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365  # [0, 399]
+    y = yoe + era * 400
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)  # [0, 365]
+    mp = (5 * doy + 2) // 153  # [0, 11]
+    dom = doy - (153 * mp + 2) // 5 + 1  # [1, 31]
+    month = np.where(mp < 10, mp + 3, mp - 9)  # [1, 12]
+    year = y + np.where(month <= 2, 1, 0)
+    if cid == "dayofmonth":
+        return dom.astype(float)
+    if cid == "month":
+        return month.astype(float)
+    return year.astype(float)
+
+
 def _const_value(v):
     if isinstance(v, bool):
         return 1.0 if v else 0.0
@@ -192,7 +246,10 @@ def _math_call(fn, args):
 def _eval_node(node, values, dataset, inputs, decls, n, ta_cache):
     op = node["op"]
     if op == "source":
-        return _resolve_source(dataset, node["source"])
+        src = node["source"]
+        if src in _CONTEXT_IDS:
+            return _resolve_context(dataset, src)
+        return _resolve_source(dataset, src)
     if op == "const":
         return _const_value(node["value"])
     if op == "input":

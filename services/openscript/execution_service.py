@@ -31,12 +31,22 @@ def _epoch(ts) -> int:
 
 
 def history_to_dataset(rows: list[dict]) -> dict:
-    """Convert `get_history` row dicts (chronological) to the executor dataset."""
+    """Convert `get_history` row dicts (chronological) to the executor dataset.
+
+    The `time` column carries the bar-open epoch **seconds (UTC)** — OpenAlgo's
+    `get_history` returns `timestamp` already as epoch seconds (broker adapters
+    normalize nanoseconds → seconds; see e.g. broker/zerodha/api/data.py). We
+    reuse `_epoch` so any broker that hands back epoch **milliseconds** is
+    coerced down to seconds too. The P-time context series (`time` → ms,
+    `dayofweek`/`hour`/… in IST) derive from this column in the executor.
+    """
 
     def col(key: str) -> np.ndarray:
         return np.asarray([_num(r.get(key)) for r in rows], dtype=np.float64)
 
-    return {k: col(k) for k in ("open", "high", "low", "close", "volume")}
+    ds = {k: col(k) for k in ("open", "high", "low", "close", "volume")}
+    ds["time"] = np.asarray([_epoch(r.get("timestamp")) for r in rows], dtype=np.float64)
+    return ds
 
 
 def bar_timestamps(rows: list[dict]) -> list[int]:

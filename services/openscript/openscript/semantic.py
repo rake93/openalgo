@@ -24,6 +24,13 @@ from .diagnostics import Diagnostic, Span, make_diagnostic
 SOURCE_IDS = frozenset(
     {"open", "high", "low", "close", "volume", "hl2", "hlc3", "ohlc4", "hlcc4"}
 )
+# Pine time/context series (P-time) — bare identifiers that resolve without a
+# declaration, kept separate from price sources so input.source never offers
+# them. See openalgo-openscript/src/types/dataset.ts CONTEXT_IDS.
+CONTEXT_IDS = frozenset(
+    {"time", "bar_index", "last_bar_index", "dayofweek", "dayofmonth", "hour", "minute", "month", "year"}
+)
+KNOWN_SERIES = SOURCE_IDS | CONTEXT_IDS
 
 
 class Analyzer:
@@ -153,7 +160,7 @@ class Analyzer:
                 else:
                     self._error("OS2016", e.span, f"'{e.name}' is used before its ':=' reassignment")
                 return
-            if not self._is_var_in_scope(e.name) and e.name not in SOURCE_IDS:
+            if not self._is_var_in_scope(e.name) and e.name not in KNOWN_SERIES:
                 self._error("OS2001", e.span, e.name)
         elif kind == "Member":
             ns = e.object.name if getattr(e.object, "type", None) == "Identifier" else ""

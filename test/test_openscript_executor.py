@@ -575,3 +575,105 @@ def test_execute_ir_without_budget_unchanged(dataset):
     # budget is optional — omitting it keeps the pre-parity behavior.
     out = _run("plot(ta.ema(close, 20))", dataset)
     _close(_line(out), ta.ema(dataset["close"], 20))
+
+
+# ── P-time: time / bar_index / IST calendar series ─────────────────────────
+#
+# Mirrors the TS executor time/context tests. Instants are independently
+# hand-computed (fixed +05:30 offset, verified against a datetime oracle —
+# NOT the implementation):
+#   I1 2026-07-13 09:15 IST (Mon)                    es=1783914300
+#   I2 2026-07-13 00:30 IST (Mon; UTC = Jul-12 Sun)  es=1783882800 (midnight)
+#   I3 2026-01-01 08:00 IST (Thu)                    es=1767234600
+#   I4 2024-02-29 23:45 IST (leap day, Thu)          es=1709230500
+_I1, _I2, _I3, _I4 = 1783914300, 1783882800, 1767234600, 1709230500
+
+
+def _ctx_dataset(times):
+    """Dataset from explicit epoch-SECOND (UTC) bar-open times; OHLC synthetic."""
+    n = len(times)
+    idx = np.arange(n, dtype=float)
+    return {
+        "time": np.asarray(times, dtype=float),
+        "open": 100.0 + idx,
+        "high": 101.0 + idx,
+        "low": 99.0 + idx,
+        "close": 100.0 + idx,
+        "volume": 1000.0 + idx,
+    }
+
+
+def test_time_is_epoch_milliseconds():
+    ds = _ctx_dataset([_I1, _I2, _I3, _I4])
+    vals = _line(_run("plot(time)", ds))
+    np.testing.assert_array_equal(vals, np.asarray([_I1, _I2, _I3, _I4]) * 1000)
+
+
+def test_bar_index_is_zero_based_ramp():
+    ds = _ctx_dataset([_I1, _I2, _I3, _I4, _I1])
+    vals = _line(_run("plot(bar_index)", ds))
+    np.testing.assert_array_equal(vals, np.arange(len(ds["close"])))
+
+
+def test_last_bar_index_is_constant_n_minus_1():
+    ds = _ctx_dataset([_I1, _I2, _I3, _I4, _I1])
+    vals = _line(_run("plot(last_bar_index)", ds))
+    last = len(ds["close"]) - 1
+    np.testing.assert_array_equal(vals, np.full(len(ds["close"]), last))
+
+
+def test_calendar_fields_on_known_instants():
+    ds = _ctx_dataset([_I1, _I2, _I3, _I4])
+    year = _line(_run("plot(year)", ds))
+    month = _line(_run("plot(month)", ds))
+    dom = _line(_run("plot(dayofmonth)", ds))
+    hour = _line(_run("plot(hour)", ds))
+    minute = _line(_run("plot(minute)", ds))
+    dow = _line(_run("plot(dayofweek)", ds))
+    # (year, month, dayofmonth, hour, minute, dayofweek) per bar
+    expected = [
+        (2026, 7, 13, 9, 15, 2),  # I1 Monday
+        (2026, 7, 13, 0, 30, 2),  # I2 Monday, UTC date is Jul-12 (Sunday)
+        (2026, 1, 1, 8, 0, 5),  # I3 Thursday
+        (2024, 2, 29, 23, 45, 5),  # I4 leap-day Thursday
+    ]
+    for i, (y, m, d, h, mi, w) in enumerate(expected):
+        assert year[i] == y, f"year[{i}]"
+        assert month[i] == m, f"month[{i}]"
+        assert dom[i] == d, f"dayofmonth[{i}]"
+        assert hour[i] == h, f"hour[{i}]"
+        assert minute[i] == mi, f"minute[{i}]"
+        assert dow[i] == w, f"dayofweek[{i}]"
+
+
+def test_context_series_are_na_free_from_bar0():
+    ds = _ctx_dataset([_I1, _I2, _I3])
+    for cid in ("time", "bar_index", "last_bar_index", "dayofweek", "dayofmonth",
+                "hour", "minute", "month", "year"):
+        vals = _line(_run(f"plot({cid})", ds))
+        assert not np.isnan(vals).any(), f"{cid} has leading na"
+
+
+def test_dayofweek_hist_offset_is_na_on_bar0():
+    ds = _ctx_dataset([_I1, _I3, _I4])  # dow = [2, 5, 5]
+    prev = _line(_run("plot(dayofweek[1])", ds))
+    assert math.isnan(prev[0])
+    assert prev[1] == 2
+    assert prev[2] == 5
+
+
+def test_new_day_idiom_change_dayofmonth():
+    # 3 intraday bars on 2026-07-13, then 2 on 2026-07-14 (dayofmonth 13,13,13,14,14)
+    ds = _ctx_dataset([1783914300, 1783914600, 1783914900, 1784000700, 1784001000])
+    vals = _line(_run("plot(ta.change(dayofmonth) != 0 ? 1 : 0)", ds))
+    assert list(vals) == [0, 0, 0, 1, 0]
+
+
+def test_new_week_idiom_across_holiday_skipped_monday():
+    # Daily bars Mon-Fri (2026-07-13..17), then a holiday-skipped week whose
+    # first bar is Tuesday 2026-07-21, then Wed. dayofweek = [2,3,4,5,6,3,4].
+    ds = _ctx_dataset(
+        [1783902600, 1783989000, 1784075400, 1784161800, 1784248200, 1784593800, 1784680200]
+    )
+    vals = _line(_run("plot(dayofweek < dayofweek[1] ? 1 : 0)", ds))
+    assert list(vals) == [0, 0, 0, 0, 0, 1, 0]
