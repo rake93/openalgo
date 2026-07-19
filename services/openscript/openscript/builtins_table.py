@@ -68,6 +68,8 @@ TA_FUNCTIONS: dict[str, dict] = {
     "falling": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 2, "kernelArgs": [_a(0), _a(1)]}]},
     "rma": _src_len(),
     "linreg": _src_len(),
+    "barssince": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 1, "kernelArgs": [_a(0)]}]},
+    "cum": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 1, "kernelArgs": [_a(0)]}]},
     # valuewhen(condition, source, occurrence) — occurrence 0-based like Pine.
     "valuewhen": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 3, "kernelArgs": [_a(0), _a(1), _a(2)]}]},
     "pivothigh": {
@@ -94,7 +96,15 @@ TA_FUNCTIONS: dict[str, dict] = {
             {"params": 4, "kernelArgs": [_a(0), _a(1), _a(2), _a(3)]},
         ],
     },
-    "cci": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 1, "kernelArgs": [_s("high"), _s("low"), _s("close"), _a(0)]}]},
+    "cci": {
+        "outputs": 1,
+        "outputMap": [0],
+        "overloads": [
+            {"params": 1, "kernelArgs": [_s("high"), _s("low"), _s("close"), _a(0)]},
+            # source form: h=l=c=src makes the kernel's typical price equal src.
+            {"params": 2, "kernelArgs": [_a(0), _a(0), _a(0), _a(1)]},
+        ],
+    },
     "tr": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 0, "kernelArgs": [_s("high"), _s("low"), _s("close")]}]},
     "obv": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 0, "kernelArgs": [_s("close"), _s("volume")]}]},
     "mfi": {
@@ -167,6 +177,8 @@ MATH_FUNCTIONS: dict[str, dict] = {
     for name, arity in {
         "abs": 1, "sign": 1, "sqrt": 1, "exp": 1, "log": 1, "log10": 1,
         "round": 1, "floor": 1, "ceil": 1, "pow": 2, "max": 2, "min": 2,
+        # rolling window sum — windowed, dispatched to the rolling_sum kernel
+        "sum": 2,
     }.items()
 }
 

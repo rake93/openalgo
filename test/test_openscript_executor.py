@@ -280,6 +280,45 @@ def test_plot_handle_misuse_is_os2012(dataset):
     assert "OS2012" in [d.code for d in result.diagnostics]
 
 
+# ── LC-1 ta/math plumbing ──────────────────────────────────────────────────
+
+
+def test_barssince_reference(dataset):
+    vals = _line(_run("plot(ta.barssince(close > open))", dataset))
+    last = -1
+    for i in range(len(dataset["close"])):
+        if dataset["close"][i] > dataset["open"][i]:
+            last = i
+        if last == -1:
+            assert math.isnan(vals[i])
+        else:
+            assert vals[i] == i - last
+
+
+def test_cum_running_sum(dataset):
+    vals = _line(_run("plot(ta.cum(volume))", dataset))
+    expected = np.cumsum(dataset["volume"])
+    _close(vals, expected)
+
+
+def test_math_sum_rolling(dataset):
+    vals = _line(_run("plot(math.sum(close, 14))", dataset))
+    x = dataset["close"]
+    n = len(x)
+    expected = np.full(n, np.nan)
+    rolling = x[:14].sum()
+    expected[13] = rolling
+    for i in range(14, n):
+        rolling = rolling + x[i] - x[i - 14]
+        expected[i] = rolling
+    _close(vals, expected)
+
+
+def test_cci_source_form(dataset):
+    vals = _line(_run("plot(ta.cci(close, 20))", dataset))
+    _close(vals, ta.cci(dataset["close"], dataset["close"], dataset["close"], 20))
+
+
 # ── P1.1 plot-style variants: kind parity with the TS collect-outputs ──────
 
 

@@ -161,7 +161,9 @@ def _ta_arg(a):
 
 def _call(node, values, ta_cache):
     args = [values[i] for i in node["args"]]
-    if node["namespace"] == "math":
+    # math.sum is windowed — route it to the rolling_sum kernel; every other
+    # math.* stays on the elementwise path.
+    if node["namespace"] == "math" and node["function"] != "sum":
         return _math_call(node["function"], args)
     facade = facade_of(node["function"])
     key = f"{facade}#{','.join(str(i) for i in node['args'])}"

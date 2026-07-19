@@ -84,6 +84,45 @@ def _pivotlow(data, left, right):
     return _pivot(data, left, right, False)
 
 
+def _barssince(cond):
+    """Mirrors oa_composites::bars_since: bars since cond was last nonzero;
+    0 on a true bar, NaN until the first true."""
+    x = np.asarray(cond, dtype=float)
+    n = len(x)
+    out = np.full(n, np.nan)
+    last = -1
+    for i in range(n):
+        if x[i] != 0 and not np.isnan(x[i]):
+            last = i
+        if last >= 0:
+            out[i] = i - last
+    return out
+
+
+def _cum(data):
+    """Mirrors oa_composites::cum: running sum from bar 0; NaN inputs
+    contribute nothing so the output stays finite."""
+    x = np.asarray(data, dtype=float)
+    return np.cumsum(np.where(np.isnan(x), 0.0, x))
+
+
+def _rolling_sum(data, period):
+    """Mirrors oa_core::rolling_sum exactly, including its sequential NaN
+    propagation (a NaN entering the window poisons all later values)."""
+    x = np.asarray(data, dtype=float)
+    n = len(x)
+    p = int(period)
+    out = np.full(n, np.nan)
+    if p == 0 or n < p:
+        return out
+    rolling = float(x[:p].sum())
+    out[p - 1] = rolling
+    for i in range(p, n):
+        rolling = rolling + x[i] - x[i - p]
+        out[i] = rolling
+    return out
+
+
 # Kernels the engine defines but `openalgo.ta` does not export (yet), plus
 # semantic adapters (valuewhen's occurrence mapping). The SDK facade wins when
 # both exist EXCEPT for names listed in FORCE_LOCAL; the value-parity tests pin
@@ -94,6 +133,9 @@ LOCAL_KERNELS = {
     "valuewhen": _valuewhen,
     "pivothigh": _pivothigh,
     "pivotlow": _pivotlow,
+    "barssince": _barssince,
+    "cum": _cum,
+    "sum": _rolling_sum,
 }
 
 # IR names whose local adapter must win even though `openalgo.ta` exports the
