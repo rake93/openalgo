@@ -14,6 +14,7 @@ import math
 
 import numpy as np
 
+from .admit import IRAdmissionError, admit_ir
 from .ta_dispatch import facade_of, invoke_kernel
 
 _MATH_UNARY = {
@@ -518,6 +519,9 @@ def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None)
     per node before evaluation, exactly like the TS executor, raising
     `BudgetExceeded` (OS4001/OS4002) when a limit is crossed.
     """
+    errors = admit_ir(ir)
+    if errors:
+        raise IRAdmissionError(errors)
     inputs = inputs or {}
     n = len(dataset["close"])
     decls = {d["id"]: d for d in ir.get("inputs", [])}

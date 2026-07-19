@@ -798,6 +798,13 @@ def generate_ir(source: str, program: ast.Program) -> tuple[dict | None, list[Di
         "version": IR_VERSION,
         "compilerVersion": COMPILER_VERSION,
         "sourceHash": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "header": {
+            "major": 1,
+            "minor": 0,
+            "compilerVersion": COMPILER_VERSION,
+            "requiredFeatures": [],
+            "numericMode": "f64-strict",
+        },
         "declaration": gen._declaration,
         "inputs": gen._inputs,
         "nodes": gen._nodes,

@@ -1,9 +1,12 @@
 """IR admission gate (Python) — mirrors the TS admitIR unit tests and the
 shared fixtures/admission corpus (drift guard with the engine)."""
 
+import numpy as np
 import pytest
 
+from services.openscript import openscript
 from services.openscript.runtime.admit import IRAdmissionError, admit_ir
+from services.openscript.runtime.executor import execute_ir
 
 
 def _valid_ir() -> dict:
@@ -97,3 +100,24 @@ def test_ir_admission_error_carries_errors_and_codes():
     assert e.errors is errs
     assert "IR_UNKNOWN_NODE_OP" in str(e)
     assert "IR_BAD_NUMERIC_MODE" in str(e)
+
+
+def test_compiler_emits_header():
+    result = openscript.compile('indicator("H", overlay=true)\nplot(close, "C")')
+    assert result.ir is not None
+    assert result.ir["header"] == {
+        "major": 1,
+        "minor": 0,
+        "compilerVersion": "openscript-1.0",
+        "requiredFeatures": [],
+        "numericMode": "f64-strict",
+    }
+
+
+def test_execute_ir_rejects_unknown_node_op():
+    ir = _valid_ir()
+    ir["nodes"].append({"id": 1, "op": "frobnicate"})
+    n = 8
+    dataset = {k: np.arange(n, dtype=float) for k in ("open", "high", "low", "close", "volume", "time")}
+    with pytest.raises(IRAdmissionError):
+        execute_ir(ir, dataset)
