@@ -3,7 +3,7 @@ shared fixtures/admission corpus (drift guard with the engine)."""
 
 import pytest
 
-from services.openscript.runtime.admit import admit_ir
+from services.openscript.runtime.admit import IRAdmissionError, admit_ir
 
 
 def _valid_ir() -> dict:
@@ -76,3 +76,24 @@ def test_empty_dict_header_reports_both_major_and_numeric():
     codes = _codes(ir)
     assert "IR_MAJOR_MISMATCH" in codes
     assert "IR_BAD_NUMERIC_MODE" in codes
+
+
+def test_aggregates_across_categories():
+    ir = _valid_ir()
+    ir["header"]["requiredFeatures"] = ["drawing-streams"]
+    ir["nodes"].append({"id": 1, "op": "frobnicate"})
+    codes = _codes(ir)
+    assert "IR_UNSUPPORTED_FEATURE" in codes
+    assert "IR_UNKNOWN_NODE_OP" in codes
+
+
+def test_ir_admission_error_carries_errors_and_codes():
+    errs = [
+        {"code": "IR_UNKNOWN_NODE_OP", "message": "x"},
+        {"code": "IR_BAD_NUMERIC_MODE", "message": "y"},
+    ]
+    e = IRAdmissionError(errs)
+    assert isinstance(e, Exception)
+    assert e.errors is errs
+    assert "IR_UNKNOWN_NODE_OP" in str(e)
+    assert "IR_BAD_NUMERIC_MODE" in str(e)

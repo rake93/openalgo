@@ -1,5 +1,5 @@
-"""IR admission gate (server, Python) — port of
-openalgo-openscript/src/runtime/admit.py [admit.ts].
+"""IR admission gate (server, Python) — Python port of the TS admit gate
+(openalgo-openscript/src/runtime/admit.ts).
 
 A class of errors DISTINCT from the OS#### source diagnostics: these describe an
 IR the runtime refuses to execute. Run once before execution (top of
@@ -53,10 +53,12 @@ def admit_ir(ir: dict) -> list[dict]:
         header = None
     major = header.get("major") if header is not None else None
     if header is None or major != IR_MAJOR:
+        major_display = major if major is not None else "(none)"
         errors.append(
             {
                 "code": "IR_MAJOR_MISMATCH",
-                "message": f"IR major {major} is not supported by runtime major {IR_MAJOR}",
+                "message": f"IR major {major_display} is not supported by runtime major {IR_MAJOR}",
+                "detail": "none" if major is None else str(major),
             }
         )
     if header is not None and header.get("numericMode") != NUMERIC_MODE:
@@ -67,7 +69,7 @@ def admit_ir(ir: dict) -> list[dict]:
                 "detail": str(header.get("numericMode")),
             }
         )
-    for f in (header.get("requiredFeatures", []) if header is not None else []) or []:
+    for f in (header or {}).get("requiredFeatures") or []:
         if f not in SUPPORTED_FEATURES:
             errors.append(
                 {
