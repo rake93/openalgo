@@ -88,6 +88,14 @@ def _is_input_call(e: ast.Expr) -> bool:
     )
 
 
+def _is_plot_binding(e: ast.Expr) -> bool:
+    return (
+        e.type == "Call"
+        and getattr(e.callee, "type", None) == "Identifier"
+        and e.callee.name == "plot"
+    )
+
+
 class IRGenerator:
     def __init__(self, source: str) -> None:
         self._source = source
@@ -100,6 +108,8 @@ class IRGenerator:
         self._outputs: list[dict] = []
         self._scopes: list[dict[str, int]] = [{}]
         self._functions: dict[str, ast.FunctionDecl] = {}
+        # `p = plot(...)` bindings: name → index into _outputs (fill targets).
+        self._plot_handles: dict[str, int] = {}
         self._declaration = {"name": "Untitled", "overlay": False}
         self._diagnostics: list[Diagnostic] = []
 
@@ -137,6 +147,10 @@ class IRGenerator:
         if kind == "VarDecl":
             if _is_input_call(stmt.value):
                 self._bind(stmt.name, self._lower_input(stmt.value, stmt.name))
+            elif _is_plot_binding(stmt.value):
+                # p = plot(...) — emit the plot output and record the handle.
+                self._outputs.append(self._plot_output(stmt.value))
+                self._plot_handles[stmt.name] = len(self._outputs) - 1
             else:
                 self._bind(stmt.name, self._lower_expr(stmt.value))
         elif kind == "TupleDecl":
@@ -354,7 +368,31 @@ class IRGenerator:
             self._outputs.append(self._tint_output(fn, call))
         elif fn == "alertcondition":
             self._outputs.append(self._alert_output(call))
-        # 'fill' references plot handles — deferred; no-op for v1.
+        elif fn == "fill":
+            out = self._fill_output(call)
+            if out is not None:
+                self._outputs.append(out)
+
+    def _fill_output(self, call: ast.CallExpr) -> dict | None:
+        """fill(p1, p2[, color=...][, title=...]) — semantic has validated
+        (OS2012) that the first two positional args are plot handles."""
+        positionals = [a for a in call.args if a.name is None]
+        top = self._handle_index(positionals[0]) if len(positionals) > 0 else None
+        bottom = self._handle_index(positionals[1]) if len(positionals) > 1 else None
+        if top is None or bottom is None:
+            return None  # invalid handles — diagnostics already emitted
+        return {
+            "kind": "fill",
+            "topPlotIndex": top,
+            "bottomPlotIndex": bottom,
+            "color": self._color(call, "#2962ff33"),
+            "title": self._title(call, None),
+        }
+
+    def _handle_index(self, arg) -> int | None:
+        if getattr(arg.value, "type", None) != "Identifier":
+            return None
+        return self._plot_handles.get(arg.value.name)
 
     def _plot_output(self, call: ast.CallExpr) -> dict:
         node_id = self._lower_expr(call.args[0].value)

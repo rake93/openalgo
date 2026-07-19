@@ -32,6 +32,8 @@ class Analyzer:
         self._functions: dict[str, int] = {}
         self._input_titles: set[str] = set()
         self._alert_titles: set[str] = set()
+        # Names bound to `p = plot(...)` — usable only as fill() args (OS2012).
+        self._plot_handles: set[str] = set()
         self._current_function: str | None = None
 
     def analyze(self, program: ast.Program) -> list[Diagnostic]:
@@ -63,6 +65,8 @@ class Analyzer:
         if kind == "VarDecl":
             self._visit_expr(stmt.value, top_level)
             self._declare_var(stmt.name, stmt.name_span)
+            if _is_plot_call(stmt.value):
+                self._plot_handles.add(stmt.name)
         elif kind == "TupleDecl":
             self._visit_expr(stmt.value, top_level)
             self._check_destructure(stmt.value, len(stmt.names), stmt.span)
@@ -97,6 +101,9 @@ class Analyzer:
         if kind in ("Number", "String", "Color", "Bool", "Na"):
             return
         if kind == "Identifier":
+            if e.name in self._plot_handles:
+                self._error("OS2012", e.span, e.name)
+                return
             if not self._is_var_in_scope(e.name) and e.name not in SOURCE_IDS:
                 self._error("OS2001", e.span, e.name)
         elif kind == "Member":
@@ -136,10 +143,28 @@ class Analyzer:
             self._visit_namespace_call(callee.object.name, callee.property, call, top_level)
         elif callee.type == "Identifier":
             self._visit_bare_call(callee.name, call, top_level)
+            if callee.name == "fill":
+                self._visit_fill_args(call, top_level)
+                return
         else:
             self._error("OS2002", call.span)
         for arg in call.args:
             self._visit_expr(arg.value, top_level)
+
+    def _visit_fill_args(self, call: ast.CallExpr, top_level: bool) -> None:
+        """fill(p1, p2, ...) — the first two positional args must be plot
+        handles (OS2012); remaining args are visited normally."""
+        positional_seen = 0
+        for arg in call.args:
+            if arg.name is None and positional_seen < 2:
+                positional_seen += 1
+                v = arg.value
+                if v.type != "Identifier" or v.name not in self._plot_handles:
+                    self._error("OS2012", v.span)
+                continue
+            self._visit_expr(arg.value, top_level)
+        if positional_seen < 2:
+            self._error("OS2012", call.span)
 
     def _visit_namespace_call(self, ns: str, fn: str, call: ast.CallExpr, top_level: bool) -> None:
         if ns == "ta":
@@ -216,6 +241,14 @@ class Analyzer:
             self._error(code, call.span, title)
             return
         seen.add(title)
+
+
+def _is_plot_call(e: ast.Expr) -> bool:
+    return (
+        e.type == "Call"
+        and getattr(e.callee, "type", None) == "Identifier"
+        and e.callee.name == "plot"
+    )
 
 
 def _is_indicator_call(stmt: ast.Stmt) -> bool:

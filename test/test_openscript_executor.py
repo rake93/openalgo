@@ -170,6 +170,31 @@ def test_pivotlow_explicit_series(dataset):
     _close(vals, expected)
 
 
+# ── P1.2 fill() with plot handles ──────────────────────────────────────────
+
+
+def test_fill_between_plot_handles(dataset):
+    out = _run(
+        '[mid, up, lo] = ta.bb(close, 20, 2)\n'
+        'pu = plot(up, "U")\n'
+        'pl = plot(lo, "L")\n'
+        'fill(pu, pl, color = #2962ff33, title = "Band")',
+        dataset,
+    )
+    fill = next(o for o in out if o["kind"] == "fill")
+    bb = ta.bbands(dataset["close"], 20, 2)
+    _close(fill["top"], bb[0])  # upper
+    _close(fill["bottom"], bb[2])  # lower
+    assert fill["style"]["color"] == "#2962ff33"
+    assert fill["title"] == "Band"
+    assert len([o for o in out if o["kind"] == "line"]) == 2
+
+
+def test_plot_handle_misuse_is_os2012(dataset):
+    result = openscript.compile("p = plot(close)\nplot(p + 1)")
+    assert "OS2012" in [d.code for d in result.diagnostics]
+
+
 # ── P1.1 plot-style variants: kind parity with the TS collect-outputs ──────
 
 

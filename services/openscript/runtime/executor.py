@@ -242,6 +242,23 @@ def _collect_outputs(ir, values, n) -> list[dict]:
             outputs.append(_plot_output(o, _as_series(values[o["nodeId"]], n), oid, pane))
         elif kind == "hline":
             outputs.append({"kind": "hline", "id": oid, "title": o["title"], "pane": pane, "price": o["price"]})
+        elif kind == "fill":
+            top = ir["outputs"][o["topPlotIndex"]]
+            bottom = ir["outputs"][o["bottomPlotIndex"]]
+            if top.get("kind") == "plot" and bottom.get("kind") == "plot":
+                outputs.append(
+                    {
+                        "kind": "fill",
+                        "id": oid,
+                        "title": o.get("title", ""),
+                        "pane": pane,
+                        "topId": f"out_{o['topPlotIndex']}",
+                        "bottomId": f"out_{o['bottomPlotIndex']}",
+                        "top": _as_series(values[top["nodeId"]], n),
+                        "bottom": _as_series(values[bottom["nodeId"]], n),
+                        "style": {"color": o.get("color", "")},
+                    }
+                )
         elif kind in ("plotshape", "plotchar", "barcolor", "bgcolor"):
             cond = _as_series(values[o["condNodeId"]], n)
             bars = [i for i in range(n) if _truthy_scalar(cond[i])]
