@@ -113,6 +113,39 @@ def test_input_override(dataset):
     _close(_line(out_default), ta.ema(dataset["close"], 9))
 
 
+# ── P1.1 plot-style variants: kind parity with the TS collect-outputs ──────
+
+
+def test_style_histogram_kind(dataset):
+    out = _run('plot(close - open, "H", style = plot.style_histogram)', dataset)
+    assert out[0]["kind"] == "histogram"
+    assert out[0]["style"]["base"] == 0
+    assert not out[0]["style"].get("column")
+    _close(out[0]["values"], dataset["close"] - dataset["open"])
+
+
+def test_style_columns_kind(dataset):
+    out = _run('plot(volume, "V", style = plot.style_columns)', dataset)
+    assert out[0]["kind"] == "histogram"
+    assert out[0]["style"]["column"] is True
+
+
+def test_style_area_and_markers_flags(dataset):
+    out = _run('plot(close, "A", style = plot.style_area)', dataset)
+    assert out[0]["kind"] == "line"
+    assert out[0]["style"]["area"] is True
+    for variant in ("style_circles", "style_cross"):
+        out = _run(f'plot(close, "P", style = plot.{variant})', dataset)
+        assert out[0]["kind"] == "line"
+        assert out[0]["style"]["markers"] is True
+
+
+def test_style_stepline_flag(dataset):
+    out = _run('plot(close, "S", style = plot.style_stepline)', dataset)
+    assert out[0]["kind"] == "line"
+    assert out[0]["style"]["step"] is True
+
+
 # ── OS4001/OS4002 budget parity with the TS OperationBudget ────────────────
 
 

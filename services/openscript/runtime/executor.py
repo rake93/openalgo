@@ -208,6 +208,29 @@ def _as_series(v, n) -> np.ndarray:
     return v if _is_series(v) else np.full(n, float(v))
 
 
+def _plot_output(o, series, oid, pane) -> dict:
+    """Mirror the TS collect-outputs plot lowering: bar-style variants become
+    histogram outputs (base 0); stepline/area/circles/cross become line-style
+    flags. Kind parity with the browser is pinned by tests."""
+    style_in = o.get("style", {})
+    variant = style_in.get("variant")
+    if variant in ("histogram", "columns"):
+        style = {"color": style_in.get("color", ""), "base": 0}
+        if variant == "columns":
+            style["column"] = True
+        return {"kind": "histogram", "id": oid, "title": o["title"], "pane": pane, "values": series, "style": style}
+    style = {"color": style_in.get("color", ""), "lineWidth": style_in.get("lineWidth", 1)}
+    if style_in.get("lineStyle"):
+        style["lineStyle"] = style_in["lineStyle"]
+    if variant == "stepline":
+        style["step"] = True
+    elif variant == "area":
+        style["area"] = True
+    elif variant in ("circles", "cross"):
+        style["markers"] = True
+    return {"kind": "line", "id": oid, "title": o["title"], "pane": pane, "values": series, "style": style}
+
+
 def _collect_outputs(ir, values, n) -> list[dict]:
     overlay = ir["declaration"].get("overlay", False)
     pane = "overlay" if overlay else 1
@@ -216,7 +239,7 @@ def _collect_outputs(ir, values, n) -> list[dict]:
         kind = o["kind"]
         oid = f"out_{idx}"
         if kind == "plot":
-            outputs.append({"kind": "line", "id": oid, "title": o["title"], "pane": pane, "values": _as_series(values[o["nodeId"]], n)})
+            outputs.append(_plot_output(o, _as_series(values[o["nodeId"]], n), oid, pane))
         elif kind == "hline":
             outputs.append({"kind": "hline", "id": oid, "title": o["title"], "pane": pane, "price": o["price"]})
         elif kind in ("plotshape", "plotchar", "barcolor", "bgcolor"):
