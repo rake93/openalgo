@@ -73,7 +73,39 @@ def _resolve_const(e: ast.Expr):
     if kind == "Unary" and e.op == "-":
         v = _resolve_const(e.operand)
         return -v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    if kind == "Call":
+        # color.new(color, transp) with const args folds to #RRGGBBAA
+        # (Pine transp: 0 = opaque, 100 = fully transparent).
+        c = e.callee
+        if (
+            getattr(c, "type", None) == "Member"
+            and getattr(c.object, "type", None) == "Identifier"
+            and c.object.name == "color"
+            and c.property == "new"
+        ):
+            base = _resolve_const(e.args[0].value) if len(e.args) > 0 else None
+            transp = _resolve_const(e.args[1].value) if len(e.args) > 1 else 0
+            if (
+                isinstance(base, str)
+                and base.startswith("#")
+                and isinstance(transp, (int, float))
+                and not isinstance(transp, bool)
+            ):
+                return _with_transparency(base, float(transp))
+        return None
     return None
+
+
+def _with_transparency(hex_color: str, transp: float) -> str:
+    """Expand a 3/4/6/8-digit hex color to #RRGGBBAA with Pine transparency."""
+    h = hex_color[1:]
+    if len(h) in (3, 4):
+        h = "".join(ch * 2 for ch in h)
+    base_alpha = int(h[6:8], 16) / 255 if len(h) == 8 else 1.0
+    clamped = min(100.0, max(0.0, transp))
+    # int(x + 0.5) = JS Math.round (Python round() is banker's rounding).
+    alpha = int(base_alpha * ((100.0 - clamped) / 100.0) * 255 + 0.5)
+    return f"#{h[:6]}{alpha:02x}"
 
 
 _SOURCES = frozenset({"open", "high", "low", "close", "volume", "hl2", "hlc3", "ohlc4", "hlcc4"})
@@ -110,6 +142,8 @@ class IRGenerator:
         self._functions: dict[str, ast.FunctionDecl] = {}
         # `p = plot(...)` bindings: name → index into _outputs (fill targets).
         self._plot_handles: dict[str, int] = {}
+        # Interned colors; color-valued nodes are const palette indices.
+        self._palette: list[str] = []
         self._declaration = {"name": "Untitled", "overlay": False}
         self._diagnostics: list[Diagnostic] = []
 
@@ -190,7 +224,10 @@ class IRGenerator:
         kind = e.type
         if kind == "Number":
             return self._emit({"op": "const", "value": e.value}, e.span, 0, e.value)
-        if kind in ("String", "Color"):
+        if kind == "Color":
+            # Colors are DAG values as palette indices (dynamic-color support).
+            return self._palette_const(e.value, e.span)
+        if kind == "String":
             return self._emit({"op": "const", "value": e.value}, e.span, 0)
         if kind == "Bool":
             return self._emit({"op": "const", "value": e.value}, e.span, 0)
@@ -202,6 +239,9 @@ class IRGenerator:
             bound = self._resolve_var(e.name)
             return bound if bound is not None else self._na_node(e.span)
         if kind == "Member":
+            if getattr(e.object, "type", None) == "Identifier" and e.object.name == "color":
+                hex_color = COLOR_HEX.get(e.property)
+                return self._palette_const(hex_color, e.span) if hex_color else self._na_node(e.span)
             v = _resolve_const_member(e)
             static = v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
             return self._emit({"op": "const", "value": v}, e.span, 0, static)
@@ -252,8 +292,14 @@ class IRGenerator:
                 return self._lower_math_call(fn, call)
             if ns == "input":
                 return self._lower_input(call, None)
+            # constant-namespace call (e.g. color.new) — fold to a palette color
+            folded = _resolve_const(call)
+            if isinstance(folded, str) and folded.startswith("#"):
+                return self._palette_const(folded, call.span)
             v = _resolve_const_member(callee)
-            return self._emit({"op": "const", "value": v if v is not None else "#000000"}, call.span, 0)
+            if isinstance(v, str) and v.startswith("#"):
+                return self._palette_const(v, call.span)
+            return self._emit({"op": "const", "value": v}, call.span, 0)
         if callee.type == "Identifier":
             if callee.name == "nz":
                 return self._lower_nz(call)
@@ -396,7 +442,10 @@ class IRGenerator:
 
     def _plot_output(self, call: ast.CallExpr) -> dict:
         node_id = self._lower_expr(call.args[0].value)
-        style: dict = {"color": self._color(call, "#2962ff")}
+        color, color_node = self._color_spec(call, "#2962ff")
+        style: dict = {"color": color}
+        if color_node is not None:
+            style["colorNodeId"] = color_node
         lw = self._const_arg(call, None, "linewidth")
         if isinstance(lw, (int, float)) and not isinstance(lw, bool):
             style["lineWidth"] = lw
@@ -417,13 +466,16 @@ class IRGenerator:
     def _marker_output(self, fn: str, call: ast.CallExpr) -> dict:
         cond_node = self._lower_expr(call.args[0].value)
         location = self._const_arg(call, None, "location")
+        color, color_node = self._color_spec(call, "#2962ff")
         out: dict = {
             "kind": fn,
             "condNodeId": cond_node,
             "title": self._title(call, None),
             "location": location if isinstance(location, str) else "aboveBar",
-            "color": self._color(call, "#2962ff"),
+            "color": color,
         }
+        if color_node is not None:
+            out["colorNodeId"] = color_node
         text = self._const_arg(call, None, "text")
         if fn == "plotchar":
             ch = self._const_arg(call, None, "char")
@@ -441,12 +493,16 @@ class IRGenerator:
         return out
 
     def _tint_output(self, fn: str, call: ast.CallExpr) -> dict:
-        return {
+        color, color_node = self._color_spec(call, "#ff9800")
+        out: dict = {
             "kind": fn,
             "condNodeId": self._lower_expr(call.args[0].value),
-            "color": self._color(call, "#ff9800"),
+            "color": color,
             "title": self._title(call, None),
         }
+        if color_node is not None:
+            out["colorNodeId"] = color_node
+        return out
 
     def _alert_output(self, call: ast.CallExpr) -> dict:
         cond_node = self._lower_expr(call.args[0].value)
@@ -481,6 +537,32 @@ class IRGenerator:
         v = self._const_arg(call, positional, "title")
         return v if isinstance(v, str) else ""
 
+    def _palette_const(self, hex_color: str, span: Span) -> int:
+        """Intern a color and emit its palette-index const node."""
+        try:
+            idx = self._palette.index(hex_color)
+        except ValueError:
+            idx = len(self._palette)
+            self._palette.append(hex_color)
+        return self._emit({"op": "const", "value": idx}, span, 0, idx)
+
+    def _color_spec(self, call: ast.CallExpr, fallback: str) -> tuple[str, int | None]:
+        """Resolve a color= argument: (static_color, None) via the const fast
+        path, or (fallback, colorNodeId) for a dynamic palette expression."""
+        v = self._const_arg(call, None, "color")
+        if isinstance(v, str):
+            return v, None
+        expr = self._arg_expr(call, None, "color")
+        if expr is None:
+            return fallback, None
+        node_id = self._lower_expr(expr)
+        node = self._nodes[node_id]
+        if node.get("op") == "const" and isinstance(node.get("value"), (int, float)):
+            idx = int(node["value"])
+            if 0 <= idx < len(self._palette):
+                return self._palette[idx], None
+        return fallback, node_id
+
     def _color(self, call: ast.CallExpr, fallback: str) -> str:
         v = self._const_arg(call, None, "color")
         return v if isinstance(v, str) else fallback
@@ -503,4 +585,6 @@ def generate_ir(source: str, program: ast.Program) -> tuple[dict | None, list[Di
         "outputs": gen._outputs,
         "meta": {"warmupBars": warmup_bars, "spans": gen._spans},
     }
+    if gen._palette:
+        ir["palette"] = gen._palette
     return ir, []

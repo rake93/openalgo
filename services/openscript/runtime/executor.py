@@ -231,6 +231,51 @@ def _plot_output(o, series, oid, pane) -> dict:
     return {"kind": "line", "id": oid, "title": o["title"], "pane": pane, "values": series, "style": style}
 
 
+def _dynamic_colors(color_node_id, values, n, ir) -> list[str] | None:
+    """Per-bar palette colors for a colorNodeId ('' where the index is NaN)."""
+    if color_node_id is None:
+        return None
+    palette = ir.get("palette", [])
+    idx_series = _as_series(values[color_node_id], n)
+    colors = []
+    for i in range(n):
+        v = idx_series[i]
+        if math.isnan(v) or not (0 <= int(v) < len(palette)):
+            colors.append("")
+        else:
+            colors.append(palette[int(v)])
+    return colors
+
+
+def _split_plot_by_palette(o, values, n, idx, pane, ir) -> list[dict]:
+    """Mirror of the TS splitPlotByPalette: one masked output per palette
+    color; line variants keep a 1-bar connector so segments join."""
+    palette = ir.get("palette", [])
+    series = _as_series(values[o["nodeId"]], n)
+    color_idx = _as_series(values[o["style"]["colorNodeId"]], n)
+    variant = o["style"].get("variant")
+    is_bar = variant in ("histogram", "columns")
+    outputs: list[dict] = []
+    for k, hex_color in enumerate(palette):
+        masked = np.full(n, np.nan)
+        any_here = False
+        for i in range(n):
+            here = color_idx[i] == k
+            connector = (not is_bar) and i + 1 < n and color_idx[i + 1] == k
+            if here or connector:
+                masked[i] = series[i]
+                if here and not math.isnan(series[i]):
+                    any_here = True
+        if not any_here:
+            continue
+        sub_style = {key: v for key, v in o["style"].items() if key != "colorNodeId"}
+        sub_style["color"] = hex_color
+        sub = {**o, "style": sub_style}
+        built = _plot_output(sub, masked, f"out_{idx}_c{k}", pane)
+        outputs.append(built)
+    return outputs
+
+
 def _collect_outputs(ir, values, n) -> list[dict]:
     overlay = ir["declaration"].get("overlay", False)
     pane = "overlay" if overlay else 1
@@ -238,7 +283,9 @@ def _collect_outputs(ir, values, n) -> list[dict]:
     for idx, o in enumerate(ir["outputs"]):
         kind = o["kind"]
         oid = f"out_{idx}"
-        if kind == "plot":
+        if kind == "plot" and o.get("style", {}).get("colorNodeId") is not None:
+            outputs.extend(_split_plot_by_palette(o, values, n, idx, pane, ir))
+        elif kind == "plot":
             outputs.append(_plot_output(o, _as_series(values[o["nodeId"]], n), oid, pane))
         elif kind == "hline":
             outputs.append({"kind": "hline", "id": oid, "title": o["title"], "pane": pane, "price": o["price"]})
@@ -259,10 +306,28 @@ def _collect_outputs(ir, values, n) -> list[dict]:
                         "style": {"color": o.get("color", "")},
                     }
                 )
-        elif kind in ("plotshape", "plotchar", "barcolor", "bgcolor"):
+        elif kind in ("plotshape", "plotchar"):
             cond = _as_series(values[o["condNodeId"]], n)
-            bars = [i for i in range(n) if _truthy_scalar(cond[i])]
+            per_bar = _dynamic_colors(o.get("colorNodeId"), values, n, ir)
+            # Dynamic color resolving to na hides the marker (Pine color=na).
+            bars = [
+                i
+                for i in range(n)
+                if _truthy_scalar(cond[i]) and (per_bar is None or per_bar[i] != "")
+            ]
             outputs.append({"kind": kind, "id": oid, "title": o.get("title", ""), "bars": bars})
+        elif kind in ("barcolor", "bgcolor"):
+            cond = _as_series(values[o["condNodeId"]], n)
+            per_bar = _dynamic_colors(o.get("colorNodeId"), values, n, ir)
+            static = o.get("color", "")
+            colors = [
+                (per_bar[i] if per_bar is not None else static) if _truthy_scalar(cond[i]) else ""
+                for i in range(n)
+            ]
+            bars = [i for i in range(n) if colors[i] != ""]
+            outputs.append(
+                {"kind": kind, "id": oid, "title": o.get("title", ""), "bars": bars, "colors": colors}
+            )
         elif kind == "alertcondition":
             cond = _as_series(values[o["condNodeId"]], n)
             fired = [i for i in range(n) if _truthy_scalar(cond[i])]

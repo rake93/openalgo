@@ -4,6 +4,8 @@
 executor test that checks against the wasm facade.
 """
 
+import math
+
 import numpy as np
 import pytest
 from openalgo import ta
@@ -168,6 +170,68 @@ def test_pivotlow_explicit_series(dataset):
         if (window > lo[p]).all():
             expected[i] = lo[p]
     _close(vals, expected)
+
+
+# ── P1.3 dynamic per-bar colors ────────────────────────────────────────────
+
+
+def test_color_new_const_folds_static(dataset):
+    out = _run('plot(close, "C", color = color.new(color.green, 20))', dataset)
+    assert out[0]["kind"] == "line"
+    assert out[0]["style"]["color"] == "#4caf50cc"
+
+
+def test_conditional_histogram_color_palette_split(dataset):
+    out = _run(
+        'plot(close - open, "H", style = plot.style_histogram, '
+        "color = close > open ? color.green : color.red)",
+        dataset,
+    )
+    histos = [o for o in out if o["kind"] == "histogram"]
+    assert len(histos) == 2
+    assert sorted(h["style"]["color"] for h in histos) == ["#4caf50", "#ef5350"]
+    green = next(h for h in histos if h["style"]["color"] == "#4caf50")
+    red = next(h for h in histos if h["style"]["color"] == "#ef5350")
+    up = dataset["close"] > dataset["open"]
+    assert np.isnan(green["values"][~up]).all()
+    assert np.isnan(red["values"][up]).all()
+
+
+def test_conditional_line_color_keeps_connector(dataset):
+    out = _run('plot(close, "L", color = close > open ? color.green : color.red)', dataset)
+    lines = [o for o in out if o["kind"] == "line"]
+    assert len(lines) == 2
+    green = next(o for o in lines if o["style"]["color"] == "#4caf50")
+    n = len(dataset["close"])
+    idx = (dataset["close"] <= dataset["open"]).astype(int)  # 0 = green, 1 = red
+    for i in range(n):
+        keep = idx[i] == 0 or (i + 1 < n and idx[i + 1] == 0)
+        assert math.isnan(green["values"][i]) == (not keep)
+
+
+def test_bgcolor_dynamic_colors(dataset):
+    out = _run("bgcolor(volume > 0, color = close > open ? color.green : color.red)", dataset)
+    o = out[0]
+    assert o["kind"] == "bgcolor"
+    for i in range(len(dataset["close"])):
+        expected = "#4caf50" if dataset["close"][i] > dataset["open"][i] else "#ef5350"
+        assert o["colors"][i] == expected
+
+
+def test_marker_na_color_hides_marker(dataset):
+    out = _run(
+        'plotshape(volume > 0, "M", location=location.abovebar, shape=shape.circle, '
+        "color = close > open ? color.lime : na)",
+        dataset,
+    )
+    o = out[0]
+    assert o["kind"] == "plotshape"
+    expected = [
+        i
+        for i in range(len(dataset["close"]))
+        if dataset["volume"][i] > 0 and dataset["close"][i] > dataset["open"][i]
+    ]
+    assert o["bars"] == expected
 
 
 # ── P1.2 fill() with plot handles ──────────────────────────────────────────
