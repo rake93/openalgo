@@ -68,3 +68,11 @@ def test_bad_numeric_mode_rejected():
     ir = _valid_ir()
     ir["header"]["numericMode"] = "f32"
     assert "IR_BAD_NUMERIC_MODE" in _codes(ir)
+
+
+def test_empty_dict_header_reports_both_major_and_numeric():
+    ir = _valid_ir()
+    ir["header"] = {}
+    codes = _codes(ir)
+    assert "IR_MAJOR_MISMATCH" in codes
+    assert "IR_BAD_NUMERIC_MODE" in codes

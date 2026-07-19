@@ -45,15 +45,21 @@ class IRAdmissionError(Exception):
 def admit_ir(ir: dict) -> list[dict]:
     """Return every reason the runtime would refuse this IR (empty = admitted)."""
     errors: list[dict] = []
-    header = ir.get("header") or {}
-    if header.get("major") != IR_MAJOR:
+    # Match the TS gate exactly: distinguish an ABSENT header from a PRESENT-but-empty
+    # one. In TS `h = ir.header`, `{}` is truthy (numericMode still checked) while
+    # `undefined` is falsy (skipped). A non-dict header is treated as absent (rejected).
+    header = ir.get("header")
+    if not isinstance(header, dict):
+        header = None
+    major = header.get("major") if header is not None else None
+    if header is None or major != IR_MAJOR:
         errors.append(
             {
                 "code": "IR_MAJOR_MISMATCH",
-                "message": f"IR major {header.get('major')} is not supported by runtime major {IR_MAJOR}",
+                "message": f"IR major {major} is not supported by runtime major {IR_MAJOR}",
             }
         )
-    if header and header.get("numericMode") != NUMERIC_MODE:
+    if header is not None and header.get("numericMode") != NUMERIC_MODE:
         errors.append(
             {
                 "code": "IR_BAD_NUMERIC_MODE",
@@ -61,7 +67,7 @@ def admit_ir(ir: dict) -> list[dict]:
                 "detail": str(header.get("numericMode")),
             }
         )
-    for f in header.get("requiredFeatures", []) or []:
+    for f in (header.get("requiredFeatures", []) if header is not None else []) or []:
         if f not in SUPPORTED_FEATURES:
             errors.append(
                 {
