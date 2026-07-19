@@ -26,10 +26,79 @@ def _cpr(high, low, close):
     return pivot, bc, tc
 
 
-# Kernels the engine defines but `openalgo.ta` does not export (yet). The SDK
-# facade wins when both exist; the value-parity tests pin the formulas so a
-# future SDK addition that diverges from the wasm kernel fails loudly.
-LOCAL_KERNELS = {"cpr": _cpr}
+def _rma(data, period):
+    """Wilder-smoothed MA — mirrors oa_core::ema_wilder: SMA seed at the first
+    `period` finite values, then r[i] = (r[i-1]*(p-1) + x[i]) / p; NaN input
+    carries the previous value."""
+    x = np.asarray(data, dtype=float)
+    n = len(x)
+    out = np.full(n, np.nan)
+    p = int(period)
+    if p == 0 or n == 0:
+        return out
+    first_valid = 0
+    while first_valid < n and np.isnan(x[first_valid]):
+        first_valid += 1
+    if first_valid + p > n:
+        return out
+    seed = x[first_valid : first_valid + p]
+    if np.isnan(seed).any():
+        return out
+    start = first_valid + p - 1
+    out[start] = seed.sum() / p
+    for i in range(start + 1, n):
+        out[i] = out[i - 1] if np.isnan(x[i]) else (out[i - 1] * (p - 1) + x[i]) / p
+    return out
+
+
+def _valuewhen(cond, source, occurrence):
+    """Pine ta.valuewhen — occurrence is 0-based; the SDK kernel's n is 1-based."""
+    return ta.valuewhen(cond, source, int(occurrence) + 1)
+
+
+def _pivot(data, left, right, high):
+    """Mirrors oa_composites::pivot: strict local extreme of [p-left, p+right]
+    emitted at the confirmation bar p+right; equal neighbours or NaN disqualify."""
+    x = np.asarray(data, dtype=float)
+    n = len(x)
+    out = np.full(n, np.nan)
+    left, right = int(left), int(right)
+    for i in range(left + right, n):
+        p = i - right
+        v = x[p]
+        if np.isnan(v):
+            continue
+        window = np.concatenate([x[p - left : p], x[p + 1 : p + right + 1]])
+        if np.isnan(window).any():
+            continue
+        if (high and (window < v).all()) or (not high and (window > v).all()):
+            out[i] = v
+    return out
+
+
+def _pivothigh(data, left, right):
+    return _pivot(data, left, right, True)
+
+
+def _pivotlow(data, left, right):
+    return _pivot(data, left, right, False)
+
+
+# Kernels the engine defines but `openalgo.ta` does not export (yet), plus
+# semantic adapters (valuewhen's occurrence mapping). The SDK facade wins when
+# both exist EXCEPT for names listed in FORCE_LOCAL; the value-parity tests pin
+# the formulas so a diverging future SDK addition fails loudly.
+LOCAL_KERNELS = {
+    "cpr": _cpr,
+    "rma": _rma,
+    "valuewhen": _valuewhen,
+    "pivothigh": _pivothigh,
+    "pivotlow": _pivotlow,
+}
+
+# IR names whose local adapter must win even though `openalgo.ta` exports the
+# name (different argument semantics than the raw SDK kernel).
+FORCE_LOCAL = {"valuewhen"}
 
 
 def facade_of(fn: str) -> str:
@@ -37,6 +106,8 @@ def facade_of(fn: str) -> str:
 
 
 def invoke_kernel(fn: str, args: list):
+    if fn in FORCE_LOCAL:
+        return LOCAL_KERNELS[fn](*args)
     impl = getattr(ta, facade_of(fn), None)
     if impl is None or not callable(impl):
         impl = LOCAL_KERNELS.get(fn)

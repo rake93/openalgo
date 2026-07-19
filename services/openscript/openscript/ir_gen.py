@@ -42,6 +42,7 @@ SIZE_MAP = {"tiny": "tiny", "small": "small", "normal": "medium", "large": "big"
 STYLE_MAP = {
     "style_line": "line", "style_stepline": "stepline", "style_histogram": "histogram",
     "style_cross": "cross", "style_area": "area", "style_columns": "columns", "style_circles": "circles",
+    "style_linebr": "linebr",
 }
 MATH_CONST = {"pi": math.pi, "e": math.e, "phi": 1.618033988749895, "rphi": 0.6180339887498949}
 INPUT_TYPE = {"int": "integer", "float": "float", "bool": "bool", "string": "string", "source": "source"}

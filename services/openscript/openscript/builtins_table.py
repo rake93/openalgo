@@ -66,6 +66,26 @@ TA_FUNCTIONS: dict[str, dict] = {
     },
     "rising": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 2, "kernelArgs": [_a(0), _a(1)]}]},
     "falling": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 2, "kernelArgs": [_a(0), _a(1)]}]},
+    "rma": _src_len(),
+    "linreg": _src_len(),
+    # valuewhen(condition, source, occurrence) — occurrence 0-based like Pine.
+    "valuewhen": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 3, "kernelArgs": [_a(0), _a(1), _a(2)]}]},
+    "pivothigh": {
+        "outputs": 1,
+        "outputMap": [0],
+        "overloads": [
+            {"params": 2, "kernelArgs": [_s("high"), _a(0), _a(1)]},
+            {"params": 3, "kernelArgs": [_a(0), _a(1), _a(2)]},
+        ],
+    },
+    "pivotlow": {
+        "outputs": 1,
+        "outputMap": [0],
+        "overloads": [
+            {"params": 2, "kernelArgs": [_s("low"), _a(0), _a(1)]},
+            {"params": 3, "kernelArgs": [_a(0), _a(1), _a(2)]},
+        ],
+    },
     "atr": {
         "outputs": 1,
         "outputMap": [0],
@@ -173,7 +193,16 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
     "location": frozenset({"abovebar", "belowbar", "top", "bottom", "absolute"}),
     "size": frozenset({"tiny", "small", "normal", "large", "huge", "auto"}),
     "plot": frozenset(
-        {"style_line", "style_stepline", "style_histogram", "style_cross", "style_area", "style_columns", "style_circles"}
+        {
+            "style_line",
+            "style_stepline",
+            "style_histogram",
+            "style_cross",
+            "style_area",
+            "style_columns",
+            "style_circles",
+            "style_linebr",
+        }
     ),
     "math": frozenset({"pi", "e", "phi", "rphi"}),
 }

@@ -113,6 +113,63 @@ def test_input_override(dataset):
     _close(_line(out_default), ta.ema(dataset["close"], 9))
 
 
+# ── P2 calibrated ta additions (rma/linreg/valuewhen/pivots) ───────────────
+
+
+def test_rma_matches_wilder_formula(dataset):
+    vals = _line(_run("plot(ta.rma(close, 14))", dataset))
+    x = dataset["close"]
+    n = len(x)
+    expected = np.full(n, np.nan)
+    expected[13] = x[:14].sum() / 14.0
+    for i in range(14, n):
+        expected[i] = (expected[i - 1] * 13 + x[i]) / 14.0
+    _close(vals, expected)
+
+
+def test_linreg_matches_sdk(dataset):
+    vals = _line(_run("plot(ta.linreg(close, 14))", dataset))
+    _close(vals, ta.linreg(dataset["close"], 14))
+
+
+def test_valuewhen_occurrence_zero_is_most_recent(dataset):
+    vals = _line(_run("plot(ta.valuewhen(close > open, close, 0))", dataset))
+    n = len(dataset["close"])
+    expected = np.full(n, np.nan)
+    last = np.nan
+    for i in range(n):
+        if dataset["close"][i] > dataset["open"][i]:
+            last = dataset["close"][i]
+        expected[i] = last
+    _close(vals, expected)
+
+
+def test_pivothigh_strict_late_confirmation(dataset):
+    vals = _line(_run("plot(ta.pivothigh(2, 2))", dataset))
+    h = dataset["high"]
+    n = len(h)
+    expected = np.full(n, np.nan)
+    for i in range(4, n):
+        p = i - 2
+        window = np.concatenate([h[p - 2 : p], h[p + 1 : p + 3]])
+        if (window < h[p]).all():
+            expected[i] = h[p]
+    _close(vals, expected)
+
+
+def test_pivotlow_explicit_series(dataset):
+    vals = _line(_run("plot(ta.pivotlow(low, 3, 3))", dataset))
+    lo = dataset["low"]
+    n = len(lo)
+    expected = np.full(n, np.nan)
+    for i in range(6, n):
+        p = i - 3
+        window = np.concatenate([lo[p - 3 : p], lo[p + 1 : p + 4]])
+        if (window > lo[p]).all():
+            expected[i] = lo[p]
+    _close(vals, expected)
+
+
 # ── P1.1 plot-style variants: kind parity with the TS collect-outputs ──────
 
 
