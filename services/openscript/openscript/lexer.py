@@ -1,5 +1,5 @@
 """OpenScript lexer — Python port of the TS lexer
-(openalgo-indicator-engine/src/compiler/lexer.ts).
+(openalgo-openscript/src/compiler/lexer.ts).
 
 Two layers: `scan_raw_token` classifies one lexeme (positional, value-free);
 `tokenize` drives it across the source, decoding string values, tracking

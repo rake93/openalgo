@@ -1,5 +1,5 @@
 """Deterministic script limits — Python mirror of the TS `SCRIPT_LIMITS`
-(openalgo-indicator-engine/src/types/limits.ts, architecture doc §17).
+(openalgo-openscript/src/types/limits.ts, architecture doc §17).
 
 These MUST stay identical to the TS values; `test_openscript_conformance.py`
 pins them. Change both sides together.

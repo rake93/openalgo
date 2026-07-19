@@ -1,5 +1,5 @@
 """OpenScript parser — Python port of the TS parser
-(openalgo-indicator-engine/src/compiler/parser.ts).
+(openalgo-openscript/src/compiler/parser.ts).
 
 Recursive-descent for statements, Pratt for expressions, with panic-mode
 recovery. Structurally identical to the TS so the same sources yield the same

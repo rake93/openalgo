@@ -1,5 +1,5 @@
 """OpenScript token model — Python port of the TS token set
-(openalgo-indicator-engine/src/compiler/token.ts).
+(openalgo-openscript/src/compiler/token.ts).
 
 Token type values are the same string literals as the TS side. `RawToken` is
 the positional lexeme (including trivia) that both the tokenizer and (on the TS

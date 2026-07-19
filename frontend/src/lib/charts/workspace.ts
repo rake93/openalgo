@@ -11,7 +11,7 @@
  * triggers a chart rebuild from current state.
  */
 
-import type { IRProgram } from '@openalgo/indicator-engine'
+import type { IRProgram } from '@openalgo/openscript'
 import {
   type Bar,
   CandleBuilder,

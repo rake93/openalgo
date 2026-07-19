@@ -1,4 +1,4 @@
-# Recommended OpenAlgo Indicator Engine Architecture
+# Recommended OpenAlgo OpenScript (Indicator Engine) Architecture
 
 Do **not** build the indicator engine entirely inside React, and do not let custom scripts execute through JavaScript `eval()` or arbitrary Python.
 
@@ -740,7 +740,7 @@ Then add native incremental kernels progressively.
 Run compilation and calculation inside a dedicated Web Worker.
 
 ```text
-frontend/src/features/charting/indicator-engine/
+frontend/src/features/charting/openscript/
 ├── worker/
 │   ├── indicator.worker.ts
 │   ├── protocol.ts
@@ -916,7 +916,7 @@ blueprints/
 └── indicators.py
 
 services/
-└── indicator_engine/
+└── openscript/
     ├── compiler_service.py
     ├── execution_service.py
     ├── runtime_session_service.py

@@ -1,5 +1,5 @@
 """OpenScript compiler (Python) — a faithful port of the TypeScript front end
-(openalgo-indicator-engine/src/compiler). `compile(source)` runs parse →
+(openalgo-openscript/src/compiler). `compile(source)` runs parse →
 semantic → IR-gen and stops at the first stage that reports errors. Behavioral
 equivalence with the TS is enforced by the shared conformance fixtures.
 

@@ -1,5 +1,5 @@
 """OpenScript IR generation — Python port of the TS ir-gen
-(openalgo-indicator-engine/src/compiler/ir-gen.ts).
+(openalgo-openscript/src/compiler/ir-gen.ts).
 
 Lowers a semantically-valid AST to the JSON IR: a topologically-ordered node
 DAG (content-addressed CSE), declared inputs, render outputs, and warm-up

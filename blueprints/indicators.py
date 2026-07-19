@@ -20,7 +20,7 @@ from database.indicator_db import (
     IndicatorScriptVersion,
     db_session,
 )
-from services.indicator_engine.compiler_service import compile_source
+from services.openscript.compiler_service import compile_source
 from utils.logging import get_logger
 from utils.session import check_session_validity
 

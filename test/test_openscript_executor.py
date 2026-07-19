@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from openalgo import ta
 
-from services.indicator_engine import openscript
-from services.indicator_engine.runtime.executor import execute_ir
+from services.openscript import openscript
+from services.openscript.runtime.executor import execute_ir
 
 
 @pytest.fixture(scope="module")

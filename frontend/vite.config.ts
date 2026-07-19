@@ -33,7 +33,7 @@ export default defineConfig({
   // (`?worker`) and wasm asset (`?url`) must keep their real URLs — dep
   // pre-bundling would inline/rewrite them and break worker construction.
   optimizeDeps: {
-    exclude: ['@openalgo/indicator-engine'],
+    exclude: ['@openalgo/openscript'],
   },
   server: {
     port: 5173,

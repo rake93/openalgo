@@ -3,8 +3,8 @@ the TypeScript front end (design decision D3).
 
 Replays the SAME `fixtures/openscript/*.json` the TS side asserts on (they live in
 the sibling engine repo) and requires identical diagnostic-code sets. This is what
-keeps `services/indicator_engine/openscript/` behaviorally equivalent to
-`openalgo-indicator-engine/src/compiler/`.
+keeps `services/openscript/openscript/` behaviorally equivalent to
+`openalgo-openscript/src/compiler/`.
 """
 
 import json
@@ -12,12 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from services.indicator_engine import openscript
-from services.indicator_engine.limits import SCRIPT_LIMITS
+from services.openscript import openscript
+from services.openscript.limits import SCRIPT_LIMITS
 
 FIXTURES_DIR = (
     Path(__file__).resolve().parents[1].parent
-    / "openalgo-indicator-engine"
+    / "openalgo-openscript"
     / "fixtures"
     / "openscript"
 )
@@ -46,7 +46,7 @@ def test_openscript_conformance(fixture):
 
 
 def test_script_limits_match_typescript():
-    # These MUST stay identical to openalgo-indicator-engine/src/types/limits.ts.
+    # These MUST stay identical to openalgo-openscript/src/types/limits.ts.
     assert SCRIPT_LIMITS["maximumSourceBytes"] == 100_000
     assert SCRIPT_LIMITS["maximumAstNodes"] == 10_000
     assert SCRIPT_LIMITS["maximumOutputs"] == 64

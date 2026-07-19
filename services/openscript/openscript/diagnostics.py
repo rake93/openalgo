@@ -1,5 +1,5 @@
 """OpenScript compiler diagnostics — Python port of the TS diagnostics table
-(openalgo-indicator-engine/src/types/diagnostics.ts).
+(openalgo-openscript/src/types/diagnostics.ts).
 
 Codes are shared VERBATIM with the TypeScript front end; the conformance
 fixtures assert on them, so this table is append-only and must stay identical.

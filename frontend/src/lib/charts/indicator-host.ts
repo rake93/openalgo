@@ -13,11 +13,11 @@ import type {
   IndicatorOutput,
   IRProgram,
   OHLCVBar,
-} from '@openalgo/indicator-engine'
-import { datasetFromBars, datasetKey, toDatasetBuffers } from '@openalgo/indicator-engine'
-import { registryManifest } from '@openalgo/indicator-engine/registry'
-import { OpenAlgoChartsRenderer } from '@openalgo/indicator-engine/render/openalgo-charts'
-import type { EngineWorkerClient } from '@openalgo/indicator-engine/worker-client'
+} from '@openalgo/openscript'
+import { datasetFromBars, datasetKey, toDatasetBuffers } from '@openalgo/openscript'
+import { registryManifest } from '@openalgo/openscript/registry'
+import { OpenAlgoChartsRenderer } from '@openalgo/openscript/render/openalgo-charts'
+import type { EngineWorkerClient } from '@openalgo/openscript/worker-client'
 import type { Bar, Chart, SeriesApi } from 'openalgo-charts'
 import { getEngine } from './engine'
 

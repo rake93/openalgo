@@ -4,14 +4,14 @@ over a compiled OpenScript IR (the pure core the alert scheduler orchestrates).
 
 import numpy as np
 
-from services.indicator_engine import openscript
-from services.indicator_engine.execution_service import (
+from services.openscript import openscript
+from services.openscript.execution_service import (
     bar_timestamps,
     find_alert_output,
     fired_on_last_bar,
     history_to_dataset,
 )
-from services.indicator_engine.runtime.executor import execute_ir
+from services.openscript.runtime.executor import execute_ir
 
 
 def _rows(closes, opens):

@@ -12,7 +12,7 @@
  * the /charts workspace and the /trading terminal.
  */
 
-import type { IndicatorManifestEntry } from '@openalgo/indicator-engine'
+import type { IndicatorManifestEntry } from '@openalgo/openscript'
 import { useEffect, useState } from 'react'
 import { ColorPicker } from '@/components/charts/ColorPicker'
 import { DualRange } from '@/components/charts/DualRange'

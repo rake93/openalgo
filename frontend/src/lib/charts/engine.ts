@@ -1,14 +1,14 @@
 /**
  * Indicator-engine worker bootstrap (one shared worker + WASM init per app).
  *
- * The worker entry and wasm binary come from the local @openalgo/indicator-engine
+ * The worker entry and wasm binary come from the local @openalgo/openscript
  * package; Vite bundles the worker via the `?worker` suffix and serves the wasm
  * as an asset URL. Excluded from optimizeDeps so both survive pre-bundling.
  */
 
-import { EngineWorkerClient, type WorkerLike } from '@openalgo/indicator-engine/worker-client'
-import EngineWorker from '@openalgo/indicator-engine/worker?worker'
-import wasmUrl from '@openalgo/indicator-engine/oa_wasm.wasm?url'
+import { EngineWorkerClient, type WorkerLike } from '@openalgo/openscript/worker-client'
+import EngineWorker from '@openalgo/openscript/worker?worker'
+import wasmUrl from '@openalgo/openscript/oa_wasm.wasm?url'
 
 let clientPromise: Promise<EngineWorkerClient> | null = null
 

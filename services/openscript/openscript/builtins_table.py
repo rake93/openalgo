@@ -1,5 +1,5 @@
 """OpenScript built-in surface — Python port of the TS builtins table
-(openalgo-indicator-engine/src/compiler/builtins-table.ts).
+(openalgo-openscript/src/compiler/builtins-table.ts).
 
 `ta.*` functions use hybrid signatures (implicit-OHLC + explicit-series
 overloads disambiguated by argument count); each overload carries its

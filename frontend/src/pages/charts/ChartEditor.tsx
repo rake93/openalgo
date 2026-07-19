@@ -10,8 +10,8 @@
  * `/charts/editor/:scriptId` loads a saved script.
  */
 
-import type { Diagnostic } from '@openalgo/indicator-engine'
-import { compile } from '@openalgo/indicator-engine/compiler'
+import type { Diagnostic } from '@openalgo/openscript'
+import { compile } from '@openalgo/openscript/compiler'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {

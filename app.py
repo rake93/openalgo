@@ -748,7 +748,7 @@ def setup_environment(app):
                 # Headless OpenScript indicator-alert engine: evaluates active
                 # alerts on a schedule and delivers via Socket.IO + Telegram, so
                 # alerts fire even with the browser closed.
-                from services.indicator_engine.alert_service import init_indicator_alert_scheduler
+                from services.openscript.alert_service import init_indicator_alert_scheduler
 
                 init_indicator_alert_scheduler(socketio=socketio)
                 logger.debug("Indicator alert scheduler initialized")

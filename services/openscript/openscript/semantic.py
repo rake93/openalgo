@@ -1,5 +1,5 @@
 """OpenScript semantic analysis — Python port of the TS analyzer
-(openalgo-indicator-engine/src/compiler/semantic.ts).
+(openalgo-openscript/src/compiler/semantic.ts).
 
 Resolves a parsed program against the built-in surface and reports semantic
 diagnostics: declaration placement, symbol resolution, function/overload arity,

@@ -1,5 +1,5 @@
 """OpenScript IR executor (server, numpy) — Python port of the TS executor
-(openalgo-indicator-engine/src/runtime/executor.ts).
+(openalgo-openscript/src/runtime/executor.ts).
 
 Evaluates a compiled IRProgram over a dataset of numpy arrays in a single
 vectorized forward sweep (nodes are topologically ordered, id == index). Values

@@ -1,5 +1,5 @@
 """OpenScript AST — Python port of the TS AST node shapes
-(openalgo-indicator-engine/src/compiler/ast.ts).
+(openalgo-openscript/src/compiler/ast.ts).
 
 Each node exposes a `type` string discriminant (matching the TS) so the semantic
 and IR-gen passes can branch identically. Purely syntactic; typing and lowering
