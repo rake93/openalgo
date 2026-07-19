@@ -438,6 +438,64 @@ def test_cci_source_form(dataset):
     _close(vals, ta.cci(dataset["close"], dataset["close"], dataset["close"], 20))
 
 
+# ── LC-2 kernels.* — Nadaraya-Watson FIR (startAtBar+2 window quirk) ───────
+
+
+def _nw_reference(src, start_at_bar, weight):
+    """Literal transcription of the Pine KernelFunctions loop (NOT a cleaned-up
+    reformulation): `_size = array.size(array.from(_src))` is always 1, so the
+    sum runs i = 0..startAtBar+1 inclusive; off-edge history is na and poisons
+    the whole bar."""
+    n = len(src)
+    out = np.empty(n)
+    for t in range(n):
+        current_weight = 0.0
+        cumulative_weight = 0.0
+        size = 1
+        for i in range(size + start_at_bar + 1):
+            y = src[t - i] if t - i >= 0 else float("nan")
+            w = weight(i)
+            current_weight += y * w
+            cumulative_weight += w
+        out[t] = current_weight / cumulative_weight
+    return out
+
+
+def test_kernels_rational_quadratic_matches_pine_loop(dataset):
+    vals = _line(_run("plot(kernels.rationalQuadratic(close, 8, 2.5, 25))", dataset))
+    expected = _nw_reference(
+        dataset["close"], 25, lambda i: (1 + (i * i) / (8 * 8 * 2 * 2.5)) ** -2.5
+    )
+    _close(vals, expected)
+
+
+def test_kernels_gaussian_matches_pine_loop(dataset):
+    vals = _line(_run("plot(kernels.gaussian(close, 6, 25))", dataset))
+    expected = _nw_reference(dataset["close"], 25, lambda i: math.exp(-(i * i) / (2 * 6 * 6)))
+    _close(vals, expected)
+
+
+def test_kernels_window_is_start_at_bar_plus_two(dataset):
+    # startAtBar=0 → exactly 2 bars regardless of lookback (4).
+    vals = _line(_run("plot(kernels.gaussian(close, 4, 0))", dataset))
+    x = dataset["close"]
+    w1 = math.exp(-1 / (2 * 4 * 4))
+    assert math.isnan(vals[0])
+    _close(vals[1:], (x[1:] + x[:-1] * w1) / (1 + w1))
+
+
+def test_kernels_warmup_is_na_through_start_at_bar(dataset):
+    vals = _line(_run("plot(kernels.rationalQuadratic(close, 8, 8.0, 25))", dataset))
+    assert all(math.isnan(v) for v in vals[:26])
+    assert math.isfinite(vals[26])
+
+
+def test_kernels_zero_lookback_is_all_na_not_error(dataset):
+    # IEEE parity with the wasm kernel: 0/0 weights are NaN, never a crash.
+    vals = _line(_run("plot(kernels.gaussian(close, 0, 3))", dataset))
+    assert all(math.isnan(v) for v in vals)
+
+
 # ── P1.1 plot-style variants: kind parity with the TS collect-outputs ──────
 
 

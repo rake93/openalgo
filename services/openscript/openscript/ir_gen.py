@@ -16,7 +16,7 @@ import re
 
 from ..limits import SCRIPT_LIMITS
 from . import ast_nodes as ast
-from .builtins_table import TA_FUNCTIONS, ta_overload
+from .builtins_table import KERNELS_FUNCTIONS, TA_FUNCTIONS, ta_overload
 from .diagnostics import Diagnostic, Span, make_diagnostic
 
 IR_VERSION = 1
@@ -299,6 +299,8 @@ class IRGenerator:
             fn = callee.property
             if ns == "ta":
                 return self._lower_ta_call(fn, call, 0)
+            if ns == "kernels":
+                return self._lower_ta_call(fn, call, 0, "kernels")
             if ns == "math":
                 return self._lower_math_call(fn, call)
             if ns == "input":
@@ -324,8 +326,8 @@ class IRGenerator:
                 return self._inline_function(fn, call)
         return self._na_node(call.span)
 
-    def _lower_ta_call(self, fn: str, call: ast.CallExpr, output: int) -> int:
-        spec = TA_FUNCTIONS.get(fn)
+    def _lower_ta_call(self, fn: str, call: ast.CallExpr, output: int, ns: str = "ta") -> int:
+        spec = (TA_FUNCTIONS if ns == "ta" else KERNELS_FUNCTIONS).get(fn)
         overload = ta_overload(spec, len(call.args)) if spec else None
         if spec is None or overload is None:
             return self._na_node(call.span)
@@ -340,7 +342,7 @@ class IRGenerator:
                 arg_ids.append(user_args[ka["arg"]])
         child_warmup = max((self._warmups[i] for i in arg_ids), default=0)
         period = max((self._statics[i] or 0 for i in user_args), default=0)
-        node = {"op": "call", "namespace": "ta", "function": fn, "args": arg_ids}
+        node = {"op": "call", "namespace": ns, "function": fn, "args": arg_ids}
         if spec["outputs"] > 1:
             node["output"] = output
         return self._emit(node, call.span, int(child_warmup + period))

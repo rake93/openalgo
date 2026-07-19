@@ -161,6 +161,24 @@ TA_FUNCTIONS: dict[str, dict] = {
 }
 
 
+# `kernels.*` — Nadaraya-Watson kernel regressions (Pine `KernelFunctions`
+# library as a built-in namespace, D-LC1). Same TaSpec shape as `ta.*`; the
+# executor dispatches them through the same kernel path. All reproduce the
+# shipped Pine window quirk: the average covers exactly `startAtBar + 2` bars
+# (see the LC plan §2.3). `periodic`/`locallyPeriodic` are deferred — LC does
+# not call them.
+KERNELS_FUNCTIONS: dict[str, dict] = {
+    # rationalQuadratic(src, lookback, relativeWeight, startAtBar)
+    "rationalQuadratic": {
+        "outputs": 1,
+        "outputMap": [0],
+        "overloads": [{"params": 4, "kernelArgs": [_a(0), _a(1), _a(2), _a(3)]}],
+    },
+    # gaussian(src, lookback, startAtBar)
+    "gaussian": {"outputs": 1, "outputMap": [0], "overloads": [{"params": 3, "kernelArgs": [_a(0), _a(1), _a(2)]}]},
+}
+
+
 def ta_arities(spec: dict) -> list[int]:
     return [o["params"] for o in spec["overloads"]]
 
@@ -230,4 +248,6 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
     "math": frozenset({"pi", "e", "phi", "rphi"}),
 }
 
-KNOWN_NAMESPACES = frozenset({"ta", "math", "input", "color", "shape", "location", "size", "plot"})
+KNOWN_NAMESPACES = frozenset(
+    {"ta", "math", "kernels", "input", "color", "shape", "location", "size", "plot"}
+)

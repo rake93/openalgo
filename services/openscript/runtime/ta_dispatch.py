@@ -123,6 +123,53 @@ def _rolling_sum(data, period):
     return out
 
 
+def _nw_fir(data, start_at_bar, weight):
+    """Shared Nadaraya-Watson FIR average — mirrors oa_composites::nw_fir
+    (`fn nw_fir(data, start_at_bar, weight)` in the Rust kernel). The average
+    window is always exactly `start_at_bar + 2` bars, regardless of the
+    caller's `lookback` — `lookback` only reshapes the weight curve via
+    `weight(i)`. This is a deliberate Pine `KernelFunctions` quirk (LC-2) that
+    must be reproduced verbatim, not "fixed". Any NaN inside the window
+    poisons that bar's output; bars before the window fills are NaN.
+
+    `weight(i)` is fed a numpy scalar (not a Python float) so a zero
+    `lookback` divides IEEE-754 style (0/0 -> nan, x/0 -> inf) instead of
+    raising `ZeroDivisionError` — matching the Rust/wasm kernel, which never
+    crashes on a degenerate lookback."""
+    x = np.asarray(data, dtype=float)
+    n = len(x)
+    window = start_at_bar + 2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        weights = np.array([weight(np.float64(i)) for i in range(window)], dtype=float)
+    cumulative = weights.sum()
+    out = np.full(n, np.nan)
+    for t in range(window - 1, n):
+        # weights[i] pairs with x[t - i] (ascending i, most-recent bar first);
+        # reversing the ascending-time slice restores that alignment for the dot.
+        segment = x[t - window + 1 : t + 1][::-1]
+        out[t] = float(np.dot(segment, weights) / cumulative)
+    return out
+
+
+def _nw_rational_quadratic(data, lookback, relative_weight, start_at_bar):
+    """kernels.rationalQuadratic — mirrors oa_composites::nw_rational_quadratic.
+    weight(i) = (1 + i^2/(lookback^2 * 2 * relative_weight))^-relative_weight;
+    window is start_at_bar + 2 (the shared Pine quirk, see `_nw_fir`)."""
+    lb = float(lookback)
+    rw = float(relative_weight)
+    sab = int(start_at_bar)
+    return _nw_fir(data, sab, lambda i: (1.0 + (i * i) / (lb * lb * 2.0 * rw)) ** -rw)
+
+
+def _nw_gaussian(data, lookback, start_at_bar):
+    """kernels.gaussian — mirrors oa_composites::nw_gaussian.
+    weight(i) = exp(-i^2 / (2 * lookback^2)); window is start_at_bar + 2
+    (the shared Pine quirk, see `_nw_fir`)."""
+    lb = float(lookback)
+    sab = int(start_at_bar)
+    return _nw_fir(data, sab, lambda i: np.exp(-(i * i) / (2.0 * lb * lb)))
+
+
 # Kernels the engine defines but `openalgo.ta` does not export (yet), plus
 # semantic adapters (valuewhen's occurrence mapping). The SDK facade wins when
 # both exist EXCEPT for names listed in FORCE_LOCAL; the value-parity tests pin
@@ -136,6 +183,8 @@ LOCAL_KERNELS = {
     "barssince": _barssince,
     "cum": _cum,
     "sum": _rolling_sum,
+    "rationalQuadratic": _nw_rational_quadratic,
+    "gaussian": _nw_gaussian,
 }
 
 # IR names whose local adapter must win even though `openalgo.ta` exports the

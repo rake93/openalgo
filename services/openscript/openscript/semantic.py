@@ -12,6 +12,7 @@ from . import ast_nodes as ast
 from .builtins_table import (
     CONSTANT_NAMESPACES,
     INPUT_FUNCTIONS,
+    KERNELS_FUNCTIONS,
     MATH_FUNCTIONS,
     OUTPUT_FUNCTIONS,
     SPECIAL_FUNCTIONS,
@@ -200,7 +201,9 @@ class Analyzer:
         windowed = False
         if callee.type == "Member" and getattr(callee.object, "type", None) == "Identifier":
             self._visit_namespace_call(callee.object.name, callee.property, call, top_level)
-            windowed = callee.object.name == "ta" or (
+            # ta.*/kernels.* calls are windowed; math.sum is the one math.*
+            # exception (it's the rolling-sum kernel, not elementwise).
+            windowed = callee.object.name in ("ta", "kernels") or (
                 callee.object.name == "math" and callee.property == "sum"
             )
         elif callee.type == "Identifier":
@@ -233,10 +236,11 @@ class Analyzer:
             self._error("OS2012", call.span)
 
     def _visit_namespace_call(self, ns: str, fn: str, call: ast.CallExpr, top_level: bool) -> None:
-        if ns == "ta":
-            spec = TA_FUNCTIONS.get(fn)
+        if ns in ("ta", "kernels"):
+            table = TA_FUNCTIONS if ns == "ta" else KERNELS_FUNCTIONS
+            spec = table.get(fn)
             if spec is None:
-                self._error("OS2002", call.span, f"ta.{fn}")
+                self._error("OS2002", call.span, f"{ns}.{fn}")
                 return
             arities = ta_arities(spec)
             if len(call.args) not in arities:
