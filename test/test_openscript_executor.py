@@ -37,7 +37,10 @@ def dataset():
 
 def _run(source, dataset, inputs=None):
     result = openscript.compile(source)
-    assert result.diagnostics == [], f"unexpected diagnostics: {result.diagnostics}"
+    # Only ERRORS block a clean compile; OS5xxx repaint warnings (e.g. plotting a
+    # provisional pivot) are advisory and expected on some executor cases.
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert errors == [], f"unexpected diagnostics: {errors}"
     assert result.ir is not None
     return execute_ir(result.ir, dataset, inputs or {})
 

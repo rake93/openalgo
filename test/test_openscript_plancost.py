@@ -553,7 +553,10 @@ def test_operator_cost_prices_real_compiler_ir_injected_source_kernels():
 
     for fn, source, expected_per_bar in _REAL_KERNEL_CASES:
         result = openscript.compile(source)
-        assert result.diagnostics == [], f"{fn}: {result.diagnostics}"
+        # Advisory OS5xxx repaint warnings (e.g. plotting a provisional pivot) do
+        # not block a clean compile — only ERROR diagnostics do.
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"{fn}: {errors}"
         assert result.ir is not None
         ir = result.ir
         # EVERY node of the real IR must price — no unpriced arity/operator.

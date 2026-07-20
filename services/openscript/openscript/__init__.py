@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .diagnostics import Diagnostic
+from .finality import analyze_finality
 from .ir_gen import generate_ir
 from .parser import parse
 from .semantic import analyze_program
@@ -31,7 +32,10 @@ def compile(source: str) -> CompileResult:
     if semantic:
         return CompileResult(ir=None, diagnostics=semantic)
     ir, ir_diagnostics = generate_ir(source, program)
-    return CompileResult(ir=ir, diagnostics=ir_diagnostics)
+    if ir is None:
+        return CompileResult(ir=None, diagnostics=ir_diagnostics)
+    fin_diagnostics = analyze_finality(ir)  # mutates ir["meta"]; returns repaint warnings
+    return CompileResult(ir=ir, diagnostics=[*ir_diagnostics, *fin_diagnostics])
 
 
 __all__ = ["CompileResult", "compile"]
