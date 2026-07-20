@@ -17,6 +17,7 @@ import numpy as np
 from services.openscript.limits import SCRIPT_LIMITS
 
 from .admit import IRAdmissionError, admit_ir, resolve_plan_cost
+from .operator_cost import cost_family_of
 from .plancost import clamp_numeric_input, declared_max
 from .plancost_config import plancost_mode
 from .ta_dispatch import facade_of, invoke_kernel
@@ -232,6 +233,29 @@ def _ta_arg(a):
     return int(fa) if fa.is_integer() else fa
 
 
+def _is_window_kernel(namespace, fn) -> bool:
+    """Window-family classifier — the SAME one the cost model uses
+    (cost_family_of). An unpriced kernel is treated as non-window so nothing is
+    clamped and dispatch fails exactly as before."""
+    try:
+        return cost_family_of(namespace, fn) == "window"
+    except Exception:
+        return False
+
+
+def _clamp_window_arg(a):
+    """Bound a window-family kernel's scalar length/window arg to maximumLookback
+    (the length the cost model charges for an unbounded length), so real work <=
+    charge. min(a, maximumLookback) with NaN passthrough; series (ndarray) args
+    and legit small scalars (periods/multipliers <= maximumLookback) are
+    unchanged. Mirror of the TS `clampWindowArg`."""
+    if isinstance(a, np.ndarray):
+        return a
+    if isinstance(a, (int, float)) and not isinstance(a, bool) and a > SCRIPT_LIMITS["maximumLookback"]:
+        return SCRIPT_LIMITS["maximumLookback"]
+    return a
+
+
 def _call(node, values, ta_cache):
     args = [values[i] for i in node["args"]]
     # math.sum is windowed — route it to the rolling_sum kernel; every other
@@ -242,7 +266,18 @@ def _call(node, values, ta_cache):
     key = f"{facade}#{','.join(str(i) for i in node['args'])}"
     result = ta_cache.get(key)
     if result is None:
-        result = invoke_kernel(node["function"], [_ta_arg(a) for a in args])
+        # Finding 1 (review): bound a WINDOW-family kernel's SCALAR numeric args
+        # to maximumLookback BEFORE dispatch. The executor otherwise passes the
+        # RAW caller value, so a no-max (or computed-expression) window length
+        # could drive O(value) real work far above the charged inputBound
+        # (<= maximumLookback) — e.g. kernels.gaussian's window = start_at_bar + 2.
+        # Series args are untouched; legit periods/multipliers pass through. This
+        # is the belt over the F2 input-value clamp — it also covers no-max inputs
+        # AND computed-expression lengths the input clamp can't reach.
+        kernel_args = [_ta_arg(a) for a in args]
+        if _is_window_kernel(node["namespace"], node["function"]):
+            kernel_args = [_clamp_window_arg(a) for a in kernel_args]
+        result = invoke_kernel(node["function"], kernel_args)
         ta_cache[key] = result
     if isinstance(result, tuple):
         return np.asarray(result[node.get("output", 0)], dtype=float)
