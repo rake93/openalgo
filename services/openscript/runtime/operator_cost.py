@@ -216,6 +216,21 @@ def has_cost(namespace: str, fn: str) -> bool:
     return f"{namespace}.{fn}" in KERNEL_COST
 
 
+def cost_family_of(namespace: str, fn: str) -> str:
+    """The registry cost family of a call ('elementwise' | 'stream' | 'window').
+
+    The PlanCost estimator's breakdown bucketing key (window -> breakdown
+    "window"; elementwise/stream -> breakdown "call"). Same registry lookup and
+    same raise path as cost_of: an absent function raises
+    "unpriced operator: ns.fn" (IR_UNPRICED_OPERATOR).
+    """
+    key = f"{namespace}.{fn}"
+    spec = KERNEL_COST.get(key)
+    if spec is None:
+        raise ValueError(f"unpriced operator: {key}")
+    return spec["family"]
+
+
 # The exact covered "ns.fn" surface, for the coverage conformance test.
 COVERED_FUNCTIONS: frozenset[str] = frozenset(KERNEL_COST)
 
