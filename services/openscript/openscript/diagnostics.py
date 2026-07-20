@@ -70,6 +70,8 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS4004": "Kernel execution failed",
     # Warnings (compile succeeds; advisory)
     "OS5001": "max_kept exceeds maximumObjectsPerOutput (clamped)",
+    "OS5002": "output consumes provisional/lookahead data (repaints)",
+    "OS5003": "bar.close alert on a provisional condition — may repaint; use alert.tick",
 }
 
 
