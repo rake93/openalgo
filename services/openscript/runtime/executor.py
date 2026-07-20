@@ -530,6 +530,14 @@ def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None)
     ta_cache: dict = {}
     for node in nodes:
         if budget is not None:
-            budget.step()
-        values[node["id"]] = _eval_node(node, values, dataset, inputs, decls, n, ta_cache)
+            budget.step(node)
+        value = _eval_node(node, values, dataset, inputs, decls, n, ta_cache)
+        values[node["id"]] = value
+        # Deterministic series-buffer accounting + wall-clock checkpoint after
+        # each expensive kernel/scan node (design §7 cancellation granularity).
+        if budget is not None:
+            if isinstance(value, np.ndarray):
+                budget.record_bytes(int(value.nbytes))
+            if node["op"] in ("call", "scan"):
+                budget.checkpoint()
     return _collect_outputs(ir, values, n, inputs)

@@ -176,6 +176,7 @@ def _evaluate_one(alert: dict) -> None:
     )
     from .runtime.budget import OperationBudget
     from .runtime.executor import execute_ir
+    from .runtime.plancost import runtime_cost_ctx
 
     try:
         version = IndicatorScriptVersion.query.filter_by(id=alert["script_version_id"]).first()
@@ -200,8 +201,11 @@ def _evaluate_one(alert: dict) -> None:
         return
 
     dataset = history_to_dataset(rows)
-    # OS4001/OS4002 budget — same accounting as the TS worker (parity, P1.7).
-    budget = OperationBudget(len(dataset["close"]), len(compiled_ir["nodes"]))
+    # OS4001/OS4002 weighted budget — same accounting as the TS worker (parity,
+    # P1.7 + Phase 0.2 T6). Window lengths clamped to [min, max] in the runtime
+    # ctx so charged <= admission estimate.
+    cost_ctx = runtime_cost_ctx(compiled_ir, alert["inputs"], len(dataset["close"]))
+    budget = OperationBudget(compiled_ir, cost_ctx)
     outputs = execute_ir(compiled_ir, dataset, alert["inputs"], budget=budget)
     alert_out = find_alert_output(outputs, alert["condition_id"])
     if alert_out is None:

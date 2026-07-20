@@ -14,6 +14,7 @@ from services.openscript import openscript
 from services.openscript.limits import SCRIPT_LIMITS
 from services.openscript.runtime.budget import BudgetExceeded, OperationBudget
 from services.openscript.runtime.executor import execute_ir
+from services.openscript.runtime.plancost import runtime_cost_ctx
 
 
 @pytest.fixture(scope="module")
@@ -567,7 +568,12 @@ def test_style_stepline_flag(dataset):
     assert out[0]["style"]["step"] is True
 
 
-# ── OS4001/OS4002 budget parity with the TS OperationBudget ────────────────
+# ── OS4001/OS4002 weighted-budget parity with the TS OperationBudget ───────
+#
+# Task 6 redefined OperationBudget to the WEIGHTED model:
+# OperationBudget(ir, ctx, limits) precomputes per-node weights and charges
+# weights[node id] per step. (Security invariants: charged <= estimate, input
+# clamp, exact spent/peak_bytes live in test_openscript_budget_invariants.py.)
 
 
 def _limits(**overrides):
@@ -576,26 +582,67 @@ def _limits(**overrides):
     return merged
 
 
+def _budget_ir(nodes, inputs=None):
+    return {
+        "version": 1,
+        "compilerVersion": "openscript-1.0",
+        "sourceHash": "test",
+        "header": {
+            "major": 1,
+            "minor": 0,
+            "compilerVersion": "openscript-1.0",
+            "requiredFeatures": [],
+            "numericMode": "f64-strict",
+        },
+        "declaration": {"name": "B", "overlay": False},
+        "inputs": inputs or [],
+        "nodes": nodes,
+        "outputs": [],
+        "meta": {"warmupBars": 0, "spans": {}},
+    }
+
+
+# source(0), const 50(1), sma(2): weighted perBar = 1 + 0 + 50 + 1(proj) = 52.
+_WINDOW_IR = _budget_ir(
+    [
+        {"id": 0, "op": "source", "source": "close"},
+        {"id": 1, "op": "const", "value": 50},
+        {"id": 2, "op": "call", "namespace": "ta", "function": "sma", "args": [0, 1]},
+    ]
+)
+# close(0) -> close+close(1) -> -(...)(2): three element nodes, weight barCount each.
+_ELEMENT_BUDGET_IR = _budget_ir(
+    [
+        {"id": 0, "op": "source", "source": "close"},
+        {"id": 1, "op": "binop", "operator": "+", "args": [0, 0]},
+        {"id": 2, "op": "unop", "operator": "-", "arg": 1},
+    ]
+)
+
+
 def test_budget_ops_per_bar_exceeded_at_construction():
+    ctx = runtime_cost_ctx(_WINDOW_IR, {}, 100)
     with pytest.raises(BudgetExceeded) as ei:
-        OperationBudget(100, 3, _limits(maximumOperationsPerBar=2))
+        OperationBudget(_WINDOW_IR, ctx, _limits(maximumOperationsPerBar=2))
     assert ei.value.code == "OS4001"
 
 
 def test_budget_total_operations_exceeded_on_step():
-    budget = OperationBudget(100, 1, _limits(maximumTotalOperations=250))
-    budget.step()  # 100
-    budget.step()  # 200
+    # weights over a 100-bar barCount are [100, 100, 100]; cap 250.
+    budget = OperationBudget(_ELEMENT_BUDGET_IR, runtime_cost_ctx(_ELEMENT_BUDGET_IR, {}, 100), _limits(maximumTotalOperations=250))
+    nodes = _ELEMENT_BUDGET_IR["nodes"]
+    budget.step(nodes[0])  # 100
+    budget.step(nodes[1])  # 200
     with pytest.raises(BudgetExceeded) as ei:
-        budget.step()  # 300 > 250
+        budget.step(nodes[2])  # 300 > 250
     assert ei.value.code == "OS4001"
     assert budget.spent() == 300
 
 
 def test_budget_time_exceeded():
-    budget = OperationBudget(1, 1, _limits(maximumExecutionMilliseconds=0))
+    budget = OperationBudget(_ELEMENT_BUDGET_IR, runtime_cost_ctx(_ELEMENT_BUDGET_IR, {}, 1), _limits(maximumExecutionMilliseconds=0))
     with pytest.raises(BudgetExceeded) as ei:
-        budget.step()
+        budget.step(_ELEMENT_BUDGET_IR["nodes"][0])
     assert ei.value.code == "OS4002"
 
 
@@ -603,7 +650,8 @@ def test_execute_ir_enforces_budget(dataset):
     result = openscript.compile("plot(ta.ema(close, 20))")
     assert result.ir is not None
     n = len(dataset["close"])
-    budget = OperationBudget(n, len(result.ir["nodes"]), _limits(maximumTotalOperations=n))
+    ctx = runtime_cost_ctx(result.ir, {}, n)
+    budget = OperationBudget(result.ir, ctx, _limits(maximumTotalOperations=1))
     with pytest.raises(BudgetExceeded) as ei:
         execute_ir(result.ir, dataset, {}, budget=budget)
     assert ei.value.code == "OS4001"

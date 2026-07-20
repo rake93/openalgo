@@ -38,7 +38,10 @@ as IR_UNPRICED_OPERATOR at admission, never a silent default.
 
 from __future__ import annotations
 
-from services.openscript.runtime.cost_expr import CostExpr
+import math
+
+from services.openscript.limits import SCRIPT_LIMITS
+from services.openscript.runtime.cost_expr import CostCtx, CostExpr, eval_cost_expr
 from services.openscript.runtime.operator_cost import (
     COST_MODEL_VERSION,
     cost_family_of,
@@ -186,3 +189,101 @@ def estimate_plan_cost(ir: dict) -> dict:
             "requestedDataPoints": "n/a",
         },
     }
+
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def per_node_weights(ir: dict, ctx: CostCtx) -> list[float]:
+    """Concrete per-node weight (logical work units) charged by the runtime
+    budget, indexed by node id — Python mirror of the TS `perNodeWeights`.
+
+    Reuses the EXACT same cache-key grouping walk as estimate_plan_cost (a
+    multi-output kernel's compute is attributed to its representative node once;
+    every output node carries one O(1) projection), so BY CONSTRUCTION
+
+        sum(per_node_weights(ir, ctx)) == eval_cost_expr(
+            estimate_plan_cost(ir)["totalOperations"], ctx)
+
+    under the SAME ctx (all logical units are non-negative integers well below
+    2**53, so float64 addition is exact and re-association loses nothing).
+    Feeding the budget these weights with a RUNTIME ctx whose window lengths are
+    clamped to [min, max] is what makes charged <= estimate (estimate uses
+    input_bound = max) true by construction — every term is monotonic
+    non-decreasing in its input_bound. The invariants test pins the sum equality.
+    """
+    nodes = ir["nodes"]
+    weights: list[float] = [0.0] * len(nodes)
+    projection = eval_cost_expr(_bar_count(), ctx)  # one O(1)/bar slice per output node
+    seen: set[str] = set()
+
+    for node in nodes:
+        op = node.get("op")
+        if op != "call":
+            weights[node["id"]] = eval_cost_expr(cost_of(node, ir)["totalCost"], ctx)
+            continue
+        namespace = node.get("namespace")
+        fn = node.get("function")
+        # Only multi-output kernels share a compute group (same gate as the
+        # estimator); single-output calls each charge their own compute.
+        multi_output = fn in FIELD_COUNTS
+        key = f"{namespace}.{fn}#{','.join(str(a) for a in node['args'])}"
+        w = 0.0
+        if not multi_output or key not in seen:
+            if multi_output:
+                seen.add(key)
+            w += eval_cost_expr(cost_of(node, ir)["totalCost"], ctx)
+        w += projection
+        weights[node["id"]] = w
+    return weights
+
+
+def runtime_cost_ctx(ir: dict, inputs: dict, bar_count: int, limits=SCRIPT_LIMITS) -> CostCtx:
+    """Build the RUNTIME CostCtx for a concrete execution (design §7) — Python
+    mirror of the TS `runtimeCostCtx`.
+
+    Unlike the admission ctx (input_bound -> declared max), this resolves each
+    input-bound window length to the input's ACTUAL value CLAMPED to its
+    declared [min, max]:
+      - bar_count = dataset length;
+      - input_bound(id) = clamp(actual or default, min, max) — when the decl has
+        NO max, the upper clamp is maximumLookback (the SAME fallback admission
+        uses). The clamp is SECURITY-CRITICAL: it stops an oversized caller
+        period (e.g. 999999) from charging more than the max-bounded admission
+        estimate, preserving charged <= estimate.
+      - arg_const(node_id) = a numeric const node's value, else non-finite
+        (identical to admission — const args do not vary at runtime).
+    """
+    decls = {d["id"]: d for d in ir.get("inputs", [])}
+    nodes = ir["nodes"]
+    fallback = limits["maximumLookback"]
+
+    def input_bound(id_: str) -> float:
+        decl = decls.get(id_)
+        if decl is None or decl.get("type") not in ("integer", "float"):
+            return math.nan
+        hi = float(decl.get("max", fallback))
+        raw = inputs.get(id_, decl.get("defaultValue"))
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            v = hi  # non-numeric caller input → conservative upper bound
+        if not math.isfinite(v):
+            v = hi
+        if v > hi:
+            v = hi  # clamp above declared max (or maximumLookback)
+        lo = decl.get("min")
+        if lo is not None and v < lo:
+            v = float(lo)  # clamp below declared min
+        return v
+
+    def arg_const(node_id) -> float:
+        if isinstance(node_id, int) and 0 <= node_id < len(nodes):
+            node = nodes[node_id]
+            val = node.get("value")
+            if node.get("op") == "const" and _is_number(val) and math.isfinite(val):
+                return float(val)
+        return math.nan
+
+    return CostCtx(bar_count=bar_count, input_bound=input_bound, arg_const=arg_const)
