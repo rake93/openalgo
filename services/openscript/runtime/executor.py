@@ -15,6 +15,7 @@ import math
 import numpy as np
 
 from .admit import IRAdmissionError, admit_ir
+from .plancost import clamp_numeric_input, declared_max
 from .ta_dispatch import facade_of, invoke_kernel
 
 _MATH_UNARY = {
@@ -110,10 +111,20 @@ def _const_value(v):
 def _input_value(node, inputs, decls, dataset):
     input_id = node["inputId"]
     decl = decls.get(input_id)
-    raw = inputs.get(input_id, decl.get("defaultValue") if decl else None)
+    # Mirror TS `raw = inputs[id] ?? decl?.defaultValue`: an explicit null (like
+    # an absent key) falls back to the declared default, for EVERY input type.
+    raw = inputs.get(input_id)
+    if raw is None:
+        raw = decl.get("defaultValue") if decl else None
     dtype = decl.get("type") if decl else None
     if dtype in ("integer", "float"):
-        return float(raw)
+        # F2: clamp the EXECUTED value to the declared max so a caller period
+        # above maxval does no more real kernel work than was charged (the budget
+        # charges the same clamped value). Clamp ONLY when an explicit max is
+        # declared — an unbounded numeric input (multiplier/threshold, not a
+        # lookback) must NOT be clamped to maximumLookback.
+        hi = declared_max(decl) if decl else None
+        return clamp_numeric_input(decl, raw, hi) if hi is not None else float(raw)
     if dtype == "bool":
         return 1.0 if raw else 0.0
     if dtype == "source":

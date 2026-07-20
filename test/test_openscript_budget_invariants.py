@@ -258,3 +258,96 @@ def test_oversized_period_is_clamped(dataset):
     assert budget.spent() == estimate  # clamped to maxval → equals the max-bounded estimate
     assert budget.spent() <= estimate
     assert budget.spent() < unclamped  # proves 999999 was NOT used
+
+
+def _line_values(outputs):
+    lines = [o for o in outputs if o["kind"] == "line"]
+    assert lines, "no line output"
+    return lines[0]["values"]
+
+
+# ── F1 (review): min>max must never exceed the admission upper bound ────────
+
+
+def test_f1_minval_above_maxval_clamps_to_maxval(dataset):
+    ir = _compile_ir('len = input.int(100, "Length", minval=500, maxval=200)\nplot(ta.sma(close, len))')
+    bars = len(dataset["close"])
+    ctx = runtime_cost_ctx(ir, {}, bars)
+    input_id = ir["inputs"][0]["id"]
+    assert ctx.input_bound(input_id) == 200  # NOT 500 (minval)
+    budget = OperationBudget(ir, ctx)
+    for node in ir["nodes"]:
+        budget.step(node)
+    estimate = eval_cost_expr(estimate_plan_cost(ir)["totalOperations"], _admission_ctx(ir, bars))
+    assert budget.spent() <= estimate
+    assert budget.spent() == estimate
+
+
+def test_f1_minval_above_maximumlookback_no_maxval(dataset):
+    minv = SCRIPT_LIMITS["maximumLookback"] + 5000
+    ir = _compile_ir(f'len = input.int(100, "Length", minval={minv})\nplot(ta.sma(close, len))')
+    bars = len(dataset["close"])
+    ctx = runtime_cost_ctx(ir, {}, bars)
+    input_id = ir["inputs"][0]["id"]
+    assert ctx.input_bound(input_id) == SCRIPT_LIMITS["maximumLookback"]  # hi=fallback, min>hi → hi
+    budget = OperationBudget(ir, ctx)
+    for node in ir["nodes"]:
+        budget.step(node)
+    estimate = eval_cost_expr(estimate_plan_cost(ir)["totalOperations"], _admission_ctx(ir, bars))
+    assert budget.spent() <= estimate
+
+
+# ── F2 (review): execution uses the clamped period, not the raw caller value ─
+
+
+def test_f2_execution_uses_clamped_period(dataset):
+    ir = _compile_ir('len = input.int(50, "Length", maxval=200)\nplot(ta.sma(close, len))')
+    clamped = _line_values(execute_ir(ir, dataset, {"len": 999999}))  # must behave as len=200
+    ref = _line_values(execute_ir(ir, dataset, {"len": 200}))
+    np.testing.assert_array_equal(clamped, ref)
+    # …and NOT the degenerate all-NaN period-999999 result.
+    assert np.isfinite(clamped).any()
+
+
+# ── F3 (review): Python parity hardening — malformed IR must not raise ──────
+
+
+def test_f3_malformed_ir_does_not_crash():
+    # node id >= len(nodes); a bigint const arg; a null max — TS returns clean
+    # NaN/fallback for all of these, so the Python mirror must not raise.
+    ir = _ir(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 999, "op": "const", "value": 10**400},  # out-of-range id + JSON-bigint value
+        ],
+        inputs=[{"id": "p", "type": "integer", "label": "P", "defaultValue": 5, "max": None}],
+    )
+    ctx = runtime_cost_ctx(ir, {}, 100)
+    assert math.isnan(ctx.arg_const(999))  # bigint const → NaN (not OverflowError)
+    # null max → falls back to maximumLookback hi WITHOUT raising TypeError; the
+    # default (5) clamps to itself under that hi (proving the null-max path ran).
+    assert ctx.input_bound("p") == 5.0
+    # per_node_weights must not IndexError on the out-of-range node id.
+    w = per_node_weights(ir, ctx)
+    assert isinstance(w, list)
+
+
+# ── review: null numeric input == default (TS↔Python parity) ────────────────
+
+
+def test_null_input_equals_default_parity(dataset):
+    # An explicit None must resolve to the declared default, IDENTICALLY to TS's
+    # `inputs[id] ?? default`. `{"len": None}` must charge and execute exactly as
+    # `{}` (omitted) — NOT the maxval fallback (200) that pre-fix float(None) hit.
+    ir = _compile_ir('len = input.int(50, "Length", maxval=200)\nplot(ta.sma(close, len))')
+    # spent() is data-independent — pin it at the SAME fixed barCount as the engine.
+    null_budget = OperationBudget(ir, runtime_cost_ctx(ir, {"len": None}, 300))
+    def_budget = OperationBudget(ir, runtime_cost_ctx(ir, {}, 300))
+    for node in ir["nodes"]:
+        null_budget.step(node)
+        def_budget.step(node)
+    assert null_budget.spent() == def_budget.spent()
+    assert null_budget.spent() == 15601  # 300 + 1 + (50·300 + 300); SAME integer as TS
+    null_out = _line_values(execute_ir(ir, dataset, {"len": None}))
+    def_out = _line_values(execute_ir(ir, dataset, {}))
+    np.testing.assert_array_equal(null_out, def_out)

@@ -195,6 +195,43 @@ def _is_number(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _safe_finite(v) -> bool:
+    """math.isfinite that returns False (never raises) for a JSON-bigint int too
+    large for float64 (where JS JSON.parse would have produced Infinity) — so the
+    Python side matches the TS non-crashing behaviour on malformed IR."""
+    try:
+        return math.isfinite(v)
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def declared_max(decl: dict) -> float | None:
+    """A numeric input's declared finite max, or None if none is declared —
+    mirror of the TS `declaredMax`."""
+    v = decl.get("max")
+    return float(v) if _is_number(v) and _safe_finite(v) else None
+
+
+def clamp_numeric_input(decl: dict, raw, hi: float) -> float:
+    """UPPER-authoritative clamp of a raw caller value to a numeric input's
+    bounds: min(max(v, lo), hi) — mirror of the TS `clampNumericInput`. Ordering
+    the upper clamp LAST is load-bearing: the result can NEVER exceed `hi`, even
+    for a compile-legal but degenerate min>max (a naïve "clamp-up-to-min last"
+    would return min>hi and break charged <= estimate). Non-numeric/non-finite
+    raw resolves to `hi`. Shared by input_bound (the CHARGE) and the executor's
+    input resolution (the EXECUTED value) so declared-max numeric inputs clamp
+    identically — no drift between what is charged and what actually runs."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = hi
+    if not _safe_finite(v):
+        v = hi
+    raw_lo = decl.get("min")
+    lo = float(raw_lo) if _is_number(raw_lo) and _safe_finite(raw_lo) else float("-inf")
+    return min(max(v, lo), hi)
+
+
 def per_node_weights(ir: dict, ctx: CostCtx) -> list[float]:
     """Concrete per-node weight (logical work units) charged by the runtime
     budget, indexed by node id — Python mirror of the TS `perNodeWeights`.
@@ -221,21 +258,26 @@ def per_node_weights(ir: dict, ctx: CostCtx) -> list[float]:
     for node in nodes:
         op = node.get("op")
         if op != "call":
-            weights[node["id"]] = eval_cost_expr(cost_of(node, ir)["totalCost"], ctx)
-            continue
-        namespace = node.get("namespace")
-        fn = node.get("function")
-        # Only multi-output kernels share a compute group (same gate as the
-        # estimator); single-output calls each charge their own compute.
-        multi_output = fn in FIELD_COUNTS
-        key = f"{namespace}.{fn}#{','.join(str(a) for a in node['args'])}"
-        w = 0.0
-        if not multi_output or key not in seen:
-            if multi_output:
-                seen.add(key)
-            w += eval_cost_expr(cost_of(node, ir)["totalCost"], ctx)
-        w += projection
-        weights[node["id"]] = w
+            w = eval_cost_expr(cost_of(node, ir)["totalCost"], ctx)
+        else:
+            namespace = node.get("namespace")
+            fn = node.get("function")
+            # Only multi-output kernels share a compute group (same gate as the
+            # estimator); single-output calls each charge their own compute.
+            multi_output = fn in FIELD_COUNTS
+            key = f"{namespace}.{fn}#{','.join(str(a) for a in node['args'])}"
+            w = 0.0
+            if not multi_output or key not in seen:
+                if multi_output:
+                    seen.add(key)
+                w += eval_cost_expr(cost_of(node, ir)["totalCost"], ctx)
+            w += projection
+        # Guard the index write so a malformed hand IR (id >= len(nodes)) does
+        # not IndexError — TS silently grows the array; here we skip. The
+        # compiler never emits such IR (id == index); admission will gate it.
+        nid = node.get("id")
+        if isinstance(nid, int) and 0 <= nid < len(weights):
+            weights[nid] = w
     return weights
 
 
@@ -263,26 +305,22 @@ def runtime_cost_ctx(ir: dict, inputs: dict, bar_count: int, limits=SCRIPT_LIMIT
         decl = decls.get(id_)
         if decl is None or decl.get("type") not in ("integer", "float"):
             return math.nan
-        hi = float(decl.get("max", fallback))
-        raw = inputs.get(id_, decl.get("defaultValue"))
-        try:
-            v = float(raw)
-        except (TypeError, ValueError):
-            v = hi  # non-numeric caller input → conservative upper bound
-        if not math.isfinite(v):
-            v = hi
-        if v > hi:
-            v = hi  # clamp above declared max (or maximumLookback)
-        lo = decl.get("min")
-        if lo is not None and v < lo:
-            v = float(lo)  # clamp below declared min
-        return v
+        # No max declared (or a null/garbage max) → conservative fallback. The
+        # clamp is upper-authoritative, so min>max still yields hi.
+        max_ = declared_max(decl)
+        hi = max_ if max_ is not None else float(fallback)
+        raw = inputs.get(id_)
+        if raw is None:  # mirror TS `inputs[id] ?? default`: explicit null == absent
+            raw = decl.get("defaultValue")
+        return clamp_numeric_input(decl, raw, hi)
 
     def arg_const(node_id) -> float:
         if isinstance(node_id, int) and 0 <= node_id < len(nodes):
             node = nodes[node_id]
             val = node.get("value")
-            if node.get("op") == "const" and _is_number(val) and math.isfinite(val):
+            # _safe_finite (not bare math.isfinite) so a JSON-bigint const →
+            # clean NaN, matching TS (JSON.parse would give Infinity → NaN).
+            if node.get("op") == "const" and _is_number(val) and _safe_finite(val):
                 return float(val)
         return math.nan
 
