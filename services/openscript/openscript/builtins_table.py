@@ -222,7 +222,7 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
         {
             "green", "red", "blue", "orange", "purple", "teal", "gray", "grey", "yellow",
             "cyan", "pink", "white", "black", "navy", "maroon", "lime", "aqua", "fuchsia",
-            "olive", "silver", "new",
+            "olive", "silver", "new", "from_gradient",
         }
     ),
     "shape": frozenset(

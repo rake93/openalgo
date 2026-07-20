@@ -128,6 +128,31 @@ def _with_transparency(hex_color: str, transp: float) -> str:
     return f"#{h[:6]}{alpha:02x}"
 
 
+_GRADIENT_STEPS = 16
+
+
+def _parse_rgba(hex_color: str) -> tuple[int, int, int, int]:
+    """Parse a hex color to (r, g, b, a) channel ints (0-255); missing alpha -> 255."""
+    h = _normalize_hex(hex_color)[1:]
+    r = int(h[0:2], 16)
+    g = int(h[2:4], 16)
+    b = int(h[4:6], 16)
+    a = int(h[6:8], 16) if len(h) == 8 else 255
+    return r, g, b, a
+
+
+def _interpolate_hex(a: str, b: str, f: float) -> str:
+    """Interpolate two hex colors at fraction f in [0, 1] -> #RRGGBBAA. Uses
+    int(x + 0.5) (round-half-up; channels are non-negative) to match TS Math.round."""
+    ar, ag, ab, aa = _parse_rgba(a)
+    br, bg, bb, ba = _parse_rgba(b)
+
+    def ch(x: int, y: int) -> int:
+        return int(x + (y - x) * f + 0.5)
+
+    return f"#{ch(ar, br):02x}{ch(ag, bg):02x}{ch(ab, bb):02x}{ch(aa, ba):02x}"
+
+
 # Price sources only — used to const-fold source *strings* (e.g. an
 # input.source default). Context series are NOT const-foldable sources.
 _SOURCES = frozenset({"open", "high", "low", "close", "volume", "hl2", "hlc3", "ohlc4", "hlcc4"})
@@ -337,6 +362,8 @@ class IRGenerator:
                 return self._lower_math_call(fn, call)
             if ns == "input":
                 return self._lower_input(call, None)
+            if ns == "color" and fn == "from_gradient":
+                return self._lower_from_gradient(call)
             # constant-namespace call (e.g. color.new) — fold to a palette color
             folded = _resolve_const(call)
             if isinstance(folded, str) and folded.startswith("#"):
@@ -736,6 +763,68 @@ class IRGenerator:
             idx = len(self._palette)
             self._palette.append(hex_color)
         return self._emit({"op": "const", "value": idx}, span, 0, idx)
+
+    def _const_num(self, value: float, span: Span) -> int:
+        """Emit a numeric const node (palette index or literal)."""
+        return self._emit({"op": "const", "value": value}, span, 0, value)
+
+    def _palette_block(self, hexes: list[str]) -> int:
+        """Append hexes to the palette as a contiguous block (no dedup) so the
+        bucket->index arithmetic base+bucket is valid. Returns the base index."""
+        base = len(self._palette)
+        self._palette.extend(hexes)
+        return base
+
+    def _gradient_color(self, call, positional: int, name: str) -> str | None:
+        """Resolve a gradient endpoint color arg to a hex: const color / folded
+        color.new, or an input.color's baked default; None when unresolved."""
+        expr = self._arg_expr(call, positional, name)
+        v = _resolve_const(expr) if expr is not None else None
+        if isinstance(v, str) and v.startswith("#"):
+            return v
+        ci = self._color_input_id_of(expr)
+        return ci[1] if ci is not None else None
+
+    def _lower_from_gradient(self, call) -> int:
+        """color.from_gradient(value, bottom_value, top_value, bottom_color, top_color)."""
+        lo = self._const_arg(call, 1, "bottom_value")
+        hi = self._const_arg(call, 2, "top_value")
+        lo_hex = self._gradient_color(call, 3, "bottom_color")
+        hi_hex = self._gradient_color(call, 4, "top_color")
+        if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)) or not lo_hex or not hi_hex:
+            return self._na_node(call.span)
+        k = _GRADIENT_STEPS
+        colors = [_interpolate_hex(lo_hex, hi_hex, 0 if k == 1 else j / (k - 1)) for j in range(k)]
+
+        def bucket_of(v: float) -> int:
+            if hi == lo:
+                return k - 1 if v >= lo else 0
+            c = min(max((v - lo) / (hi - lo), 0.0), 1.0)
+            return int(math.floor(c * (k - 1) + 0.5))
+
+        v_arg = self._arg_expr(call, 0, "value")
+        v_const = _resolve_const(v_arg) if v_arg is not None else None
+        if isinstance(v_const, (int, float)) and not isinstance(v_const, bool):
+            return self._palette_const(colors[bucket_of(v_const)], call.span)
+
+        base = self._palette_block(colors)
+        value_node = self._lower_expr(v_arg) if v_arg is not None else self._na_node(call.span)
+        w = self._warmups[value_node]
+        if hi == lo:
+            ge = self._emit({"op": "binop", "operator": ">=", "args": [value_node, self._const_num(lo, call.span)]}, call.span, w)
+            return self._emit(
+                {"op": "select", "cond": ge, "then": self._const_num(base + k - 1, call.span), "else": self._const_num(base, call.span)},
+                call.span,
+                w,
+            )
+        sub = self._emit({"op": "binop", "operator": "-", "args": [value_node, self._const_num(lo, call.span)]}, call.span, w)
+        norm = self._emit({"op": "binop", "operator": "/", "args": [sub, self._const_num(hi - lo, call.span)]}, call.span, w)
+        mx = self._emit({"op": "call", "namespace": "math", "function": "max", "args": [norm, self._const_num(0, call.span)]}, call.span, w)
+        mn = self._emit({"op": "call", "namespace": "math", "function": "min", "args": [mx, self._const_num(1, call.span)]}, call.span, w)
+        scaled = self._emit({"op": "binop", "operator": "*", "args": [mn, self._const_num(k - 1, call.span)]}, call.span, w)
+        shifted = self._emit({"op": "binop", "operator": "+", "args": [scaled, self._const_num(0.5, call.span)]}, call.span, w)
+        fl = self._emit({"op": "call", "namespace": "math", "function": "floor", "args": [shifted]}, call.span, w)
+        return self._emit({"op": "binop", "operator": "+", "args": [fl, self._const_num(base, call.span)]}, call.span, w)
 
     def _color_input_id_of(self, expr) -> tuple[str, str] | None:
         """Detects a `color=` argument that is a bare identifier bound to an

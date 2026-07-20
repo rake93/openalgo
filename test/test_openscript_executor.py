@@ -213,6 +213,30 @@ def test_conditional_line_color_keeps_connector(dataset):
         assert math.isnan(green["values"][i]) == (not keep)
 
 
+def test_from_gradient_const_value_folds_to_bucket_color(dataset):
+    out = _run(
+        "plot(close, color = color.from_gradient(0.5, 0.0, 1.0, #000000, #ffffff))",
+        dataset,
+    )
+    assert out[0]["style"]["color"] == "#888888ff"
+
+
+def test_from_gradient_maps_endpoints_to_extreme_buckets(dataset):
+    out = _run(
+        'plot(close - open, "H", style = plot.style_histogram, '
+        "color = color.from_gradient(close > open ? 100.0 : 0.0, 0.0, 100.0, #000000, #ffffff))",
+        dataset,
+    )
+    histos = [o for o in out if o["kind"] == "histogram"]
+    assert len(histos) == 2
+    assert sorted(h["style"]["color"] for h in histos) == ["#000000ff", "#ffffffff"]
+    white = next(h for h in histos if h["style"]["color"] == "#ffffffff")
+    black = next(h for h in histos if h["style"]["color"] == "#000000ff")
+    up = dataset["close"] > dataset["open"]
+    assert np.isnan(white["values"][~up]).all()
+    assert np.isnan(black["values"][up]).all()
+
+
 def test_bgcolor_dynamic_colors(dataset):
     out = _run("bgcolor(volume > 0, color = close > open ? color.green : color.red)", dataset)
     o = out[0]
