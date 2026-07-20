@@ -25,8 +25,9 @@ from services.openscript.runtime.plancost import FIELD_COUNTS, estimate_plan_cos
 from services.openscript.runtime.plancost_config import plancost_mode
 
 
-def test_plancost_mode_defaults_to_observe():
-    assert plancost_mode() == "observe"
+def test_plancost_mode_defaults_to_enforce():
+    # Task 9 exit state — flipped from the 0.2 shadow-calibration 'observe' default.
+    assert plancost_mode() == "enforce"
 
 
 # --- CostExpr DSL + evaluator — mirrors openalgo-openscript/tests/cost-expr.test.ts ---
@@ -636,42 +637,35 @@ def test_plancost_macd_charges_kernel_once_plus_three_projections():
     assert eval_cost_expr(cost["breakdown"]["call"], ctx) == 0
 
 
-def test_plancost_emits_exact_deterministic_trees_right_fold_sum():
+def test_plancost_emits_exact_deterministic_trees_balanced_sum():
     # source close(0), const 20(1), call sma(2) — contributions in id order.
+    # The four total/perBar/bytes contributions fold PAIRWISE (Task 9 balanced
+    # reduction), not right-nested: [a, b, c, d] -> add(add(a, b), add(c, d)).
+    # The numbers are identical to the old right fold (exact integer addition);
+    # only the tree SHAPE changes, and it is byte-identical TS<->Python.
     ir = _compile_ir("plot(ta.sma(close, 20))")
     cost = estimate_plan_cost(ir)
     length = {"k": "argConst", "nodeId": 1}
     lit1 = {"k": "lit", "v": 1}
-    # total: [barCount, lit(1), mul(len, barCount), barCount] right-folded
+    # total: [barCount, lit(1), mul(len, barCount), barCount] balanced pairwise
     assert cost["totalOperations"] == {
         "k": "add",
-        "a": _BARS,
-        "b": {
-            "k": "add",
-            "a": lit1,
-            "b": {"k": "add", "a": {"k": "mul", "a": length, "b": _BARS}, "b": _BARS},
-        },
+        "a": {"k": "add", "a": _BARS, "b": lit1},
+        "b": {"k": "add", "a": {"k": "mul", "a": length, "b": _BARS}, "b": _BARS},
     }
     # perBar: [lit(1), lit(0), len, lit(1)]
     assert cost["perBarOperations"] == {
         "k": "add",
-        "a": lit1,
-        "b": {
-            "k": "add",
-            "a": {"k": "lit", "v": 0},
-            "b": {"k": "add", "a": length, "b": lit1},
-        },
+        "a": {"k": "add", "a": lit1, "b": {"k": "lit", "v": 0}},
+        "b": {"k": "add", "a": length, "b": lit1},
     }
     # bytes: [8·bars (source), lit(8) (const), 8·bars (1 block), lit(4096) base]
     assert cost["estimatedPeakBytes"] == {
         "k": "add",
-        "a": _SERIES_BYTES,
-        "b": {
-            "k": "add",
-            "a": {"k": "lit", "v": 8},
-            "b": {"k": "add", "a": _SERIES_BYTES, "b": {"k": "lit", "v": 4096}},
-        },
+        "a": {"k": "add", "a": _SERIES_BYTES, "b": {"k": "lit", "v": 8}},
+        "b": {"k": "add", "a": _SERIES_BYTES, "b": {"k": "lit", "v": 4096}},
     }
+    # <=2-element buckets are unaffected by the fold shape.
     assert cost["breakdown"]["element"] == {"k": "add", "a": _BARS, "b": lit1}
     assert cost["breakdown"]["window"] == {
         "k": "add",

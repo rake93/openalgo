@@ -178,6 +178,39 @@ def test_realistic_compiled_ir_admits():
         assert res["errors"] == [], mode
 
 
+# ── Finding 2 (Task 9): large scripts price under a balanced cost-tree fold ────
+
+
+def _long_chain(n):
+    """A long element chain of N+1 nodes — N+1 cost contributions."""
+    nodes = [{"id": 0, "op": "source", "source": "close"}]
+    for i in range(1, n + 1):
+        nodes.append({"id": i, "op": "binop", "operator": "+", "args": [i - 1, 0]})
+    return _ir(nodes, [_plot(n)])
+
+
+def test_large_ir_prices_under_balanced_fold_not_unpriced():
+    # 601 contributions — with the OLD right fold the cost tree was ~600 deep and
+    # eval_cost_expr's MAX_DEPTH (512) raised, which the resolver's blanket catch
+    # mislabeled IR_UNPRICED_OPERATOR (falsely rejecting valid large scripts once
+    # enforce is default). The balanced pairwise fold makes it O(log N) deep so
+    # the SAME cost vector prices correctly.
+    ir = _long_chain(600)
+    res = resolve_plan_cost(ir, 1000, SCRIPT_LIMITS, "enforce")
+    assert "IR_UNPRICED_OPERATOR" not in _codes(res)
+    assert res["errors"] == []
+    assert res["recomputed"]["totalOperations"] == 601_000
+    assert res["recomputed"]["perBarOperations"] == 601
+
+
+def test_large_ir_with_genuine_unpriced_still_reports_unpriced():
+    nodes = _long_chain(600)["nodes"]
+    nodes.append({"id": 601, "op": "call", "namespace": "ta", "function": "bogus_fn", "args": [0]})
+    ir = _ir(nodes, [_plot(601)])
+    res = resolve_plan_cost(ir, 1000, SCRIPT_LIMITS, "enforce")
+    assert _codes(res) == ["IR_UNPRICED_OPERATOR"]
+
+
 # ── admission ctx upper bound == Task 6 runtime_cost_ctx hi ───────────────────
 
 
@@ -218,6 +251,26 @@ def _dataset():
 def test_wiring_enforce_blocks_over_cap_execution(_dataset, monkeypatch):
     # 2100 bars; ta.sma(close, 50000) → recompute total 105,004,201 > real 100M cap.
     monkeypatch.setenv("OPENSCRIPT_PLANCOST_MODE", "enforce")
+    over_cap = _ir(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "const", "value": 50000},
+            {"id": 2, "op": "call", "namespace": "ta", "function": "sma", "args": [0, 1]},
+        ],
+        [_plot(2)],
+    )
+    with pytest.raises(IRAdmissionError) as ei:
+        execute_ir(over_cap, _dataset, {})
+    assert [e["code"] for e in ei.value.errors] == ["IR_OPERATION_BUDGET_EXCEEDED"]
+
+
+def test_wiring_default_mode_enforces_over_cap(_dataset, monkeypatch):
+    # Task 9 exit state: with NO OPENSCRIPT_PLANCOST_MODE set, the default is now
+    # 'enforce', so the SAME over-cap IR is rejected pre-execution with no override.
+    from services.openscript.runtime.plancost_config import plancost_mode
+
+    monkeypatch.delenv("OPENSCRIPT_PLANCOST_MODE", raising=False)
+    assert plancost_mode() == "enforce"
     over_cap = _ir(
         [
             {"id": 0, "op": "source", "source": "close"},

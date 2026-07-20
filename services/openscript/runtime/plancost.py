@@ -97,15 +97,32 @@ def _mul(a: CostExpr, b: CostExpr) -> CostExpr:
 
 
 def _sum(exprs: list[CostExpr]) -> CostExpr:
-    """Deterministic right fold: _sum([a, b, c]) = add(a, add(b, c)) — no
-    trailing lit(0) for non-empty lists, lit(0) for empty ones. Both languages
-    fold identically so the trees stay byte-identical."""
+    """Deterministic BALANCED (pairwise) reduction: _sum([a, b, c, d]) =
+    add(add(a, b), add(c, d)). Reduces adjacent pairs left-to-right, carrying a
+    final odd element forward unchanged, until one node remains — an O(log N)-deep
+    tree instead of the O(N)-deep right fold. lit(0) for empty lists.
+
+    Why balanced (Task 9 / Finding 2): a right fold made the cost tree ~N deep,
+    so eval_cost_expr's MAX_DEPTH (512) RAISED on any program with ~512+
+    contributions and admission mislabeled it IR_UNPRICED_OPERATOR — falsely
+    rejecting valid large scripts (maximumAstNodes = 10_000). The numeric result
+    is IDENTICAL (all contributions are non-negative integers < 2**53, so float64
+    addition is exact and re-association loses nothing): the cost VECTORS are
+    fold-invariant. Both languages run this SAME algorithm, so the emitted trees
+    stay byte-identical TS<->Python.
+    """
     if not exprs:
         return _lit(0)
-    acc = exprs[-1]
-    for i in range(len(exprs) - 2, -1, -1):
-        acc = _add(exprs[i], acc)
-    return acc
+    level = list(exprs)
+    while len(level) > 1:
+        nxt: list[CostExpr] = []
+        for i in range(0, len(level), 2):
+            if i + 1 < len(level):
+                nxt.append(_add(level[i], level[i + 1]))
+            else:
+                nxt.append(level[i])
+        level = nxt
+    return level[0]
 
 
 def _blocks_of(fn: str) -> int:
