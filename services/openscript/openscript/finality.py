@@ -57,22 +57,24 @@ def _is_number(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def _const_or_bound(ir: dict, node_id: int) -> float:
+def _const_or_bound(ir: dict, node_id: int) -> int:
     """The pivot `confirmationDelay` from its `right` node: a `const` numeric
     value verbatim; an `input`'s finite declared `max` (else `maximumLookback`);
-    any other (non-static) node is treated conservatively as `maximumLookback`."""
+    any other (non-static) node is treated conservatively as `maximumLookback`.
+    Coerced to int — a bar count — so it is byte-identical to the TS side (whose
+    numbers are already integral, while this lexer makes every literal a float)."""
     nodes = ir["nodes"]
     if node_id < 0 or node_id >= len(nodes):
         return SCRIPT_LIMITS["maximumLookback"]
     node = nodes[node_id]
     if node["op"] == "const" and _is_number(node.get("value")):
-        return node["value"]
+        return int(node["value"])
     if node["op"] == "input":
         decl = next((d for d in ir["inputs"] if d["id"] == node["inputId"]), None)
         if decl is not None and decl["type"] in ("integer", "float"):
             mx = decl.get("max")
             if _is_number(mx) and math.isfinite(mx):
-                return mx
+                return int(mx)
         return SCRIPT_LIMITS["maximumLookback"]
     return SCRIPT_LIMITS["maximumLookback"]
 
@@ -109,23 +111,38 @@ def _span_of(o: dict, ir: dict) -> dict:
     return ir["meta"]["spans"].get(driver, dict(_ZERO_SPAN))
 
 
+def _lub_nodes(ids, node_fin, node_src):
+    """LUB over a set of node-id channels (None channels skipped), sources unioned."""
+    f = "historical-final"
+    sources: list = []
+    for nid in ids:
+        if nid is None:
+            continue
+        f = lub(f, node_fin[nid])
+        sources = sources + node_src[nid]
+    return f, _dedupe_sources(sources)
+
+
 def _output_finality_of(o: dict, node_fin: list, node_src: list, output_so_far: list):
-    """An output's finality + tainting sources from the computed node maps."""
+    """An output's finality + tainting sources. Every RENDERED node-id channel
+    counts — not just the primary value: a provisional-derived `color=` repaints
+    the bar's colour even when the plotted value is confirmed, so `colorNodeId` is
+    LUBed in (Fable review, P0.4); likewise `level`/`zone` value channels."""
     kind = o["kind"]
     if kind == "plot":
-        nid = o["nodeId"]
-        return node_fin[nid], node_src[nid]
-    if kind in ("plotshape", "plotchar", "barcolor", "bgcolor", "alertcondition", "level", "zone"):
-        nid = o["condNodeId"]
-        return node_fin[nid], node_src[nid]
+        return _lub_nodes([o["nodeId"], (o.get("style") or {}).get("colorNodeId")], node_fin, node_src)
+    if kind in ("plotshape", "plotchar", "barcolor", "bgcolor"):
+        return _lub_nodes([o["condNodeId"], o.get("colorNodeId")], node_fin, node_src)
+    if kind == "alertcondition":
+        return _lub_nodes([o["condNodeId"]], node_fin, node_src)
+    if kind == "level":
+        return _lub_nodes([o["condNodeId"], o.get("priceNodeId")], node_fin, node_src)
+    if kind == "zone":
+        return _lub_nodes([o["condNodeId"], o.get("topNodeId"), o.get("bottomNodeId")], node_fin, node_src)
     if kind == "plotcandle":
-        ids = [o["openNodeId"], o["highNodeId"], o["lowNodeId"], o["closeNodeId"]]
-        f = "historical-final"
-        sources: list = []
-        for nid in ids:
-            f = lub(f, node_fin[nid])
-            sources = sources + node_src[nid]
-        return f, _dedupe_sources(sources)
+        return _lub_nodes(
+            [o["openNodeId"], o["highNodeId"], o["lowNodeId"], o["closeNodeId"]], node_fin, node_src
+        )
     if kind == "hline":
         return "historical-final", []
     if kind == "fill":
