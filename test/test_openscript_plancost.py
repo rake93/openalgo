@@ -859,3 +859,31 @@ def test_plancost_field_counts_matches_ts_table():
         "ichimoku": 5,
         "pivotpoints": 7,
     }
+
+
+# --- Task 5: meta.planCost telemetry ------------------------------------------
+
+
+def test_ir_gen_stamps_meta_plancost_telemetry():
+    ir = _compile_ir("[m, s, h] = ta.macd(close, 12, 26, 9)\nplot(m)\nplot(s)\nplot(h)")
+    pc = ir["meta"].get("planCost")
+    assert pc is not None
+    assert pc["costModelVersion"] == COST_MODEL_VERSION
+    assert "totalOperations" in pc
+    assert "perBarOperations" in pc
+    assert "estimatedPeakBytes" in pc
+    assert "breakdown" in pc
+    assert pc["dims"] == {
+        "eventChecks": "n/a",
+        "objectLifecycleChecks": "n/a",
+        "requestedDataPoints": "n/a",
+    }
+    # TELEMETRY MUST equal the authoritative recompute: admission (Task 7)
+    # recomputes from the nodes and NEVER trusts this field.
+    assert pc == estimate_plan_cost(ir)
+
+
+def test_every_honest_compile_carries_plancost_telemetry():
+    for src in ("plot(close)", "plot(ta.sma(close, 20))", "plot(math.abs(close))"):
+        ir = _compile_ir(src)
+        assert ir["meta"].get("planCost") == estimate_plan_cost(ir), src

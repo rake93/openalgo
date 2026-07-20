@@ -15,6 +15,7 @@ import math
 import re
 
 from ..limits import SCRIPT_LIMITS
+from ..runtime.plancost import estimate_plan_cost
 from . import ast_nodes as ast
 from .builtins_table import KERNELS_FUNCTIONS, TA_FUNCTIONS, ta_overload
 from .diagnostics import Diagnostic, Span, make_diagnostic
@@ -813,4 +814,7 @@ def generate_ir(source: str, program: ast.Program) -> tuple[dict | None, list[Di
     }
     if gen._palette:
         ir["palette"] = gen._palette
+    # TELEMETRY/EXPLAIN hint only — admission RECOMPUTES the authoritative
+    # cost from the IR nodes and NEVER trusts this field.
+    ir["meta"]["planCost"] = estimate_plan_cost(ir)
     return ir, []
