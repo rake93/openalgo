@@ -43,10 +43,15 @@ _KNOWN_OUTPUT_KINDS = frozenset(
         "bgcolor",
         "plotcandle",
         "alertcondition",
+        "level",
+        "zone",
     }
 )
 # Feature tags this runtime supports. Empty in v1 — grows as phases add IR kinds.
 SUPPORTED_FEATURES: frozenset[str] = frozenset()
+
+# Output kinds gated behind an IR feature — mirror of the TS GATED_OUTPUT_FEATURE.
+_GATED_OUTPUT_FEATURE = {"level": "drawing-streams", "zone": "drawing-streams"}
 
 
 class IRAdmissionError(Exception):
@@ -109,6 +114,17 @@ def admit_ir(ir: dict) -> list[dict]:
                     "code": "IR_UNKNOWN_OUTPUT_KIND",
                     "message": f"unknown output kind: {o.get('kind')}",
                     "detail": str(o.get("kind")),
+                }
+            )
+    declared_features = set((header or {}).get("requiredFeatures") or [])
+    for o in ir.get("outputs", []):
+        feat = _GATED_OUTPUT_FEATURE.get(o.get("kind"))
+        if feat and feat not in declared_features:
+            errors.append(
+                {
+                    "code": "IR_FEATURE_NOT_DECLARED",
+                    "message": f"output kind '{o.get('kind')}' requires feature '{feat}' to be declared",
+                    "detail": o.get("kind"),
                 }
             )
     return errors
