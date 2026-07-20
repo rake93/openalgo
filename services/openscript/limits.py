@@ -20,7 +20,11 @@ SCRIPT_LIMITS = MappingProxyType(
         "maximumOperationsPerBar": 100_000,
         "maximumTotalOperations": 100_000_000,
         "maximumExecutionMilliseconds": 2_000,
+        # aggregate-worker cap — DEFERRED (not enforced in 0.2; 0.2 enforces per-execution maximumExecutionMemoryMb)
         "maximumWorkerMemoryMb": 256,
+        "maximumExecutionMemoryMb": 256,
+        "maximumObjectsPerOutput": 100,
+        "maximumTotalObjects": 500,
     }
 )
 

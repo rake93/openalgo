@@ -54,3 +54,6 @@ def test_script_limits_match_typescript():
     assert SCRIPT_LIMITS["maximumVariables"] == 2_000
     assert SCRIPT_LIMITS["maximumLookback"] == 20_000
     assert SCRIPT_LIMITS["maximumHistoryBars"] == 100_000
+    assert SCRIPT_LIMITS["maximumExecutionMemoryMb"] == 256
+    assert SCRIPT_LIMITS["maximumObjectsPerOutput"] == 100
+    assert SCRIPT_LIMITS["maximumTotalObjects"] == 500

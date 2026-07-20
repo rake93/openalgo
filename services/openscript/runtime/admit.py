@@ -5,6 +5,14 @@ A class of errors DISTINCT from the OS#### source diagnostics: these describe an
 IR the runtime refuses to execute. Run once before execution (top of
 execute_ir). No silent degradation — an unknown node/output kind is rejected
 here, never treated as a call during evaluation.
+
+Phase-0.2 (weighted PlanCost budgeting) admission codes — no logic here yet;
+these are string codes (unlike the TS `AdmissionErrorCode` union) produced by
+the Task 7 PlanCost resolver, which sits beside `admit_ir` (not inside it):
+  - IR_OPERATION_BUDGET_EXCEEDED: perBarOperations/totalOperations over cap
+  - IR_MEMORY_BUDGET_EXCEEDED: estimatedPeakBytes over maximumExecutionMemoryMb
+  - IR_UNPRICED_OPERATOR: an IR op/kind absent from the operator-cost registry
+  - IR_DATASET_TOO_LARGE: barCount over maximumHistoryBars
 """
 
 from __future__ import annotations
