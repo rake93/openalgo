@@ -17,8 +17,15 @@ the Task 7 PlanCost resolver, which sits beside `admit_ir` (not inside it):
 
 from __future__ import annotations
 
+from services.openscript.limits import SCRIPT_LIMITS
+from services.openscript.runtime.cost_expr import eval_cost_expr
+from services.openscript.runtime.plancost import admission_cost_ctx, estimate_plan_cost
+
 IR_MAJOR = 1
 NUMERIC_MODE = "f64-strict"
+
+# Bytes per megabyte — identical 1024*1024 on both runtimes.
+_MB = 1024 * 1024
 
 # Keep in sync with the executor's _eval_node dispatch (executor.py).
 _KNOWN_NODE_OPS = frozenset(
@@ -105,3 +112,106 @@ def admit_ir(ir: dict) -> list[dict]:
                 }
             )
     return errors
+
+
+def resolve_plan_cost(ir: dict, bar_count: int, limits=SCRIPT_LIMITS, mode: str = "observe") -> dict:
+    """Recompute the plan cost from the IR and return every reason enforcement
+    would refuse it — Python mirror of the TS `resolvePlanCost`
+    (openalgo-openscript/src/runtime/admit-plancost.ts).
+
+    Sits BESIDE the structural `admit_ir` gate, never inside it. The load-bearing
+    security property: the decision reads ONLY the recompute — ir["meta"]["planCost"]
+    is NEVER an input to any admission decision (a forged tiny meta on an expensive
+    IR is still rejected; a forged huge meta on a cheap IR is still admitted). In
+    "observe", "errors" is always empty and the would-be verdict is in "observed";
+    in "enforce", "errors" == "observed".
+    """
+    observed: list[dict] = []
+    ctx = admission_cost_ctx(ir, bar_count, limits)
+    recomputed: dict | None = None
+
+    # barCount is independent of pricing — a too-large dataset is rejected even
+    # when the IR is otherwise unpriceable.
+    if bar_count > limits["maximumHistoryBars"]:
+        observed.append(
+            {
+                "code": "IR_DATASET_TOO_LARGE",
+                "message": f"barCount {bar_count} exceeds maximumHistoryBars {limits['maximumHistoryBars']}",
+                "detail": str(bar_count),
+            }
+        )
+
+    # RECOMPUTE authoritatively from the IR nodes. An unpriced operator (or any
+    # pricing failure) MUST NOT escape — collapse it into one IR_UNPRICED_OPERATOR.
+    try:
+        cost = estimate_plan_cost(ir)
+        recomputed = {
+            "totalOperations": eval_cost_expr(cost["totalOperations"], ctx),
+            "perBarOperations": eval_cost_expr(cost["perBarOperations"], ctx),
+            "estimatedPeakBytes": eval_cost_expr(cost["estimatedPeakBytes"], ctx),
+        }
+    except Exception as err:  # never let a pricing failure escape admission
+        observed.append({"code": "IR_UNPRICED_OPERATOR", "message": str(err)})
+
+    if recomputed is not None:
+        if recomputed["perBarOperations"] > limits["maximumOperationsPerBar"]:
+            observed.append(
+                {
+                    "code": "IR_OPERATION_BUDGET_EXCEEDED",
+                    "message": (
+                        f"perBarOperations {recomputed['perBarOperations']} exceeds "
+                        f"maximumOperationsPerBar {limits['maximumOperationsPerBar']}"
+                    ),
+                    "detail": f"perBar={recomputed['perBarOperations']}",
+                }
+            )
+        if recomputed["totalOperations"] > limits["maximumTotalOperations"]:
+            observed.append(
+                {
+                    "code": "IR_OPERATION_BUDGET_EXCEEDED",
+                    "message": (
+                        f"totalOperations {recomputed['totalOperations']} exceeds "
+                        f"maximumTotalOperations {limits['maximumTotalOperations']}"
+                    ),
+                    "detail": f"total={recomputed['totalOperations']}",
+                }
+            )
+        if recomputed["estimatedPeakBytes"] > limits["maximumExecutionMemoryMb"] * _MB:
+            observed.append(
+                {
+                    "code": "IR_MEMORY_BUDGET_EXCEEDED",
+                    "message": (
+                        f"estimatedPeakBytes {recomputed['estimatedPeakBytes']} exceeds "
+                        f"{limits['maximumExecutionMemoryMb']}MB"
+                    ),
+                    "detail": f"bytes={recomputed['estimatedPeakBytes']}",
+                }
+            )
+
+    return {
+        "errors": observed if mode == "enforce" else [],
+        "observed": observed,
+        "recomputed": recomputed,
+        "embeddedMismatch": _embedded_mismatch(ir, ctx, recomputed),
+        "mode": mode,
+    }
+
+
+def _embedded_mismatch(ir: dict, ctx, recomputed: dict | None) -> bool:
+    """Telemetry-only: does the embedded meta.planCost disagree with the recompute?
+    Evaluated under the SAME admission ctx. A malformed/unpriceable embedded cost,
+    or one present when the IR itself is unpriceable, counts as a mismatch. NEVER
+    gates admission — a tamper/drift signal for shadow calibration only."""
+    embedded = (ir.get("meta") or {}).get("planCost")
+    if not embedded:
+        return False
+    if recomputed is None:
+        return True
+    try:
+        return (
+            eval_cost_expr(embedded["totalOperations"], ctx) != recomputed["totalOperations"]
+            or eval_cost_expr(embedded["perBarOperations"], ctx) != recomputed["perBarOperations"]
+            or eval_cost_expr(embedded["estimatedPeakBytes"], ctx) != recomputed["estimatedPeakBytes"]
+        )
+    except Exception:  # malformed/forged embedded cost ⇒ cannot match ⇒ mismatch
+        return True

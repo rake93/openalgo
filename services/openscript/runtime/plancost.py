@@ -325,3 +325,43 @@ def runtime_cost_ctx(ir: dict, inputs: dict, bar_count: int, limits=SCRIPT_LIMIT
         return math.nan
 
     return CostCtx(bar_count=bar_count, input_bound=input_bound, arg_const=arg_const)
+
+
+def admission_cost_ctx(ir: dict, bar_count: int, limits=SCRIPT_LIMITS) -> CostCtx:
+    """Build the ADMISSION CostCtx (design §7) — Python mirror of the TS
+    `admissionCostCtx`; the conservative UPPER-bound counterpart of
+    runtime_cost_ctx, used by the Task 7 PlanCost resolver.
+
+    Where the runtime ctx clamps each input-bound window length to the caller's
+    ACTUAL value in [min, max], the admission ctx resolves every input-bound
+    length to its declared UPPER bound (decl.max, else maximumLookback). That
+    upper bound is EXACTLY the `hi` runtime_cost_ctx clamps to — so
+    charged <= estimate holds by construction (every cost term is monotonic
+    non-decreasing in input_bound).
+      - bar_count = the given bar_count (dataset length known at admission);
+      - input_bound(id) = declared_max(decl) or maximumLookback for a numeric
+        input, else NaN — the SAME resolution as runtime_cost_ctx's `hi`;
+      - arg_const(node_id) = a numeric const node's value, else NaN (byte-for-byte
+        identical to runtime_cost_ctx — const args do not vary at runtime).
+    """
+    decls = {d["id"]: d for d in ir.get("inputs", [])}
+    nodes = ir["nodes"]
+    fallback = limits["maximumLookback"]
+
+    def input_bound(id_: str) -> float:
+        decl = decls.get(id_)
+        if decl is None or decl.get("type") not in ("integer", "float"):
+            return math.nan
+        # The conservative UPPER bound — EXACTLY runtime_cost_ctx's `hi`.
+        max_ = declared_max(decl)
+        return max_ if max_ is not None else float(fallback)
+
+    def arg_const(node_id) -> float:
+        if isinstance(node_id, int) and 0 <= node_id < len(nodes):
+            node = nodes[node_id]
+            val = node.get("value")
+            if node.get("op") == "const" and _is_number(val) and _safe_finite(val):
+                return float(val)
+        return math.nan
+
+    return CostCtx(bar_count=bar_count, input_bound=input_bound, arg_const=arg_const)

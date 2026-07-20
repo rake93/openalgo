@@ -14,8 +14,11 @@ import math
 
 import numpy as np
 
-from .admit import IRAdmissionError, admit_ir
+from services.openscript.limits import SCRIPT_LIMITS
+
+from .admit import IRAdmissionError, admit_ir, resolve_plan_cost
 from .plancost import clamp_numeric_input, declared_max
+from .plancost_config import plancost_mode
 from .ta_dispatch import facade_of, invoke_kernel
 
 _MATH_UNARY = {
@@ -535,6 +538,14 @@ def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None)
         raise IRAdmissionError(errors)
     inputs = inputs or {}
     n = len(dataset["close"])
+    # Phase 0.2 Task 7 — recompute the plan cost from the IR nodes and reject an
+    # over-budget script BEFORE executing (mode from OPENSCRIPT_PLANCOST_MODE;
+    # default 'observe' never blocks). Runs once here, where barCount (n) is
+    # known — this is the single admission boundary, not a per-bar check. NEVER
+    # trusts ir["meta"]["planCost"]: the verdict comes purely from the recompute.
+    resolution = resolve_plan_cost(ir, n, SCRIPT_LIMITS, plancost_mode())
+    if resolution["errors"]:
+        raise IRAdmissionError(resolution["errors"])
     decls = {d["id"]: d for d in ir.get("inputs", [])}
     nodes = ir["nodes"]
     values: list = [None] * len(nodes)
