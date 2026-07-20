@@ -76,6 +76,11 @@ FIELD_COUNTS: dict[str, int] = {
 # later). Identical constant in the TS mirror.
 _FIXED_BASE_BYTES = 4096
 
+# Drawing-output cost weights (design §7) — mirror of the TS constants.
+DRAW_BASE_OPS = 64
+DRAW_SCAN_WEIGHT = 1
+DRAW_OBJECT_WEIGHT = 4
+
 # Every materialized series buffer is 8 bytes (f64) per bar (design §5).
 _SERIES_BYTES_PER_BAR = 8
 
@@ -187,6 +192,23 @@ def estimate_plan_cost(ir: dict) -> dict:
         total.append(_bar_count())
         buckets[bucket].append(_bar_count())
 
+    # Drawing outputs (design §7): worst-case materialization cost per level/zone,
+    # summed into the purpose-built objectLifecycleChecks dim. NOT folded into
+    # totalOperations — the runtime per-object-bar charge is Phase 1, so keeping it
+    # out preserves the pinned `sum(per_node_weights) == totalOperations` invariant.
+    drawing_costs = []
+    for o in ir.get("outputs", []):
+        if o.get("kind") not in ("level", "zone"):
+            continue
+        max_kept = o["maxKept"]
+        drawing_costs.append(
+            _add(
+                _add(_lit(DRAW_BASE_OPS), _mul(_lit(DRAW_SCAN_WEIGHT), _bar_count())),
+                _mul(_lit(DRAW_OBJECT_WEIGHT), _mul(_lit(max_kept), _bar_count())),
+            )
+        )
+    object_lifecycle_checks = _sum(drawing_costs) if drawing_costs else "n/a"
+
     return {
         "costModelVersion": COST_MODEL_VERSION,
         "totalOperations": _sum(total),
@@ -202,7 +224,7 @@ def estimate_plan_cost(ir: dict) -> dict:
         # would read as "measured and found empty").
         "dims": {
             "eventChecks": "n/a",
-            "objectLifecycleChecks": "n/a",
+            "objectLifecycleChecks": object_lifecycle_checks,
             "requestedDataPoints": "n/a",
         },
     }
