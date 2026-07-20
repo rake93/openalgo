@@ -46,6 +46,7 @@ STYLE_MAP = {
     "style_linebr": "linebr",
 }
 MATH_CONST = {"pi": math.pi, "e": math.e, "phi": 1.618033988749895, "rphi": 0.6180339887498949}
+ALERT_MAP = {"bar_close": "bar.close", "tick": "tick"}
 INPUT_TYPE = {
     "int": "integer", "float": "float", "bool": "bool", "string": "string", "source": "source",
     "color": "color", "timeframe": "timeframe",
@@ -77,7 +78,7 @@ def _slug(s: str) -> str:
 def _resolve_const_member(e: ast.MemberExpr):
     ns = e.object.name if getattr(e.object, "type", None) == "Identifier" else ""
     p = e.property
-    table = {"color": COLOR_HEX, "shape": SHAPE_MAP, "location": LOCATION_MAP, "size": SIZE_MAP, "plot": STYLE_MAP, "math": MATH_CONST}.get(ns)
+    table = {"color": COLOR_HEX, "shape": SHAPE_MAP, "location": LOCATION_MAP, "size": SIZE_MAP, "plot": STYLE_MAP, "math": MATH_CONST, "alert": ALERT_MAP}.get(ns)
     return table.get(p) if table is not None else None
 
 
@@ -617,12 +618,17 @@ class IRGenerator:
         cond_node = self._lower_expr(call.args[0].value)
         title = self._title(call, 1)
         message = self._const_arg(call, 2, "message")
+        # `on` is a namespace constant (alert.bar_close | alert.tick), read the
+        # same way as location=/shape=/style= (_resolve_const_member -> ALERT_MAP).
+        # Default, and any non-`tick` value, is bar.close.
+        on = "tick" if self._const_arg(call, None, "on") == "tick" else "bar.close"
         return {
             "kind": "alertcondition",
             "condNodeId": cond_node,
             "conditionId": _slug(title or f"cond_{len(self._outputs)}"),
             "title": title,
             "message": message if isinstance(message, str) else title,
+            "on": on,
         }
 
     # ── argument helpers ────────────────────────────────────────────────────────

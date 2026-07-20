@@ -246,8 +246,9 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
         }
     ),
     "math": frozenset({"pi", "e", "phi", "rphi"}),
+    "alert": frozenset({"bar_close", "tick"}),
 }
 
 KNOWN_NAMESPACES = frozenset(
-    {"ta", "math", "kernels", "input", "color", "shape", "location", "size", "plot"}
+    {"ta", "math", "kernels", "input", "color", "shape", "location", "size", "plot", "alert"}
 )
