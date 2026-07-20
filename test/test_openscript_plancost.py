@@ -135,7 +135,9 @@ def test_cost_expr_unknown_kind_raises():
 def test_cost_expr_missing_subkey_raises_dsl_error_not_key_error():
     with pytest.raises(CostExprError, match="malformed CostExpr node"):
         eval_cost_expr({"k": "add", "a": {"k": "lit", "v": 1}}, _CTX)  # missing "b"
-    with pytest.raises(CostExprError, match="malformed CostExpr node: inputBound requires string id"):
+    with pytest.raises(
+        CostExprError, match="malformed CostExpr node: inputBound requires string id"
+    ):
         eval_cost_expr({"k": "inputBound"}, _CTX)
     with pytest.raises(
         CostExprError, match="malformed CostExpr node: argConst requires numeric nodeId"
@@ -322,16 +324,18 @@ def test_operator_cost_macd_sums_window_terms():
 
 
 def test_operator_cost_pivothigh_charges_left_right_plus_one():
+    # real emitted shape: (HIGH source, left, right) — kernel arity 3
     ir = _prog(
         [
-            {"id": 0, "op": "const", "value": 4},
-            {"id": 1, "op": "const", "value": 2},
-            {"id": 2, "op": "call", "namespace": "ta", "function": "pivothigh", "args": [0, 1]},
+            {"id": 0, "op": "source", "source": "high"},
+            {"id": 1, "op": "const", "value": 4},
+            {"id": 2, "op": "const", "value": 2},
+            {"id": 3, "op": "call", "namespace": "ta", "function": "pivothigh", "args": [0, 1, 2]},
         ]
     )
-    left = {"k": "argConst", "nodeId": 0}
-    right = {"k": "argConst", "nodeId": 1}
-    assert cost_of(ir["nodes"][2], ir)["perBarCost"] == {
+    left = {"k": "argConst", "nodeId": 1}
+    right = {"k": "argConst", "nodeId": 2}
+    assert cost_of(ir["nodes"][3], ir)["perBarCost"] == {
         "k": "add",
         "a": {"k": "add", "a": left, "b": right},
         "b": _LIT1,
@@ -475,8 +479,10 @@ def test_operator_cost_no_fractional_pow_in_v1_registry():
     tables = [("ta", TA_FUNCTIONS), ("math", MATH_FUNCTIONS), ("kernels", KERNELS_FUNCTIONS)]
     for ns, table in tables:
         for fn, spec in table.items():
+            # KERNEL arities — the shape ir_gen actually emits (post source/const
+            # injection); math.* passes user args through (kernel == user arity).
             if "overloads" in spec:
-                arities = [o["params"] for o in spec["overloads"]]
+                arities = sorted({len(o["kernelArgs"]) for o in spec["overloads"]})
             else:
                 arities = list(spec["arities"])
             for arity in arities:
@@ -494,3 +500,72 @@ def test_operator_cost_no_fractional_pow_in_v1_registry():
                 assert_no_fractional_pow(c["perBarCost"])
                 assert_no_fractional_pow(c["totalCost"])
                 assert_no_fractional_pow(c["bytesCost"])
+
+
+# ir_gen assembles the matched overload's kernelArgs, injecting implicit source
+# series (high/low/close/volume) and constants into call.args — so the emitted
+# IR arity is the KERNEL arity, not the user-param count. Every source below
+# compiles for real; the expected number pins BOTH the arity key and the
+# period-arg kernel index (resolved from the compiled IR's own const nodes — a
+# wrong index hits a source node and falls back to lit(20000), failing the
+# exact-value assertion). Mirrors the TS real-compile test.
+_REAL_KERNEL_CASES = [
+    # the 7 kernels whose IR arity != user arity via injected sources:
+    ("vwma", "plot(ta.vwma(close, 20))", 40),  # 2*20
+    ("cci", "plot(ta.cci(20))", 40),  # 2*20 (implicit-OHLC form)
+    ("cci", "plot(ta.cci(close, 20))", 40),  # 2*20 (source form)
+    ("mfi", "plot(ta.mfi(14))", 30),  # 2*14 + 2
+    ("donchian", "[du, dm, dl] = ta.donchian(20)\nplot(du)\nplot(dm)\nplot(dl)", 40),
+    ("keltner", "[ku, km, kl] = ta.keltner(20, 10, 3)\nplot(ku)\nplot(km)\nplot(kl)", 32),
+    ("stochastic", "[sk, sd] = ta.stochastic(14, 3, 3)\nplot(sk)\nplot(sd)", 34),
+    (
+        "ichimoku",
+        "[ic, ib, isa, isb, il] = ta.ichimoku(9, 26, 52, 26)\n"
+        "plot(ic)\nplot(ib)\nplot(isa)\nplot(isb)\nplot(il)",
+        174,  # 2*9 + 2*26 + 2*52 (displacement uncharged)
+    ),
+    # injected-source kernels whose kernel arity was already priced — pinned:
+    ("atr", "plot(ta.atr(14))", 16),  # 14 + 2
+    ("adx", "[ap, am, ax] = ta.adx(14)\nplot(ap)\nplot(am)\nplot(ax)", 44),  # 3*14 + 2
+    ("supertrend", "[sv, sr] = ta.supertrend(3, 10)\nplot(sv)\nplot(sr)", 14),  # 10 + 4
+    ("pivothigh", "plot(ta.pivothigh(4, 2))", 7),  # 4 + 2 + 1
+    ("pivotlow", "plot(ta.pivotlow(4, 2))", 7),
+    ("highest", "plot(ta.highest(20))", 20),
+    ("lowest", "plot(ta.lowest(20))", 20),
+    ("change", "plot(ta.change(close))", 2),  # stream; injected const lag
+    ("tr", "plot(ta.tr())", 4),
+    ("obv", "plot(ta.obv())", 4),
+    ("cpr", "[cp, cb, ct] = ta.cpr()\nplot(cp)\nplot(cb)\nplot(ct)", 6),
+    (
+        "pivotpoints",
+        "[pp, pr1, ps1, pr2, ps2, pr3, ps3] = ta.pivotpoints()\n"
+        "plot(pp)\nplot(pr1)\nplot(ps1)\nplot(pr2)\nplot(ps2)\nplot(pr3)\nplot(ps3)",
+        14,
+    ),
+]
+
+
+def test_operator_cost_prices_real_compiler_ir_injected_source_kernels():
+    from services.openscript import openscript
+
+    for fn, source, expected_per_bar in _REAL_KERNEL_CASES:
+        result = openscript.compile(source)
+        assert result.diagnostics == [], f"{fn}: {result.diagnostics}"
+        assert result.ir is not None
+        ir = result.ir
+        # EVERY node of the real IR must price — no unpriced arity/operator.
+        for node in ir["nodes"]:
+            cost_of(node, ir)  # raises on any unpriced shape
+        call = next(n for n in ir["nodes"] if n["op"] == "call" and n["function"] == fn)
+        ctx = CostCtx(
+            bar_count=100,
+            input_bound=lambda _i: math.nan,
+            arg_const=lambda node_id, _ir=ir: (
+                float(_ir["nodes"][node_id]["value"])
+                if _ir["nodes"][node_id]["op"] == "const"
+                and isinstance(_ir["nodes"][node_id].get("value"), (int, float))
+                and not isinstance(_ir["nodes"][node_id].get("value"), bool)
+                else math.nan
+            ),
+        )
+        assert eval_cost_expr(cost_of(call, ir)["perBarCost"], ctx) == expected_per_bar, fn

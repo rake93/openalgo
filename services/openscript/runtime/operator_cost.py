@@ -101,6 +101,18 @@ def _window(lens: dict[int, list[tuple[int, int]]], plus: int = 0) -> dict:
 # builtins-table function has an explicit entry — no fallback exists. Values
 # MUST stay identical to the TS KERNEL_COST.
 #
+# Window `lens` keys are KERNEL arities — the arity of the IR the compiler
+# actually emits. ir_gen's ta lowering assembles the matched overload's
+# kernelArgs, injecting implicit source series (high/low/close/volume) and
+# constants into call.args, so the emitted arity is len(kernelArgs), NOT the
+# user-param count (e.g. ta.cci(20) emits 4 args: h, l, c, len). The period
+# indices below are kernel-arg positions, valid for EVERY overload of the
+# function (each verified against the builtins-table kernelArgs). A
+# user-param-arity call node never occurs in real IR (the server recompiles
+# source, 0.3) and is deliberately unpriced — it raises, since the executor
+# could not run that shape either. math.* passes user args through unchanged
+# (kernel arity == user arity).
+#
 # Window multipliers reflect logical passes over the window per bar
 # (1 = single pass, 2 = double pass e.g. mean+deviation, 3 = triple);
 # stream constants reflect internal per-bar stages. All integers.
@@ -118,38 +130,47 @@ KERNEL_COST: dict[str, dict] = {
     "ta.roc": _stream(4),  # lag ratio — O(1)/bar like `hist`
     "ta.trix": _window({2: [(1, 3)]}),  # 3 stacked EMAs (+O(1) roc)
     "ta.change": _stream(2),  # lag diff — O(1)/bar like `hist`
-    "ta.vwma": _window({2: [(1, 2)]}),  # rolling Σpv and Σv
-    "ta.highest": _window({1: [(0, 1)], 2: [(1, 1)]}),
-    "ta.lowest": _window({1: [(0, 1)], 2: [(1, 1)]}),
+    "ta.vwma": _window({3: [(2, 2)]}),  # (src, VOLUME, len) — rolling Σpv and Σv
+    "ta.highest": _window({2: [(1, 1)]}),  # (src|HIGH, len)
+    "ta.lowest": _window({2: [(1, 1)]}),  # (src|LOW, len)
     "ta.rising": _window({2: [(1, 1)]}),
     "ta.falling": _window({2: [(1, 1)]}),
     "ta.rma": _window({2: [(1, 1)]}),
     "ta.linreg": _window({2: [(1, 2)]}),  # Σxy and Σy passes
     "ta.barssince": _stream(2),  # counter recurrence
     "ta.cum": _stream(2),  # running sum
-    "ta.valuewhen": _stream(6),  # ring buffer of last occurrences
-    # pivots inspect left + right + 1 (the candidate bar) elements per bar
-    "ta.pivothigh": _window({2: [(0, 1), (1, 1)], 3: [(1, 1), (2, 1)]}, 1),
-    "ta.pivotlow": _window({2: [(0, 1), (1, 1)], 3: [(1, 1), (2, 1)]}, 1),
-    "ta.atr": _window({1: [(0, 1)], 4: [(3, 1)]}, 2),  # RMA(len) + TR pass
-    "ta.cci": _window({1: [(0, 2)], 2: [(1, 2)]}),  # SMA + mean |dev| passes
+    # valuewhen keeps a ring of the last occurrence+1 matched values; a matching
+    # bar shifts the ring O(occurrence) — worst case O(≤1000)/bar at the
+    # kernel's occurrence bound, so a flat O(1) constant under-represents it.
+    # 64 is the conservative calibrated constant (typical occurrence ≤ 2;
+    # OS4002 wall-clock is the physical backstop for the bounded worst case;
+    # re-tuned in shadow calibration, Task 9).
+    "ta.valuewhen": _stream(64),
+    # pivots inspect left + right + 1 (the candidate bar) elements per bar;
+    # both overloads emit (src|HIGH/LOW, left, right)
+    "ta.pivothigh": _window({3: [(1, 1), (2, 1)]}, 1),
+    "ta.pivotlow": _window({3: [(1, 1), (2, 1)]}, 1),
+    "ta.atr": _window({4: [(3, 1)]}, 2),  # (h, l, c, len) — RMA(len) + TR pass
+    "ta.cci": _window({4: [(3, 2)]}),  # (h|src, l|src, c|src, len) — SMA + mean |dev|
     "ta.tr": _stream(4),  # max of 3 elementwise diffs
     "ta.obv": _stream(4),  # signed running sum
-    "ta.mfi": _window({1: [(0, 2)]}, 2),  # ± money-flow rolling sums
+    "ta.mfi": _window({5: [(4, 2)]}, 2),  # (h, l, c, VOLUME, len) — ± flow sums
     "ta.crossover": _stream(4),
     "ta.crossunder": _stream(4),
     "ta.cross": _stream(4),
     "ta.macd": _window({4: [(1, 1), (2, 1), (3, 1)]}),  # fast + slow + signal EMAs
     "ta.bb": _window({3: [(1, 3)]}),  # SMA + 2-pass stdev
     "ta.ppo": _window({4: [(1, 1), (2, 1), (3, 1)]}),
-    "ta.adx": _window({1: [(0, 3)], 4: [(3, 3)]}, 2),  # 3 RMA smoothings + DM pass
+    "ta.adx": _window({4: [(3, 3)]}, 2),  # (h, l, c, len) — 3 RMA smoothings + DM pass
     "ta.cpr": _stream(6),  # 3 elementwise outputs
-    "ta.donchian": _window({1: [(0, 2)]}),  # highest + lowest
-    "ta.keltner": _window({3: [(0, 1), (1, 1)]}, 2),  # EMA(len) + ATR(len) + bands
-    "ta.stochastic": _window({3: [(0, 2), (1, 1), (2, 1)]}),  # hi+lo over %K, 2 SMAs
-    "ta.supertrend": _window({2: [(1, 1)], 5: [(3, 1)]}, 4),  # ATR(len) + band recurrence
+    "ta.donchian": _window({3: [(2, 2)]}),  # (HIGH, LOW, len) — highest + lowest
+    "ta.keltner": _window({6: [(3, 1), (4, 1)]}, 2),  # (h,l,c, emaLen, atrLen, mult)
+    "ta.stochastic": _window({6: [(3, 2), (4, 1), (5, 1)]}),  # (h,l,c, kLen, kSmooth, dLen)
+    "ta.supertrend": _window({5: [(3, 1)]}, 4),  # (h|src…, atrLen, factor) + band recurrence
     "ta.tsi": _window({4: [(1, 2), (2, 2), (3, 1)]}),  # double-smoothed m and |m|
-    "ta.ichimoku": _window({4: [(0, 2), (1, 2), (2, 2)]}),  # 3 hi+lo windows; shift O(1)
+    # (h, l, c, conv, base, spanB, displacement) — 3 hi+lo windows; the
+    # displacement (index 6) is an O(1) shift and stays uncharged
+    "ta.ichimoku": _window({7: [(3, 2), (4, 2), (5, 2)]}),
     "ta.pivotpoints": _stream(14),  # 7 elementwise outputs
     # --- math.* ---
     "math.abs": _elem(2),
