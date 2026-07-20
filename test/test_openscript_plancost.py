@@ -12,7 +12,7 @@ from services.openscript.openscript.builtins_table import (
     MATH_FUNCTIONS,
     TA_FUNCTIONS,
 )
-from services.openscript.runtime.cost_expr import CostCtx, eval_cost_expr
+from services.openscript.runtime.cost_expr import CostCtx, CostExprError, eval_cost_expr
 from services.openscript.runtime.operator_cost import (
     COST_MODEL_VERSION,
     COVERED_FUNCTIONS,
@@ -56,13 +56,40 @@ def test_cost_expr_evaluates_every_node_kind_deterministically():
     )
 
 
-def test_cost_expr_nested_composition_superlinear():
+def test_cost_expr_nested_composition_superlinear_integer_exponent():
+    # mul(pow(barCount, 2), inputBound('len')) — quadratic kernel shape
     e = {
         "k": "mul",
-        "a": {"k": "pow", "a": {"k": "barCount"}, "b": 1.5},
+        "a": {"k": "pow", "a": {"k": "barCount"}, "b": 2},
         "b": {"k": "inputBound", "id": "len"},
     }
-    assert eval_cost_expr(e, _CTX) == 2000.0**1.5 * 50
+    assert eval_cost_expr(e, _CTX) == 200_000_000
+
+
+def test_cost_expr_pow_is_repeated_multiplication_bit_identical():
+    # Past 2^53 libm pow and a multiply-fold can differ by 1 ulp; the DSL
+    # semantics ARE the fold — assert the implementation matches it exactly.
+    p457 = 1.0
+    for _ in range(6):
+        p457 *= 457.0
+    assert eval_cost_expr({"k": "pow", "a": {"k": "lit", "v": 457}, "b": 6}, _CTX) == p457
+    big = 1.0 * 123456789.0 * 123456789.0
+    assert eval_cost_expr({"k": "pow", "a": {"k": "lit", "v": 123456789}, "b": 2}, _CTX) == big
+    assert eval_cost_expr({"k": "pow", "a": {"k": "lit", "v": 5}, "b": 0}, _CTX) == 1
+    assert eval_cost_expr({"k": "pow", "a": {"k": "lit", "v": 5}, "b": 1}, _CTX) == 5
+    # JSON may deliver an integral float exponent — accepted
+    assert eval_cost_expr({"k": "pow", "a": {"k": "lit", "v": 5}, "b": 2.0}, _CTX) == 25
+
+
+def test_cost_expr_non_integer_pow_exponent_raises():
+    with pytest.raises(CostExprError, match=r"invalid pow exponent: 1\.5"):
+        eval_cost_expr({"k": "pow", "a": {"k": "barCount"}, "b": 1.5}, _CTX)
+    with pytest.raises(CostExprError, match="invalid pow exponent"):
+        eval_cost_expr({"k": "pow", "a": {"k": "barCount"}, "b": -1}, _CTX)
+    with pytest.raises(CostExprError, match="invalid pow exponent"):
+        eval_cost_expr({"k": "pow", "a": {"k": "barCount"}, "b": 65}, _CTX)
+    with pytest.raises(CostExprError, match="invalid pow exponent"):
+        eval_cost_expr({"k": "pow", "a": {"k": "barCount"}, "b": math.nan}, _CTX)
 
 
 def test_cost_expr_unresolvable_ref_raises():
@@ -93,9 +120,42 @@ def test_cost_expr_nan_literal_raises():
         eval_cost_expr({"k": "lit", "v": math.nan}, _CTX)
 
 
+def test_cost_expr_negative_zero_leaves_normalize_to_plus_zero():
+    r = eval_cost_expr({"k": "lit", "v": -0.0}, _CTX)
+    assert r == 0.0 and math.copysign(1.0, r) == 1.0
+    r = eval_cost_expr({"k": "max", "a": {"k": "lit", "v": -0.0}, "b": {"k": "lit", "v": 0}}, _CTX)
+    assert r == 0.0 and math.copysign(1.0, r) == 1.0
+
+
 def test_cost_expr_unknown_kind_raises():
     with pytest.raises(ValueError, match="unknown CostExpr kind"):
         eval_cost_expr({"k": "div", "a": 1}, _CTX)
+
+
+def test_cost_expr_missing_subkey_raises_dsl_error_not_key_error():
+    with pytest.raises(CostExprError, match="malformed CostExpr node"):
+        eval_cost_expr({"k": "add", "a": {"k": "lit", "v": 1}}, _CTX)  # missing "b"
+    with pytest.raises(CostExprError, match="malformed CostExpr node: inputBound requires string id"):
+        eval_cost_expr({"k": "inputBound"}, _CTX)
+    with pytest.raises(
+        CostExprError, match="malformed CostExpr node: argConst requires numeric nodeId"
+    ):
+        eval_cost_expr({"k": "argConst"}, _CTX)
+    with pytest.raises(CostExprError, match="malformed CostExpr node"):
+        eval_cost_expr(None, _CTX)  # type: ignore[arg-type]
+
+
+def test_cost_expr_bigint_lit_raises_dsl_error_not_overflow_error():
+    # Python json parses arbitrary-precision ints (JS JSON.parse would give
+    # Infinity); math.isfinite raises OverflowError on them — must surface as
+    # the single DSL error type, never a leaked OverflowError.
+    with pytest.raises(CostExprError, match="non-finite CostExpr lit"):
+        eval_cost_expr({"k": "lit", "v": 10**400}, _CTX)
+
+
+def test_cost_expr_error_is_a_value_error():
+    # Task 7 admission catches one exception type; keep it a ValueError subclass.
+    assert issubclass(CostExprError, ValueError)
 
 
 # --- Operator-cost registry — mirrors openalgo-openscript/tests/operator-cost.test.ts ---
