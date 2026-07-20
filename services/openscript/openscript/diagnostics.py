@@ -48,6 +48,13 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS2015": "Duplicate alertcondition id",
     "OS2016": "Invalid stateful declaration or reassignment",
     "OS2017": "input.color value used outside a color= argument",
+    # Semantic — drawing streams (Phase 0.5; emitters land Phase 1 with compiler lowering)
+    "OS2018": "terminate= requires extend.until",
+    "OS2019": "extend.until requires a terminate= mode",
+    "OS2020": "bars= requires extend.bars",
+    "OS2021": "extend.bars requires a bars= count",
+    "OS2022": "mitigated_color= applies only to a zone terminated by terminate.touch",
+    "OS2023": "invalid drawing-output argument",
     # Limits
     "OS3001": "Source exceeds maximum size",
     "OS3002": "Program exceeds maximum AST nodes",
@@ -61,6 +68,8 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS4002": "Execution time budget exceeded",
     "OS4003": "Invalid input value",
     "OS4004": "Kernel execution failed",
+    # Warnings (compile succeeds; advisory)
+    "OS5001": "max_kept exceeds maximumObjectsPerOutput (clamped)",
 }
 
 
