@@ -6,7 +6,20 @@ import math
 
 import pytest
 
+from services.openscript.limits import SCRIPT_LIMITS
+from services.openscript.openscript.builtins_table import (
+    KERNELS_FUNCTIONS,
+    MATH_FUNCTIONS,
+    TA_FUNCTIONS,
+)
 from services.openscript.runtime.cost_expr import CostCtx, eval_cost_expr
+from services.openscript.runtime.operator_cost import (
+    COST_MODEL_VERSION,
+    COVERED_FUNCTIONS,
+    cost_of,
+    has_cost,
+    scan_expr_size,
+)
 from services.openscript.runtime.plancost_config import plancost_mode
 
 
@@ -28,10 +41,19 @@ def test_cost_expr_evaluates_every_node_kind_deterministically():
     assert eval_cost_expr({"k": "barCount"}, _CTX) == 2000
     assert eval_cost_expr({"k": "inputBound", "id": "len"}, _CTX) == 50
     assert eval_cost_expr({"k": "argConst", "nodeId": 3}, _CTX) == 20
-    assert eval_cost_expr({"k": "mul", "a": {"k": "barCount"}, "b": {"k": "lit", "v": 8}}, _CTX) == 16000
-    assert eval_cost_expr({"k": "add", "a": {"k": "lit", "v": 1}, "b": {"k": "barCount"}}, _CTX) == 2001
+    assert (
+        eval_cost_expr({"k": "mul", "a": {"k": "barCount"}, "b": {"k": "lit", "v": 8}}, _CTX)
+        == 16000
+    )
+    assert (
+        eval_cost_expr({"k": "add", "a": {"k": "lit", "v": 1}, "b": {"k": "barCount"}}, _CTX)
+        == 2001
+    )
     assert eval_cost_expr({"k": "pow", "a": {"k": "barCount"}, "b": 2}, _CTX) == 4_000_000
-    assert eval_cost_expr({"k": "max", "a": {"k": "lit", "v": 1}, "b": {"k": "lit", "v": 5}}, _CTX) == 5
+    assert (
+        eval_cost_expr({"k": "max", "a": {"k": "lit", "v": 1}, "b": {"k": "lit", "v": 5}}, _CTX)
+        == 5
+    )
 
 
 def test_cost_expr_nested_composition_superlinear():
@@ -74,3 +96,341 @@ def test_cost_expr_nan_literal_raises():
 def test_cost_expr_unknown_kind_raises():
     with pytest.raises(ValueError, match="unknown CostExpr kind"):
         eval_cost_expr({"k": "div", "a": 1}, _CTX)
+
+
+# --- Operator-cost registry — mirrors openalgo-openscript/tests/operator-cost.test.ts ---
+
+_LIT1 = {"k": "lit", "v": 1}
+_BARS = {"k": "barCount"}
+_SERIES_BYTES = {"k": "mul", "a": {"k": "lit", "v": 8}, "b": {"k": "barCount"}}
+
+
+def _prog(nodes: list[dict], inputs: list[dict] | None = None) -> dict:
+    return {
+        "version": 1,
+        "compilerVersion": "openscript-1.0",
+        "sourceHash": "test",
+        "declaration": {"name": "Cost", "overlay": False},
+        "inputs": inputs or [],
+        "nodes": nodes,
+        "outputs": [],
+        "meta": {"warmupBars": 0, "spans": {}},
+    }
+
+
+def test_operator_cost_model_version_is_1():
+    assert COST_MODEL_VERSION == 1
+
+
+def test_operator_cost_source_is_element_class():
+    ir = _prog([{"id": 0, "op": "source", "source": "close"}])
+    assert cost_of(ir["nodes"][0], ir) == {
+        "perBarCost": _LIT1,
+        "totalCost": _BARS,
+        "bytesCost": _SERIES_BYTES,
+    }
+
+
+def test_operator_cost_element_ops():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "source", "source": "open"},
+            {"id": 2, "op": "binop", "operator": "+", "args": [0, 1]},
+            {"id": 3, "op": "unop", "operator": "-", "arg": 2},
+            {"id": 4, "op": "select", "cond": 2, "then": 0, "else": 1},
+            {"id": 5, "op": "hist", "arg": 0, "offset": 3},
+            {"id": 6, "op": "nz", "arg": 5},
+        ]
+    )
+    for node_id in (2, 3, 4, 5, 6):
+        assert cost_of(ir["nodes"][node_id], ir) == {
+            "perBarCost": _LIT1,
+            "totalCost": _BARS,
+            "bytesCost": _SERIES_BYTES,
+        }
+
+
+def test_operator_cost_const_scalar_is_fixed():
+    ir = _prog([{"id": 0, "op": "const", "value": 20}])
+    assert cost_of(ir["nodes"][0], ir) == {
+        "perBarCost": {"k": "lit", "v": 0},
+        "totalCost": _LIT1,
+        "bytesCost": {"k": "lit", "v": 8},
+    }
+
+
+def test_operator_cost_input_scalar_vs_source_series():
+    ir = _prog(
+        [
+            {"id": 0, "op": "input", "inputId": "len"},
+            {"id": 1, "op": "input", "inputId": "src"},
+        ],
+        inputs=[
+            {"id": "len", "type": "integer", "label": "Length", "defaultValue": 14, "max": 500},
+            {"id": "src", "type": "source", "label": "Source", "defaultValue": "close"},
+        ],
+    )
+    assert cost_of(ir["nodes"][0], ir)["totalCost"] == _LIT1
+    assert cost_of(ir["nodes"][1], ir) == {
+        "perBarCost": _LIT1,
+        "totalCost": _BARS,
+        "bytesCost": _SERIES_BYTES,
+    }
+
+
+def test_operator_cost_windowed_ema_literal_period_uses_arg_const():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "const", "value": 20},
+            {"id": 2, "op": "call", "namespace": "ta", "function": "ema", "args": [0, 1]},
+        ]
+    )
+    c = cost_of(ir["nodes"][2], ir)
+    length = {"k": "argConst", "nodeId": 1}
+    assert c["perBarCost"] == length
+    assert c["totalCost"] == {"k": "mul", "a": length, "b": _BARS}
+    assert c["bytesCost"] == _SERIES_BYTES
+    ctx = CostCtx(
+        bar_count=1000,
+        input_bound=lambda _i: math.nan,
+        arg_const=lambda n: 20 if n == 1 else math.nan,
+    )
+    assert eval_cost_expr(c["perBarCost"], ctx) == 20
+    assert eval_cost_expr(c["totalCost"], ctx) == 20_000
+    assert eval_cost_expr(c["bytesCost"], ctx) == 8000
+
+
+def test_operator_cost_windowed_sma_input_period_uses_input_bound():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "input", "inputId": "len"},
+            {"id": 2, "op": "call", "namespace": "ta", "function": "sma", "args": [0, 1]},
+        ],
+        inputs=[
+            {"id": "len", "type": "integer", "label": "Length", "defaultValue": 14, "max": 500}
+        ],
+    )
+    assert cost_of(ir["nodes"][2], ir)["perBarCost"] == {"k": "inputBound", "id": "len"}
+
+
+def test_operator_cost_computed_period_falls_back_to_conservative_lit():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "const", "value": 10},
+            {"id": 2, "op": "binop", "operator": "+", "args": [1, 1]},
+            {"id": 3, "op": "call", "namespace": "ta", "function": "sma", "args": [0, 2]},
+        ]
+    )
+    assert cost_of(ir["nodes"][3], ir)["perBarCost"] == {
+        "k": "lit",
+        "v": SCRIPT_LIMITS["maximumLookback"],
+    }
+
+
+def test_operator_cost_macd_sums_window_terms():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "const", "value": 12},
+            {"id": 2, "op": "const", "value": 26},
+            {"id": 3, "op": "const", "value": 9},
+            {
+                "id": 4,
+                "op": "call",
+                "namespace": "ta",
+                "function": "macd",
+                "args": [0, 1, 2, 3],
+                "output": 0,
+            },
+        ]
+    )
+    c = cost_of(ir["nodes"][4], ir)
+    fast = {"k": "argConst", "nodeId": 1}
+    slow = {"k": "argConst", "nodeId": 2}
+    signal = {"k": "argConst", "nodeId": 3}
+    assert c["perBarCost"] == {"k": "add", "a": {"k": "add", "a": fast, "b": slow}, "b": signal}
+    ctx = CostCtx(
+        bar_count=100,
+        input_bound=lambda _i: math.nan,
+        arg_const=lambda n: {1: 12, 2: 26, 3: 9}.get(n, math.nan),
+    )
+    assert eval_cost_expr(c["perBarCost"], ctx) == 47
+
+
+def test_operator_cost_pivothigh_charges_left_right_plus_one():
+    ir = _prog(
+        [
+            {"id": 0, "op": "const", "value": 4},
+            {"id": 1, "op": "const", "value": 2},
+            {"id": 2, "op": "call", "namespace": "ta", "function": "pivothigh", "args": [0, 1]},
+        ]
+    )
+    left = {"k": "argConst", "nodeId": 0}
+    right = {"k": "argConst", "nodeId": 1}
+    assert cost_of(ir["nodes"][2], ir)["perBarCost"] == {
+        "k": "add",
+        "a": {"k": "add", "a": left, "b": right},
+        "b": _LIT1,
+    }
+
+
+def test_operator_cost_stream_kernels_charge_small_constants():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "call", "namespace": "ta", "function": "cum", "args": [0]},
+            {"id": 2, "op": "call", "namespace": "ta", "function": "tr", "args": []},
+        ]
+    )
+    assert cost_of(ir["nodes"][1], ir)["perBarCost"] == {"k": "lit", "v": 2}
+    assert cost_of(ir["nodes"][2], ir)["perBarCost"] == {"k": "lit", "v": 4}
+
+
+def test_operator_cost_math_elementwise_is_2_per_bar():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "call", "namespace": "math", "function": "abs", "args": [0]},
+        ]
+    )
+    assert cost_of(ir["nodes"][1], ir) == {
+        "perBarCost": {"k": "lit", "v": 2},
+        "totalCost": {"k": "mul", "a": {"k": "lit", "v": 2}, "b": _BARS},
+        "bytesCost": _SERIES_BYTES,
+    }
+
+
+def test_operator_cost_math_sum_is_windowed():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "const", "value": 14},
+            {"id": 2, "op": "call", "namespace": "math", "function": "sum", "args": [0, 1]},
+        ]
+    )
+    assert cost_of(ir["nodes"][2], ir)["perBarCost"] == {"k": "argConst", "nodeId": 1}
+
+
+def test_operator_cost_kernels_charge_quirk_window():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "const", "value": 8},
+            {"id": 2, "op": "const", "value": 1},
+            {"id": 3, "op": "const", "value": 25},
+            {
+                "id": 4,
+                "op": "call",
+                "namespace": "kernels",
+                "function": "rationalQuadratic",
+                "args": [0, 1, 2, 3],
+            },
+        ]
+    )
+    # 4 units per window element over startAtBar elements + 8 fixed (the +2 quirk bars)
+    assert cost_of(ir["nodes"][4], ir)["perBarCost"] == {
+        "k": "add",
+        "a": {"k": "mul", "a": {"k": "lit", "v": 4}, "b": {"k": "argConst", "nodeId": 3}},
+        "b": {"k": "lit", "v": 8},
+    }
+
+
+def test_operator_cost_scan_per_bar_is_expr_tree_size():
+    expr = {"k": "bin", "op": "+", "a": {"k": "prev"}, "b": {"k": "input", "i": 0}}
+    assert scan_expr_size(expr) == 3
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "scan", "init": None, "expr": expr, "inputs": [0]},
+        ]
+    )
+    assert cost_of(ir["nodes"][1], ir) == {
+        "perBarCost": {"k": "lit", "v": 3},
+        "totalCost": {"k": "mul", "a": {"k": "lit", "v": 3}, "b": _BARS},
+        "bytesCost": _SERIES_BYTES,
+    }
+
+
+def test_operator_cost_scan_expr_size_counts_every_kind():
+    expr = {
+        "k": "select",
+        "c": {"k": "un", "op": "isna", "a": {"k": "prevh"}},
+        "t": {"k": "const", "v": 0},
+        "e": {
+            "k": "nz",
+            "a": {"k": "math", "fn": "max", "args": [{"k": "prev"}, {"k": "input", "i": 0}]},
+            "b": {"k": "const", "v": None},
+        },
+    }
+    assert scan_expr_size(expr) == 9
+
+
+def test_operator_cost_coverage_every_builtin_is_priced():
+    expected = set()
+    expected.update(f"ta.{fn}" for fn in TA_FUNCTIONS)
+    expected.update(f"math.{fn}" for fn in MATH_FUNCTIONS)
+    expected.update(f"kernels.{fn}" for fn in KERNELS_FUNCTIONS)
+    for key in expected:
+        ns, fn = key.split(".")
+        assert has_cost(ns, fn), f"unpriced builtin: {key}"
+    # ...and the registry has no stray entries beyond the builtins surface
+    assert set(COVERED_FUNCTIONS) == expected
+
+
+def test_operator_cost_unregistered_function_raises():
+    ir = _prog(
+        [
+            {"id": 0, "op": "source", "source": "close"},
+            {"id": 1, "op": "call", "namespace": "ta", "function": "nope", "args": [0]},
+        ]
+    )
+    assert not has_cost("ta", "nope")
+    with pytest.raises(ValueError, match=r"unpriced operator: ta\.nope"):
+        cost_of(ir["nodes"][1], ir)
+
+
+def test_operator_cost_unknown_node_op_raises():
+    ir = _prog([{"id": 0, "op": "source", "source": "close"}])
+    with pytest.raises(ValueError, match="unpriced operator: teleport"):
+        cost_of({"id": 1, "op": "teleport"}, ir)
+
+
+def test_operator_cost_no_fractional_pow_in_v1_registry():
+    """Walk every covered function at every accepted arity and assert no pow
+    node carries a non-integer exponent (v1 has no superlinear kernel)."""
+
+    def assert_no_fractional_pow(e: dict) -> None:
+        k = e["k"]
+        if k == "pow":
+            assert float(e["b"]).is_integer(), f"fractional pow exponent {e['b']}"
+            assert_no_fractional_pow(e["a"])
+        elif k in ("add", "mul", "max"):
+            assert_no_fractional_pow(e["a"])
+            assert_no_fractional_pow(e["b"])
+
+    tables = [("ta", TA_FUNCTIONS), ("math", MATH_FUNCTIONS), ("kernels", KERNELS_FUNCTIONS)]
+    for ns, table in tables:
+        for fn, spec in table.items():
+            if "overloads" in spec:
+                arities = [o["params"] for o in spec["overloads"]]
+            else:
+                arities = list(spec["arities"])
+            for arity in arities:
+                nodes = [{"id": 0, "op": "source", "source": "close"}]
+                args = []
+                for i in range(arity):
+                    nodes.append({"id": i + 1, "op": "const", "value": 10})
+                    args.append(i + 1)
+                call_id = arity + 1
+                nodes.append(
+                    {"id": call_id, "op": "call", "namespace": ns, "function": fn, "args": args}
+                )
+                ir = _prog(nodes)
+                c = cost_of(ir["nodes"][call_id], ir)
+                assert_no_fractional_pow(c["perBarCost"])
+                assert_no_fractional_pow(c["totalCost"])
+                assert_no_fractional_pow(c["bytesCost"])
