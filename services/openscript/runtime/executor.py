@@ -575,9 +575,11 @@ def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None)
     n = len(dataset["close"])
     # Phase 0.2 Task 7 — recompute the plan cost from the IR nodes and reject an
     # over-budget script BEFORE executing (mode from OPENSCRIPT_PLANCOST_MODE;
-    # default 'observe' never blocks). Runs once here, where barCount (n) is
-    # known — this is the single admission boundary, not a per-bar check. NEVER
-    # trusts ir["meta"]["planCost"]: the verdict comes purely from the recompute.
+    # default 'enforce' since Task 9, override with =observe to shadow only). Runs
+    # here every call, where barCount (n) is known — the admission boundary; unlike
+    # the TS worker's incremental update path, execute_ir recomputes over the full
+    # dataset each call, so this re-checks the CURRENT n every time. NEVER trusts
+    # ir["meta"]["planCost"]: the verdict comes purely from the recompute.
     resolution = resolve_plan_cost(ir, n, SCRIPT_LIMITS, plancost_mode())
     if resolution["errors"]:
         raise IRAdmissionError(resolution["errors"])

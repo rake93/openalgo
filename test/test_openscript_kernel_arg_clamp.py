@@ -65,7 +65,14 @@ def _nan_equal(a, b):
     return bool(np.all((a == b) | (np.isnan(a) & np.isnan(b))))
 
 
-def test_no_max_nw_start_at_bar_is_clamped():
+def test_no_max_nw_start_at_bar_is_clamped(monkeypatch):
+    # Exercises the RUNTIME dispatch clamp (Finding 1, which was live IN OBSERVE):
+    # a maximumLookback-scale window (charged 20_000) over a 20_050-bar dataset is
+    # ~1.6B total ops, legitimately over maximumTotalOperations (100M). Python's
+    # execute_ir embeds the admission resolver, so with the Task-9 enforce default
+    # it would be (correctly) rejected pre-execution before the runtime clamp under
+    # test is reached. Pin observe to test the clamp itself.
+    monkeypatch.setenv("OPENSCRIPT_PLANCOST_MODE", "observe")
     dataset = _make_dataset(N)
     exploit = _compile_ir('sab = input.int(20, "S")\nplot(kernels.gaussian(close, 8.0, sab))')
     got = _line(execute_ir(exploit, dataset, {"sab": 4_000_000}))
@@ -75,7 +82,11 @@ def test_no_max_nw_start_at_bar_is_clamped():
     assert np.isfinite(got).any()  # window filled at 20_000, NOT 4_000_000
 
 
-def test_computed_expr_length_is_clamped():
+def test_computed_expr_length_is_clamped(monkeypatch):
+    # See test_no_max_nw_start_at_bar_is_clamped: a maximumLookback-scale window
+    # over a 20_050-bar dataset is legitimately over maximumTotalOperations, so this
+    # runtime-clamp test pins observe (enforce would correctly reject it first).
+    monkeypatch.setenv("OPENSCRIPT_PLANCOST_MODE", "observe")
     dataset = _make_dataset(N)
     # a+b = 25_000 is a binop node — NOT a const and NOT an input, so the cost
     # model charges the maximumLookback fallback; the executed length must agree.
