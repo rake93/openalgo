@@ -72,6 +72,11 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS5001": "max_kept exceeds maximumObjectsPerOutput (clamped)",
     "OS5002": "output consumes provisional/lookahead data (repaints)",
     "OS5003": "bar.close alert on a provisional condition — may repaint; use alert.tick",
+    # Warnings — editor-only style lint (P4.2; never emitted by this Python port, no conformance fixture)
+    "OS5004": "unused variable",
+    "OS5005": "variable name should be lowerCamelCase",
+    "OS5006": "source is not formatted (run Format)",
+    "OS5007": "magic number as a ta.*/kernels.* length — prefer a named input/const",
 }
 
 
