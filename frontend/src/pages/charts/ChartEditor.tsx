@@ -488,7 +488,7 @@ export default function ChartEditor() {
 
       {/* Split: editor | preview */}
       <div className="flex min-h-0 flex-1">
-        <div className="flex w-[42%] min-w-[360px] flex-col border-r border-border">
+        <div className="flex w-[42%] min-w-[360px] min-h-0 flex-col border-r border-border">
           <div className="min-h-0 flex-1 overflow-hidden">
             <OpenScriptEditor value={source} onChange={onSourceChange} />
           </div>
