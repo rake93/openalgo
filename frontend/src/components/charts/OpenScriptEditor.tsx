@@ -7,17 +7,70 @@
  * marks — so the editor can never disagree with how the code actually compiles.
  */
 
+import { autocompletion, type CompletionSource } from '@codemirror/autocomplete'
 import { StreamLanguage } from '@codemirror/language'
 import { type Diagnostic, linter, lintGutter } from '@codemirror/lint'
 import type { Extension } from '@codemirror/state'
-import { EditorView } from '@codemirror/view'
+import { EditorView, hoverTooltip } from '@codemirror/view'
 import { tags as t } from '@lezer/highlight'
 import { compile } from '@openalgo/openscript/compiler'
-import { openScriptStreamParser, toLintDiagnostics } from '@openalgo/openscript/codemirror'
+import {
+  completionsAt,
+  hoverAt,
+  openScriptStreamParser,
+  toLintDiagnostics,
+} from '@openalgo/openscript/codemirror'
 import { createTheme } from '@uiw/codemirror-themes'
 import CodeMirror from '@uiw/react-codemirror'
 import { useMemo } from 'react'
 import { useThemeStore } from '@/stores/themeStore'
+
+/** Escape text before injecting into hover-tooltip innerHTML. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/**
+ * Adapts the engine's pure `completionsAt(source, pos)` to CodeMirror's
+ * `CompletionSource` shape. `signatureAt` is engine-tested and exported but
+ * not yet wired to a UI tooltip here — see TODO below.
+ */
+const openScriptCompletions: CompletionSource = (ctx) => {
+  const word = ctx.matchBefore(/[\w.]*/)
+  const items = completionsAt(ctx.state.doc.toString(), ctx.pos)
+  if (items.length === 0) return null
+  const from = word ? word.from + (word.text.includes('.') ? word.text.lastIndexOf('.') + 1 : 0) : ctx.pos
+  return {
+    from,
+    options: items.map((c) => ({ label: c.label, type: c.kind, detail: c.detail, info: c.info })),
+  }
+}
+
+/** Adapts the engine's pure `hoverAt(source, pos)` to CodeMirror's `hoverTooltip`. */
+const openScriptHover = hoverTooltip((view, pos) => {
+  const h = hoverAt(view.state.doc.toString(), pos)
+  if (!h) return null
+  return {
+    pos,
+    create: () => {
+      const dom = document.createElement('div')
+      dom.className = 'cm-os-hover'
+      dom.innerHTML = `<div class="sig">${escapeHtml(h.signature)}</div><div class="doc">${escapeHtml(h.doc)}</div>`
+      return { dom }
+    },
+  }
+})
+
+// TODO(P4.1): signature-help tooltip. `signatureAt(source, pos)` is engine-tested
+// and exported from `@openalgo/openscript/codemirror`; wiring it to a live
+// CodeMirror tooltip needs a `showTooltip`-backed StateField driven off cursor
+// position (updated via EditorView.updateListener) so it can track `activeParam`
+// as the user types commas inside a call — deferred as a follow-up so completions
+// + hover can land now.
 
 interface OpenScriptEditorProps {
   value: string
@@ -78,6 +131,20 @@ const createBaseTheme = (isDark: boolean): Extension => {
     '.cm-activeLine': { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.02)' },
     '.cm-activeLineGutter': { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.03)' },
     '.cm-cursor': { borderLeftColor: isDark ? '#38bdf8' : '#0284c7', borderLeftWidth: '2px' },
+    '.cm-os-hover': {
+      padding: '6px 8px',
+      maxWidth: '320px',
+      fontSize: '12px',
+      lineHeight: '1.4',
+    },
+    '.cm-os-hover .sig': {
+      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+      fontWeight: 600,
+      marginBottom: '2px',
+    },
+    '.cm-os-hover .doc': {
+      color: isDark ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.65)',
+    },
   })
 }
 
@@ -90,6 +157,8 @@ export function OpenScriptEditor({ value, onChange, readOnly = false }: OpenScri
       openScriptLanguage,
       openScriptLinter,
       lintGutter(),
+      autocompletion({ override: [openScriptCompletions] }),
+      openScriptHover,
       createSyntaxTheme(isDark),
       createBaseTheme(isDark),
       EditorView.lineWrapping,
@@ -115,7 +184,7 @@ export function OpenScriptEditor({ value, onChange, readOnly = false }: OpenScri
           indentOnInput: true,
           bracketMatching: true,
           closeBrackets: true,
-          autocompletion: false,
+          autocompletion: true,
           highlightSelectionMatches: true,
           searchKeymap: true,
           tabSize: 4,
