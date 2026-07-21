@@ -47,6 +47,14 @@ STYLE_MAP = {
 }
 MATH_CONST = {"pi": math.pi, "e": math.e, "phi": 1.618033988749895, "rphi": 0.6180339887498949}
 ALERT_MAP = {"bar_close": "bar.close", "tick": "tick"}
+# Drawing-object enums (design 0.5 §2/§4). `line.style_*` -> IR lineStyle/borderStyle;
+# `extend` -> IRDrawExtend; `terminate` -> IRDrawTerminate.
+LINE_STYLE_MAP = {"style_solid": "solid", "style_dashed": "dashed", "style_dotted": "dotted"}
+EXTEND_MAP = {"lastbar": "lastbar", "until": "until", "bars": "bars"}
+TERMINATE_MAP = {
+    "close_above": "close_above", "close_below": "close_below",
+    "cross_above": "cross_above", "cross_below": "cross_below", "touch": "touch",
+}
 INPUT_TYPE = {
     "int": "integer", "float": "float", "bool": "bool", "string": "string", "source": "source",
     "color": "color", "timeframe": "timeframe",
@@ -78,7 +86,11 @@ def _slug(s: str) -> str:
 def _resolve_const_member(e: ast.MemberExpr):
     ns = e.object.name if getattr(e.object, "type", None) == "Identifier" else ""
     p = e.property
-    table = {"color": COLOR_HEX, "shape": SHAPE_MAP, "location": LOCATION_MAP, "size": SIZE_MAP, "plot": STYLE_MAP, "math": MATH_CONST, "alert": ALERT_MAP}.get(ns)
+    table = {
+        "color": COLOR_HEX, "shape": SHAPE_MAP, "location": LOCATION_MAP, "size": SIZE_MAP,
+        "plot": STYLE_MAP, "math": MATH_CONST, "alert": ALERT_MAP,
+        "line": LINE_STYLE_MAP, "extend": EXTEND_MAP, "terminate": TERMINATE_MAP,
+    }.get(ns)
     return table.get(p) if table is not None else None
 
 
@@ -202,6 +214,9 @@ class IRGenerator:
         self._scan_seeds: dict[str, float | None] = {}
         self._declaration = {"name": "Untitled", "overlay": False}
         self._diagnostics: list[Diagnostic] = []
+        # Set when a `plotlevel`/`plotzone` output is lowered — drives the
+        # `drawing-streams` requiredFeatures flag (design 0.5 §8).
+        self._uses_drawings = False
 
     # ── node emission (CSE) ─────────────────────────────────────────────────────
 
@@ -220,6 +235,9 @@ class IRGenerator:
 
     def _na_node(self, span: Span) -> int:
         return self._emit({"op": "const", "value": None}, span, 0)
+
+    def _warn(self, code: str, span: Span, detail: str | None = None) -> None:
+        self._diagnostics.append(make_diagnostic(code, "warning", span, detail))
 
     def _bind(self, name: str, node_id: int) -> None:
         self._scopes[-1][name] = node_id
@@ -512,6 +530,10 @@ class IRGenerator:
             self._outputs.append(self._tint_output(fn, call))
         elif fn == "alertcondition":
             self._outputs.append(self._alert_output(call))
+        elif fn == "plotlevel":
+            self._outputs.append(self._level_output(call))
+        elif fn == "plotzone":
+            self._outputs.append(self._zone_output(call))
         elif fn == "fill":
             out = self._fill_output(call)
             if out is not None:
@@ -657,6 +679,139 @@ class IRGenerator:
             "message": message if isinstance(message, str) else title,
             "on": on,
         }
+
+    # ── drawing outputs (design 0.5 §2/§3/§6) ───────────────────────────────────
+    #
+    # `plotlevel`/`plotzone` lower to the frozen `level`/`zone` IR shapes.
+    # condNodeId spawns an object on a confirmed true bar; the price/top/bottom
+    # node ids are sampled at the spawn bar by the Phase-1 materializer. Styling
+    # is const-or-input value only (design §2) — the frozen IR carries no
+    # colorNodeId/colorInputId slot, so an input.color arg bakes its default hex.
+
+    def _level_output(self, call: ast.CallExpr) -> dict:
+        self._uses_drawings = True
+        cond_expr = self._arg_expr(call, 0, None)
+        price_expr = self._arg_expr(call, 1, None)
+        style: dict = {
+            "color": self._draw_color(call, "color", "#2962ff"),
+            "lineStyle": self._draw_line_style(call, "style"),
+        }
+        width = self._const_arg(call, None, "width")
+        if isinstance(width, (int, float)) and not isinstance(width, bool):
+            style["lineWidth"] = width
+        extend = self._draw_extend(call)
+        out: dict = {
+            "kind": "level",
+            "condNodeId": self._lower_expr(cond_expr) if cond_expr is not None else self._na_node(call.span),
+            "priceNodeId": self._lower_expr(price_expr) if price_expr is not None else self._na_node(call.span),
+            "title": self._title(call, 2),
+            "style": style,
+            "offset": self._draw_num(call, "offset", 0),
+            "rightPad": self._draw_num(call, "right_pad", 0),
+            "extend": extend,
+            "maxKept": self._draw_max_kept(call, 20),
+            "labelLatestOnly": self._const_arg(call, None, "label_latest_only") is True,
+        }
+        self._apply_extend_args(out, call, extend)
+        label = self._draw_text(call, "label")
+        if label is not None:
+            out["label"] = label
+        return out
+
+    def _zone_output(self, call: ast.CallExpr) -> dict:
+        self._uses_drawings = True
+        cond_expr = self._arg_expr(call, 0, None)
+        top_expr = self._arg_expr(call, 1, None)
+        bottom_expr = self._arg_expr(call, 2, None)
+        style: dict = {
+            "color": self._draw_color(call, "color", "#2962ff33"),
+            "borderStyle": self._draw_line_style(call, "border_style"),
+        }
+        border_color = self._draw_color_opt(call, "border_color")
+        if border_color is not None:
+            style["borderColor"] = border_color
+        extend = self._draw_extend(call)
+        out: dict = {
+            "kind": "zone",
+            "condNodeId": self._lower_expr(cond_expr) if cond_expr is not None else self._na_node(call.span),
+            "topNodeId": self._lower_expr(top_expr) if top_expr is not None else self._na_node(call.span),
+            "bottomNodeId": self._lower_expr(bottom_expr) if bottom_expr is not None else self._na_node(call.span),
+            "title": self._title(call, 3),
+            "style": style,
+            "offset": self._draw_num(call, "offset", 0),
+            "rightPad": self._draw_num(call, "right_pad", 0),
+            "extend": extend,
+            "maxKept": self._draw_max_kept(call, 10),
+        }
+        self._apply_extend_args(out, call, extend)
+        # mitigated_color styles a zone closed via terminate.touch (design §4);
+        # semantic OS2022 already rejects it on a level or non-touch terminate.
+        if out.get("terminate") == "touch":
+            mc = self._draw_color_opt(call, "mitigated_color")
+            if mc is not None:
+                out["mitigatedColor"] = mc
+        text = self._draw_text(call, "text")
+        if text is not None:
+            out["text"] = text
+        return out
+
+    def _apply_extend_args(self, out: dict, call: ast.CallExpr, extend: str) -> None:
+        """`terminate=` present iff extend=='until'; `bars=` present iff
+        extend=='bars' (design §3/§6). Semantic OS2018-2021 enforces consistency."""
+        if extend == "until":
+            t = self._const_arg(call, None, "terminate")
+            if isinstance(t, str):
+                out["terminate"] = t
+        elif extend == "bars":
+            b = self._const_arg(call, None, "bars")
+            if isinstance(b, (int, float)) and not isinstance(b, bool):
+                out["bars"] = b
+
+    def _draw_color(self, call: ast.CallExpr, name: str, fallback: str) -> str:
+        """A drawing color arg by name -> static hex: const color, folded
+        color.new, or an input.color's baked default (binding id dropped)."""
+        v = self._draw_color_opt(call, name)
+        return v if v is not None else fallback
+
+    def _draw_color_opt(self, call: ast.CallExpr, name: str) -> str | None:
+        expr = self._arg_expr(call, None, name)
+        ci = self._color_input_id_of(expr)
+        if ci is not None:
+            return ci[1]
+        v = _resolve_const(expr) if expr is not None else None
+        return v if isinstance(v, str) else None
+
+    def _draw_line_style(self, call: ast.CallExpr, name: str) -> str:
+        """`style=`/`border_style=` enum -> IR lineStyle/borderStyle; default 'solid'."""
+        v = self._const_arg(call, None, name)
+        return v if v in ("dashed", "dotted") else "solid"
+
+    def _draw_num(self, call: ast.CallExpr, name: str, fallback: float):
+        v = self._const_arg(call, None, name)
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else fallback
+
+    def _draw_max_kept(self, call: ast.CallExpr, default: int):
+        """`max_kept` -> clamped <= maximumObjectsPerOutput; a source value over
+        the cap warns OS5001 (advisory; runtime clamps in Phase 1)."""
+        v = self._const_arg(call, None, "max_kept")
+        raw = v if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+        cap = SCRIPT_LIMITS["maximumObjectsPerOutput"]
+        if raw > cap:
+            arg = self._arg_expr(call, None, "max_kept")
+            self._warn("OS5001", arg.span if arg is not None else call.span)
+            return cap
+        return raw
+
+    def _draw_text(self, call: ast.CallExpr, name: str) -> dict | None:
+        """`label=`/`text=` -> IRDrawText. v1 lowers const strings; numeric format
+        templates (design §11) round-trip via the 'template' variant but are
+        materialized in Phase 1, not lowered here."""
+        v = self._const_arg(call, None, name)
+        return {"kind": "const", "value": v} if isinstance(v, str) else None
+
+    def _draw_extend(self, call: ast.CallExpr) -> str:
+        v = self._const_arg(call, None, "extend")
+        return v if v in ("until", "bars") else "lastbar"
 
     # ── argument helpers ────────────────────────────────────────────────────────
 
@@ -887,7 +1042,10 @@ def generate_ir(source: str, program: ast.Program) -> tuple[dict | None, list[Di
             gen._scan_targets.add(stmt.name)
     for stmt in program.body:
         gen._lower_top_stmt(stmt)
-    if gen._diagnostics:
+    # Errors halt lowering (no IR); warnings (e.g. OS5001 max_kept clamp) are
+    # advisory and ride through with a built IR — mirroring analyze_finality's
+    # OS5002/OS5003 warnings that compile() appends to a non-null IR.
+    if any(d.severity == "error" for d in gen._diagnostics):
         return None, gen._diagnostics
     warmup_bars = max(gen._warmups) if gen._warmups else 0
     ir = {
@@ -898,7 +1056,7 @@ def generate_ir(source: str, program: ast.Program) -> tuple[dict | None, list[Di
             "major": 1,
             "minor": 0,
             "compilerVersion": COMPILER_VERSION,
-            "requiredFeatures": [],
+            "requiredFeatures": ["drawing-streams"] if gen._uses_drawings else [],
             "numericMode": "f64-strict",
         },
         "declaration": gen._declaration,
@@ -912,4 +1070,4 @@ def generate_ir(source: str, program: ast.Program) -> tuple[dict | None, list[Di
     # TELEMETRY/EXPLAIN hint only — admission RECOMPUTES the authoritative
     # cost from the IR nodes and NEVER trusts this field.
     ir["meta"]["planCost"] = estimate_plan_cost(ir)
-    return ir, []
+    return ir, gen._diagnostics
