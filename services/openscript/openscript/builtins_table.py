@@ -214,6 +214,11 @@ OUTPUT_FUNCTIONS = frozenset(
         "barcolor",
         "bgcolor",
         "alertcondition",
+        # Drawing-object streams (design 0.5 §2). Lower to `level`/`zone` IR;
+        # gated behind the `drawing-streams` feature, so they compile but reject
+        # at admission until the Phase-1 materializer flips the feature on.
+        "plotlevel",
+        "plotzone",
     }
 )
 
@@ -247,8 +252,17 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
     ),
     "math": frozenset({"pi", "e", "phi", "rphi"}),
     "alert": frozenset({"bar_close", "tick"}),
+    # Drawing-object enums (design 0.5 §2/§4). `line.style_*` styles level lines
+    # and zone borders (solid/dashed/dotted); `extend` is the right-edge growth
+    # mode; `terminate` is the directional termination predicate for extend.until.
+    "line": frozenset({"style_solid", "style_dashed", "style_dotted"}),
+    "extend": frozenset({"lastbar", "until", "bars"}),
+    "terminate": frozenset({"close_above", "close_below", "cross_above", "cross_below", "touch"}),
 }
 
 KNOWN_NAMESPACES = frozenset(
-    {"ta", "math", "kernels", "input", "color", "shape", "location", "size", "plot", "alert"}
+    {
+        "ta", "math", "kernels", "input", "color", "shape", "location", "size", "plot", "alert",
+        "line", "extend", "terminate",
+    }
 )
