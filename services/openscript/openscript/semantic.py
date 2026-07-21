@@ -311,6 +311,8 @@ class Analyzer:
                 self._error("OS2011", call.span, name)
             if name == "alertcondition":
                 self._register_title(call, self._alert_titles, "OS2015")
+            if name in ("plotlevel", "plotzone"):
+                self._validate_drawing_output(name, call)
             return
         if name in self._functions:
             arity = self._functions[name]
@@ -320,6 +322,64 @@ class Analyzer:
                 self._error("OS2008", call.span, name)
             return
         self._error("OS2002", call.span, name)
+
+    def _validate_drawing_output(self, fn: str, call: ast.CallExpr) -> None:
+        """`plotlevel`/`plotzone` argument-consistency (design 0.5 §2/§4). These
+        are ERRORS (they halt compilation); the `max_kept` cap check is a
+        non-gating OS5001 warning wired in ir-gen where the clamp lives. Unknown
+        `extend`/`terminate`/`line` enum members are caught by the generic member
+        visit (OS2001), consistent with `shape`/`location`/`alert`."""
+        extend_arg = self._named_arg_value(call, "extend")
+        # Absent extend= defaults to extend.lastbar (design §2).
+        extend_mode = "lastbar" if extend_arg is None else self._enum_member(extend_arg)
+        has_terminate = self._named_arg_value(call, "terminate") is not None
+        has_bars = self._named_arg_value(call, "bars") is not None
+        mitigated_arg = self._named_arg_value(call, "mitigated_color")
+
+        if has_terminate and extend_mode != "until":
+            self._error("OS2018", call.span)
+        if extend_mode == "until" and not has_terminate:
+            self._error("OS2019", call.span)
+        if has_bars and extend_mode != "bars":
+            self._error("OS2020", call.span)
+        if extend_mode == "bars" and not has_bars:
+            self._error("OS2021", call.span)
+        if mitigated_arg is not None:
+            # mitigated_color= is a zone-only styling of a terminate.touch close.
+            term_arg = self._named_arg_value(call, "terminate")
+            term_mode = self._enum_member(term_arg) if term_arg is not None else None
+            if fn == "plotlevel" or term_mode != "touch":
+                self._error("OS2022", call.span)
+        offset = self._numeric_arg_value(call, "offset")
+        if offset is not None and offset > 0:
+            self._error("OS2023", call.span, "offset must be <= 0")
+        right_pad = self._numeric_arg_value(call, "right_pad")
+        if right_pad is not None and right_pad < 0:
+            self._error("OS2023", call.span, "right_pad must be >= 0")
+
+    def _named_arg_value(self, call: ast.CallExpr, name: str):
+        """The value expression of a named argument, if present."""
+        for arg in call.args:
+            if arg.name == name:
+                return arg.value
+        return None
+
+    def _enum_member(self, expr) -> str | None:
+        """The member property of an enum access `ns.MEMBER` (e.g. extend.until)."""
+        if expr.type == "Member" and getattr(expr.object, "type", None) == "Identifier":
+            return expr.property
+        return None
+
+    def _numeric_arg_value(self, call: ast.CallExpr, name: str):
+        """A numeric literal argument (a plain Number or a negated one), else None."""
+        e = self._named_arg_value(call, name)
+        if e is None:
+            return None
+        if e.type == "Number":
+            return e.value
+        if e.type == "Unary" and e.op == "-" and e.operand.type == "Number":
+            return -e.operand.value
+        return None
 
     def _check_destructure(self, value: ast.Expr, count: int, span: Span) -> None:
         if value.type != "Call" or value.callee.type != "Member":
