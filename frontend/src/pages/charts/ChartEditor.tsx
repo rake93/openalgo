@@ -12,6 +12,7 @@
 
 import type { Diagnostic } from '@openalgo/openscript'
 import { compile } from '@openalgo/openscript/compiler'
+import { formatSource } from '@openalgo/openscript/codemirror'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
@@ -201,6 +202,10 @@ export default function ChartEditor() {
     },
     [setSource, compileAndPreview]
   )
+
+  const formatDoc = useCallback(() => {
+    onSourceChange(formatSource(sourceRef.current))
+  }, [onSourceChange])
 
   const doSearch = useCallback(async (q: string) => {
     setQuery(q)
@@ -420,6 +425,14 @@ export default function ChartEditor() {
           onCreateNew={newScript}
           onOpen={openScript}
         />
+        <button
+          type="button"
+          onClick={formatDoc}
+          title="Format (Shift-Alt-F)"
+          className="h-8 rounded bg-card px-3 text-sm font-medium hover:bg-accent"
+        >
+          Format
+        </button>
         <button
           type="button"
           onClick={() => setShowAlerts(true)}

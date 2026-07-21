@@ -11,13 +11,15 @@ import { autocompletion, type CompletionSource } from '@codemirror/autocomplete'
 import { StreamLanguage } from '@codemirror/language'
 import { type Diagnostic, linter, lintGutter } from '@codemirror/lint'
 import type { Extension } from '@codemirror/state'
-import { EditorView, hoverTooltip } from '@codemirror/view'
+import { EditorView, hoverTooltip, keymap } from '@codemirror/view'
 import { tags as t } from '@lezer/highlight'
 import { compile } from '@openalgo/openscript/compiler'
 import {
   completionsAt,
+  formatSource,
   hoverAt,
   openScriptStreamParser,
+  styleLint,
   toLintDiagnostics,
 } from '@openalgo/openscript/codemirror'
 import { createTheme } from '@uiw/codemirror-themes'
@@ -80,9 +82,32 @@ interface OpenScriptEditorProps {
 
 const openScriptLanguage = StreamLanguage.define(openScriptStreamParser)
 
-const openScriptLinter = linter((view) =>
-  toLintDiagnostics(compile(view.state.doc.toString()).diagnostics) as unknown as Diagnostic[]
-)
+const openScriptLinter = linter((view) => {
+  const doc = view.state.doc.toString()
+  return toLintDiagnostics([
+    ...compile(doc).diagnostics,
+    ...styleLint(doc),
+  ]) as unknown as Diagnostic[]
+})
+
+/**
+ * `Shift-Alt-F` replaces the whole document with `formatSource(doc)` — a
+ * conservative, idempotent re-indent + operator/comma respacing. No-ops if
+ * the document is already formatted.
+ */
+const formatKeymap = keymap.of([
+  {
+    key: 'Shift-Alt-f',
+    run: (view) => {
+      const doc = view.state.doc.toString()
+      const out = formatSource(doc)
+      if (out !== doc) {
+        view.dispatch({ changes: { from: 0, to: doc.length, insert: out } })
+      }
+      return true
+    },
+  },
+])
 
 const createSyntaxTheme = (isDark: boolean): Extension =>
   createTheme({
@@ -159,6 +184,7 @@ export function OpenScriptEditor({ value, onChange, readOnly = false }: OpenScri
       lintGutter(),
       autocompletion({ override: [openScriptCompletions] }),
       openScriptHover,
+      formatKeymap,
       createSyntaxTheme(isDark),
       createBaseTheme(isDark),
       EditorView.lineWrapping,
