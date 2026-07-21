@@ -121,6 +121,19 @@ def test_input_override(dataset):
     _close(_line(out_default), ta.ema(dataset["close"], 9))
 
 
+def test_degenerate_from_gradient_warmup_is_untinted(dataset):
+    # bottom_value == top_value = 50 -> the hi==lo path. v = sma(5) is NaN on the
+    # first 4 bars: those must map to '' (na), not the bottom bucket (the bug was
+    # NaN >= 50 -> falsy -> a wrong black tint on warmup).
+    out = _run(
+        "v = ta.sma(close, 5)\nbgcolor(high >= low, color = color.from_gradient(v, 50.0, 50.0, #000000, #ffffff))",
+        dataset,
+    )
+    bg = next(o for o in out if o["kind"] == "bgcolor")
+    assert bg["colors"][:4] == ["", "", "", ""]  # warmup NaN -> no tint
+    assert any(c != "" for c in bg["colors"][4:])  # real bars ARE tinted
+
+
 # ── P2 calibrated ta additions (rma/linreg/valuewhen/pivots) ───────────────
 
 

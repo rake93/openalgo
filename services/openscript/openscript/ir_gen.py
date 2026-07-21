@@ -239,6 +239,9 @@ class IRGenerator:
     def _warn(self, code: str, span: Span, detail: str | None = None) -> None:
         self._diagnostics.append(make_diagnostic(code, "warning", span, detail))
 
+    def _error(self, code: str, span: Span, detail: str | None = None) -> None:
+        self._diagnostics.append(make_diagnostic(code, "error", span, detail))
+
     def _bind(self, name: str, node_id: int) -> None:
         self._scopes[-1][name] = node_id
 
@@ -942,10 +945,19 @@ class IRGenerator:
 
     def _lower_from_gradient(self, call) -> int:
         """color.from_gradient(value, bottom_value, top_value, bottom_color, top_color)."""
+        lo_expr = self._arg_expr(call, 1, "bottom_value")
+        hi_expr = self._arg_expr(call, 2, "top_value")
         lo = self._const_arg(call, 1, "bottom_value")
         hi = self._const_arg(call, 2, "top_value")
         lo_hex = self._gradient_color(call, 3, "bottom_color")
         hi_hex = self._gradient_color(call, 4, "top_color")
+        # v1 requires CONST numeric bounds (design 0.5 §2). A PRESENT-but-non-const
+        # bound is OS2006 ("argument must be a compile-time constant"), not a silent
+        # no-color fallback. (Colors stay unvalidated — color.* is best-effort.)
+        if lo_expr is not None and not isinstance(lo, (int, float)):
+            self._error("OS2006", lo_expr.span, "from_gradient bottom_value must be a constant")
+        if hi_expr is not None and not isinstance(hi, (int, float)):
+            self._error("OS2006", hi_expr.span, "from_gradient top_value must be a constant")
         if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)) or not lo_hex or not hi_hex:
             return self._na_node(call.span)
         k = _GRADIENT_STEPS
@@ -967,8 +979,18 @@ class IRGenerator:
         w = self._warmups[value_node]
         if hi == lo:
             ge = self._emit({"op": "binop", "operator": ">=", "args": [value_node, self._const_num(lo, call.span)]}, call.span, w)
-            return self._emit(
+            pick = self._emit(
                 {"op": "select", "cond": ge, "then": self._const_num(base + k - 1, call.span), "else": self._const_num(base, call.span)},
+                call.span,
+                w,
+            )
+            # A NaN value must map to the na (no-color) index — matching the hi≠lo
+            # path (NaN propagates through the arithmetic to a NaN index, → ''). Without
+            # this guard `NaN >= lo` is falsy → the bottom bucket, a wrong tint on warmup
+            # NaN bars (Pine `from_gradient(na, …)` → na).
+            is_na = self._emit({"op": "unop", "operator": "isna", "arg": value_node}, call.span, w)
+            return self._emit(
+                {"op": "select", "cond": is_na, "then": self._na_node(call.span), "else": pick},
                 call.span,
                 w,
             )

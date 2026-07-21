@@ -27,6 +27,20 @@ def _is_zone(item: dict) -> bool:
     return "top" in item
 
 
+# Sentinel for a GENUINELY ABSENT (missing / None) text/label — kept distinct from
+# an empty-string label, which is a PRESENT, meaningful value. Must stay identical
+# to the TS mirror (object-diff.ts), where the same token replaced a raw NUL byte
+# that had turned that file into a git-binary blob. Chosen not to collide with a
+# real drawing label.
+_ABSENT_TEXT = "__absent__"
+
+
+def _text_part(v) -> str:
+    """Signature part for an optional text/label: the value when present (INCLUDING
+    the empty string), the sentinel only when genuinely absent (None / missing key)."""
+    return _ABSENT_TEXT if v is None else v
+
+
 def _signature(item: dict) -> str:
     """The diff-relevant signature of an item — the COMMITTED lifecycle state only,
     so a pure history rebase (which shifts bar indices but leaves real timestamps
@@ -41,9 +55,9 @@ def _signature(item: dict) -> str:
     right_edge = "proj" if (open_ or item["x2"]["time"] is None) else str(item["x2"]["time"])
     parts: list = [item["id"], open_, right_edge]
     if _is_zone(item):
-        parts += ["z", item["top"], item["bottom"], item.get("mitigated") is True, item.get("text") or " "]
+        parts += ["z", item["top"], item["bottom"], item.get("mitigated") is True, _text_part(item.get("text"))]
     else:
-        parts += ["l", item["price"], item.get("label") or " "]
+        parts += ["l", item["price"], _text_part(item.get("label"))]
     return "|".join(str(p) for p in parts)
 
 

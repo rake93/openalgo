@@ -362,6 +362,20 @@ class Analyzer:
         max_kept = self._numeric_arg_value(call, "max_kept")
         if max_kept is not None and max_kept < 0:
             self._error("OS2023", call.span, "max_kept must be >= 0")
+        # Required-const drawing args (design 0.5 §2: "const or input"; input
+        # support for these is deferred, so v1 is const-only). A PRESENT-but-non-
+        # const arg must be OS2023, never a silent fallback to the default. Numeric
+        # args check const-numeric-resolvability; enum args check STRUCTURE (is it a
+        # `ns.member`?) so an unknown MEMBER stays OS2001 via the generic member
+        # visit rather than double-reporting here.
+        for name in ("bars", "offset", "right_pad", "max_kept"):
+            e = self._named_arg_value(call, name)
+            if e is not None and self._numeric_arg_value(call, name) is None:
+                self._error("OS2023", e.span, f"{name}= must be a compile-time constant")
+        for name in ("extend", "terminate"):
+            e = self._named_arg_value(call, name)
+            if e is not None and self._enum_member(e) is None:
+                self._error("OS2023", e.span, f"{name}= must be a constant enum member")
 
     def _named_arg_value(self, call: ast.CallExpr, name: str):
         """The value expression of a named argument, if present."""

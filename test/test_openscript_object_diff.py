@@ -89,6 +89,20 @@ def test_zone_mitigation_is_update():
     assert diff_object_streams([before], [after]) == [{"op": "update", "id": "0:1000", "item": after}]
 
 
+def test_text_absent_vs_empty_vs_space_are_distinct():
+    # FIX 4: '' is a PRESENT, distinct value (not folded into absent); the sentinel
+    # for genuinely-absent text must not collide with a real ' ' label either.
+    base = _zone("0:1000", _a(0, 1000), _a(6, 1006), 60, 55, False)
+    absent = dict(base)  # no "text" key
+    empty = {**base, "text": ""}
+    space = {**base, "text": " "}
+    assert diff_object_streams([absent], [empty]) == [{"op": "update", "id": "0:1000", "item": empty}]
+    assert diff_object_streams([empty], [space]) == [{"op": "update", "id": "0:1000", "item": space}]
+    # identical text (both-absent, both-empty) -> stable, no diff
+    assert diff_object_streams([absent], [dict(base)]) == []
+    assert diff_object_streams([empty], [{**base, "text": ""}]) == []
+
+
 def test_diffs_sorted_by_id():
     a = _lvl("0:1000", _a(0, 1000), _a(9, 1009), 1, True)
     b = _lvl("0:1002", _a(2, 1002), _a(9, 1009), 2, True)
