@@ -193,7 +193,7 @@ export function OpenScriptEditor({ value, onChange, readOnly = false }: OpenScri
   )
 
   return (
-    <div className="h-full w-full">
+    <div className="h-full w-full overflow-hidden [&>div]:h-full">
       <CodeMirror
         value={value}
         onChange={onChange}

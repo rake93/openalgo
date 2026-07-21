@@ -13,7 +13,7 @@
 import type { Diagnostic } from '@openalgo/openscript'
 import { compile } from '@openalgo/openscript/compiler'
 import { formatSource } from '@openalgo/openscript/codemirror'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   createAlert,
@@ -91,6 +91,26 @@ export default function ChartEditor() {
   const [alertConditions, setAlertConditions] = useState<AlertCondition[]>([])
   const [showAlerts, setShowAlerts] = useState(false)
   const [crosshair, setCrosshair] = useState<CrosshairData | null>(null)
+  const splitRef = useRef<HTMLDivElement | null>(null)
+  const [editorPct, setEditorPct] = useState(42)
+  const onDividerDown = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault()
+    const container = splitRef.current
+    if (!container) return
+    const onMove = (ev: MouseEvent) => {
+      const rect = container.getBoundingClientRect()
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100
+      setEditorPct(Math.max(20, Math.min(80, pct)))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.userSelect = ''
+    }
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
 
   const setSource = useCallback((next: string) => {
     sourceRef.current = next
@@ -500,8 +520,11 @@ export default function ChartEditor() {
       </div>
 
       {/* Split: editor | preview */}
-      <div className="flex min-h-0 flex-1">
-        <div className="flex w-[42%] min-w-[360px] min-h-0 flex-col border-r border-border">
+      <div ref={splitRef} className="flex min-h-0 flex-1">
+        <div
+          className="flex min-w-[360px] min-h-0 flex-col border-r border-border"
+          style={{ width: `${editorPct}%` }}
+        >
           <div className="min-h-0 flex-1 overflow-hidden">
             <OpenScriptEditor value={source} onChange={onSourceChange} />
           </div>
@@ -531,6 +554,12 @@ export default function ChartEditor() {
             )}
           </div>
         </div>
+
+        <div
+          onMouseDown={onDividerDown}
+          className="w-1 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-primary/60 active:bg-primary"
+          title="Drag to resize"
+        />
 
         <div className="relative min-h-0 flex-1">
           <div ref={containerRef} className="absolute inset-0" />
