@@ -28,19 +28,18 @@ def _is_zone(item: dict) -> bool:
 
 
 def _signature(item: dict) -> str:
-    """The diff-relevant signature of an item. Keyed on TIME anchors, NOT bar
-    indices: a history rebase shifts every bar index but leaves each bar's
-    timestamp fixed, and the renderer positions by time — so keying on time makes
-    a pure rebase produce ZERO diffs. The right edge's time is included ONLY when
-    the object is CLOSED — an OPEN object's right edge rides the live bar
-    cosmetically and must not read as a change."""
+    """The diff-relevant signature of an item — the COMMITTED lifecycle state only,
+    so a pure history rebase (which shifts bar indices but leaves real timestamps
+    fixed) produces ZERO diffs (design §5; Fable #1/#2).
+
+    Left edge excluded entirely (fully determined by id + constant offset; its
+    time may be a null overhang that drifts). Right-edge time included ONLY when
+    CLOSED AND in-dataset (x2.time is not None) — an open/projected edge is 'proj'
+    so it never drifts; a not-yet-reached extend.bars end commits (one update) only
+    once history covers it. Frozen values/label/mitigation/open always included."""
     open_ = item["open"]
-    parts: list = [
-        item["id"],
-        item["x1"]["time"],
-        open_,
-        "open" if open_ else str(item["x2"]["time"]),
-    ]
+    right_edge = "proj" if (open_ or item["x2"]["time"] is None) else str(item["x2"]["time"])
+    parts: list = [item["id"], open_, right_edge]
     if _is_zone(item):
         parts += ["z", item["top"], item["bottom"], item.get("mitigated") is True, item.get("text") or " "]
     else:

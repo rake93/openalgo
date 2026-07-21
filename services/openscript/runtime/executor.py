@@ -495,25 +495,69 @@ def _sample_at(v, i: int) -> float:
     return float(v[i]) if _is_series(v) else float(v)
 
 
-def _time_at(dataset: dict, bar: int, n: int) -> float:
-    """Timestamp anchor for a bar: dataset["time"][bar], clamped to a valid
-    index; falls back to the bar index when no time column is available."""
-    last = n - 1
-    b = 0 if bar < 0 else last if bar > last else bar
+# Beyond 2^52 a float64 is integer-valued (no fractional bits), so *100 would lose
+# precision — format as a full-digit integer instead (mirror of TS DRAW_INT_SAFE).
+_DRAW_INT_SAFE = 4503599627370496
+
+
+def _anchor_time(dataset: dict, bar: int, n: int):
+    """The timestamp anchor value for a bar: dataset["time"][bar] when the bar is
+    IN the dataset, else None (a left overhang bar<0 or a right edge bar>last not
+    yet reached). NEVER a clamp-derived time — a clamped time drifts as the dataset
+    grows/rebases and would falsify the §5 zero-diff-on-rebase invariant (Fable
+    #1/#2). Falls back to the bar index only when no time column exists."""
+    if bar < 0 or bar > n - 1:
+        return None
     t = dataset.get("time")
     if t is not None and len(t) == n:
-        return float(t[b])
-    return float(b)
+        return float(t[bar])
+    return float(bar)
+
+
+def _spawn_time_of(dataset: dict, s: int, n: int) -> float:
+    """The spawn bar's timestamp (the stable-ID carrier). s is always in-dataset."""
+    t = dataset.get("time")
+    if t is not None and len(t) == n:
+        return float(t[s])
+    return float(s)
+
+
+def _time_key(t: float) -> str:
+    """Byte-identical (TS<->Python) key for a spawn timestamp — the UNtruncated
+    value, so sub-second bars in one integer-second stay DISTINCT (Fable #3).
+    Integers render bare (str(int), matching JS String(1002)=='1002'); fractional
+    values use repr (matching JS shortest round-trip in the epoch-timestamp
+    domain)."""
+    return str(int(t)) if float(t).is_integer() else repr(float(t))
 
 
 def _format_draw_number(v: float) -> str:
-    """Deterministic, cross-language number->string for a label template
-    (design §11). Integers render bare; NaN -> "NaN"."""
+    """Deterministic, byte-identical (TS<->Python) number->string for a label
+    template (design §11; Fable #4). Rounds to 2 decimals with round-half-to-even
+    in the integer count-of-hundredths domain and builds the string from int parts
+    so it never uses exponential notation. Mirror of the TS formatDrawNumber; both
+    emit the identical string for every input (ties, +-Infinity, NaN, >=1e21)."""
     if math.isnan(v):
         return "NaN"
-    if math.isfinite(v) and float(v).is_integer():
-        return str(int(v))
-    return f"{v:.2f}"
+    if v == math.inf:
+        return "Infinity"
+    if v == -math.inf:
+        return "-Infinity"
+    neg = v < 0
+    a = abs(v)
+    if a >= _DRAW_INT_SAFE:  # integer-valued beyond fractional precision
+        return ("-" if neg else "") + str(int(a)) + ".00"
+    scaled = a * 100
+    fl = math.floor(scaled)
+    diff = scaled - fl
+    if diff > 0.5:
+        r = fl + 1
+    elif diff < 0.5:
+        r = fl
+    else:
+        r = fl if (fl % 2 == 0) else fl + 1
+    intp, frac = divmod(int(r), 100)
+    return ("-" if neg else "") + str(intp) + "." + str(frac).zfill(2)
 
 
 def _render_draw_text(spec: dict, s: int, values: list) -> str:
@@ -573,7 +617,9 @@ def _resolve_right_edge(o: dict, s: int, top: float, bottom: float, dataset: dic
 
 
 def _anchor(dataset: dict, bar: int, n: int) -> dict:
-    return {"bar": int(bar), "time": _time_at(dataset, bar, n)}
+    # TRUE geometric bar (may be <0 for a left overhang or >last for a not-yet
+    # -reached edge) with a None time when outside the dataset (Fable #1/#2).
+    return {"bar": int(bar), "time": _anchor_time(dataset, bar, n)}
 
 
 def _materialize_drawing(o, values, n, idx, pane, dataset, budget, total_state) -> dict:
@@ -610,13 +656,18 @@ def _materialize_drawing(o, values, n, idx, pane, dataset, budget, total_state) 
         price_v = values[o["priceNodeId"]]
         items: list[dict] = []
         for k, s in enumerate(spawns):
+            spawn_time = _spawn_time_of(dataset, s, n)
+            # Malformed dataset: a non-finite spawn time can't form a stable id —
+            # skip the object gracefully in BOTH runtimes (never crash; Fable #5).
+            if not math.isfinite(spawn_time):
+                continue
             price = _sample_at(price_v, s)
             edge = _resolve_right_edge(o, s, price, price, dataset, n)
             if budget is not None:
                 budget.charge(DRAW_OBJECT_WEIGHT * edge["objBars"])
             item = {
-                "id": f"{idx}:{int(_time_at(dataset, s, n))}",
-                "x1": _anchor(dataset, max(0, s + offset), n),
+                "id": f"{idx}:{_time_key(spawn_time)}",
+                "x1": _anchor(dataset, s + offset, n),
                 "x2": _anchor(dataset, edge["x2bar"], n),
                 "price": price,
                 "open": edge["open"],
@@ -632,14 +683,17 @@ def _materialize_drawing(o, values, n, idx, pane, dataset, budget, total_state) 
     bottom_v = values[o["bottomNodeId"]]
     items = []
     for _k, s in enumerate(spawns):
+        spawn_time = _spawn_time_of(dataset, s, n)
+        if not math.isfinite(spawn_time):
+            continue
         top = _sample_at(top_v, s)
         bottom = _sample_at(bottom_v, s)
         edge = _resolve_right_edge(o, s, top, bottom, dataset, n)
         if budget is not None:
             budget.charge(DRAW_OBJECT_WEIGHT * edge["objBars"])
         item = {
-            "id": f"{idx}:{int(_time_at(dataset, s, n))}",
-            "x1": _anchor(dataset, max(0, s + offset), n),
+            "id": f"{idx}:{_time_key(spawn_time)}",
+            "x1": _anchor(dataset, s + offset, n),
             "x2": _anchor(dataset, edge["x2bar"], n),
             "top": top,
             "bottom": bottom,

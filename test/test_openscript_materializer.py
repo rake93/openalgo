@@ -9,13 +9,19 @@ not a sibling checkout, matching the other shared-fixture ports.
 """
 
 import json
+import math
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from services.openscript import openscript  # noqa: F401  (first, avoids plancost<->ir_gen cycle)
-from services.openscript.runtime.executor import execute_ir
+from services.openscript.runtime.executor import (
+    _format_draw_number,
+    _time_key,
+    execute_ir,
+)
+from services.openscript.runtime.object_diff import diff_object_streams
 
 _FIXDIR = Path(__file__).resolve().parents[1].parent / "openalgo-openscript" / "fixtures" / "materializer"
 
@@ -96,3 +102,117 @@ def test_compiled_plotlevel_smoke():
             assert it["x2"]["bar"] == last
         else:
             assert it["x2"]["bar"] <= last
+
+
+# ── formatDrawNumber / timeKey byte-identity (Fable #3/#4) ────────────────────
+# The SAME (input, output) pairs the TS suite asserts (materializer.test.ts).
+
+_FORMAT_CASES = [
+    (0.125, "0.12"),
+    (0.625, "0.62"),
+    (0.375, "0.38"),
+    (-0.125, "-0.12"),
+    (2.5, "2.50"),
+    (100, "100.00"),
+    (0, "0.00"),
+    (3.14159, "3.14"),
+    (math.inf, "Infinity"),
+    (-math.inf, "-Infinity"),
+    (1e21, "1000000000000000000000.00"),
+    (1e16, "10000000000000000.00"),
+    (1e-5, "0.00"),
+]
+_TIMEKEY_CASES = [
+    (1002, "1002"),
+    (1000.25, "1000.25"),
+    (1000.5, "1000.5"),
+    (1600000000, "1600000000"),
+    (1600000000.5, "1600000000.5"),
+]
+
+
+@pytest.mark.parametrize("v,s", _FORMAT_CASES)
+def test_format_draw_number(v, s):
+    assert _format_draw_number(float(v)) == s
+
+
+def test_format_draw_number_nan():
+    assert _format_draw_number(math.nan) == "NaN"
+
+
+@pytest.mark.parametrize("v,s", _TIMEKEY_CASES)
+def test_time_key(v, s):
+    assert _time_key(float(v)) == s
+
+
+# ── malformed non-finite spawn time is skipped, never crashes (Fable #5) ──────
+
+
+def _level_ir(spawn_lt, extend, bars=None):
+    out = {
+        "kind": "level", "condNodeId": 2, "priceNodeId": 3, "title": "T",
+        "style": {"color": "#000"}, "offset": 0, "rightPad": 0, "extend": extend,
+        "maxKept": 20, "labelLatestOnly": False,
+    }
+    if bars is not None:
+        out["bars"] = bars
+    return {
+        "version": 1, "compilerVersion": "openscript-1.0", "sourceHash": "x",
+        "header": {"major": 1, "minor": 0, "compilerVersion": "openscript-1.0",
+                   "requiredFeatures": ["drawing-streams"], "numericMode": "f64-strict"},
+        "declaration": {"name": "T", "overlay": True}, "inputs": [],
+        "nodes": [
+            {"id": 0, "op": "source", "source": "bar_index"},
+            {"id": 1, "op": "const", "value": spawn_lt},
+            {"id": 2, "op": "binop", "operator": "<", "args": [0, 1]},
+            {"id": 3, "op": "source", "source": "close"},
+        ],
+        "outputs": [out], "meta": {"warmupBars": 0, "spans": {}},
+    }
+
+
+def test_malformed_spawn_time_is_skipped():
+    dataset = {
+        "time": np.array([1000.0, np.nan, 1002.0, 1003.0]),  # bar 1 non-finite
+        "open": np.array([10.0, 11.0, 12.0, 13.0]),
+        "high": np.array([11.0, 12.0, 13.0, 14.0]),
+        "low": np.array([9.0, 10.0, 11.0, 12.0]),
+        "close": np.array([10.0, 11.0, 12.0, 13.0]),
+        "volume": np.array([1.0, 1.0, 1.0, 1.0]),
+    }
+    outputs = execute_ir(_level_ir(3, "lastbar"), dataset, {})  # cond bar_index<3
+    lv = [o for o in outputs if o["kind"] == "levels"][0]
+    assert [it["id"] for it in lv["items"]] == ["0:1000", "0:1002"]
+
+
+# ── extend.bars projected endpoint: rebase-stable, then commits (Fable #1/#2) ──
+
+
+def _run_bars(n_bars: int) -> dict:
+    ir = _level_ir(2, "bars", 10)
+    ir["nodes"][2]["operator"] = "=="  # cond bar_index == 1 → single spawn (id 0:1001)
+    ir["nodes"][1]["value"] = 1
+    idx = np.arange(n_bars)
+    dataset = {
+        "time": (1000 + idx).astype(float),
+        "open": (10 + idx).astype(float),
+        "high": (11 + idx).astype(float),
+        "low": (9 + idx).astype(float),
+        "close": (10 + idx).astype(float),
+        "volume": np.ones(n_bars),
+    }
+    outs = execute_ir(ir, dataset, {})
+    return [o for o in outs if o["kind"] == "levels"][0]
+
+
+def test_bars_projected_rebase_then_commit():
+    a = _run_bars(6)  # lastBarIndex 5 < x2bar 11 → x2.time None
+    b = _run_bars(8)  # lastBarIndex 7 < 11 → still None
+    c = _run_bars(12)  # lastBarIndex 11 >= 11 → committed
+    a1 = next(it for it in a["items"] if it["id"] == "0:1001")
+    c1 = next(it for it in c["items"] if it["id"] == "0:1001")
+    assert a1["x2"]["bar"] == 11
+    assert a1["x2"]["time"] is None
+    assert diff_object_streams(a["items"], b["items"]) == []  # rebase-stable
+    assert c1["x2"]["time"] == 1011.0
+    assert [d["op"] for d in diff_object_streams(b["items"], c["items"])] == ["update"]

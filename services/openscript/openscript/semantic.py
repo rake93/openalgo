@@ -356,6 +356,12 @@ class Analyzer:
         right_pad = self._numeric_arg_value(call, "right_pad")
         if right_pad is not None and right_pad < 0:
             self._error("OS2023", call.span, "right_pad must be >= 0")
+        # A negative max_kept is grammar-legal but nonsensical — reject it at
+        # COMPILE time (OS2023) so it never reaches admission as
+        # IR_UNPRICED_OPERATOR (Fable #6). ir-gen still clamps the UPPER side.
+        max_kept = self._numeric_arg_value(call, "max_kept")
+        if max_kept is not None and max_kept < 0:
+            self._error("OS2023", call.span, "max_kept must be >= 0")
 
     def _named_arg_value(self, call: ast.CallExpr, name: str):
         """The value expression of a named argument, if present."""

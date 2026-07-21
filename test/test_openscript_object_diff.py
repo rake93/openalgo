@@ -61,6 +61,28 @@ def test_pure_rebase_is_stable():
     assert diff_object_streams([before], [rebased]) == []
 
 
+def test_left_overhang_no_diff():
+    # Left edge excluded from the signature (Fable #2): in-dataset vs null overhang.
+    in_data = _lvl("0:1005", _a(2, 1002), _a(9, 1009), 5, False)
+    overhang = _lvl("0:1005", _a(-1, None), _a(7, 1009), 5, False)
+    assert diff_object_streams([in_data], [overhang]) == []
+
+
+def test_projected_bars_end_stable_while_drifting():
+    # A not-yet-reached extend.bars end (null x2.time) must not diff (Fable #1).
+    before = _lvl("0:1000", _a(0, 1000), _a(12, None), 5, False)
+    after = _lvl("0:1000", _a(0, 1000), _a(14, None), 5, False)
+    assert diff_object_streams([before], [after]) == []
+
+
+def test_projected_bars_end_commits_on_reach():
+    projected = _lvl("0:1000", _a(0, 1000), _a(11, None), 5, False)
+    committed = _lvl("0:1000", _a(0, 1000), _a(11, 1011), 5, False)
+    assert diff_object_streams([projected], [committed]) == [
+        {"op": "update", "id": "0:1000", "item": committed}
+    ]
+
+
 def test_zone_mitigation_is_update():
     before = _zone("0:1000", _a(0, 1000), _a(9, 1009), 60, 55, True)
     after = _zone("0:1000", _a(0, 1000), _a(6, 1006), 60, 55, False, mitigated=True)

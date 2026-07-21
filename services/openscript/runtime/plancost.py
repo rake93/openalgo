@@ -90,6 +90,11 @@ _FIXED_BASE_BYTES = 4096
 #     (2 cmp + 1 and) + 1 or → ~7 ops; DRAW_OBJECT_WEIGHT = 8 (>= every predicate
 #     family, ~14% headroom over the worst-case 7).
 #   - DRAW_BASE_OPS = 64: per-output fixed overhead — generous, unchanged.
+# KNOWN under-model (Fable review, non-soundness): the O(1) per-OBJECT anchor +
+# label/text assembly is not separately charged — folded into the DRAW_BASE_OPS/
+# DRAW_OBJECT_WEIGHT headroom. HARD-bounded by maximumTotalObjects (500) * the
+# compile-time script size, so it can't be amplified into a budget-escape; a
+# dedicated DRAW_TEXT_WEIGHT is deferred.
 DRAW_BASE_OPS = 64
 DRAW_SCAN_WEIGHT = 2
 DRAW_OBJECT_WEIGHT = 8
