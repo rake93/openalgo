@@ -135,10 +135,18 @@ def _output_finality_of(o: dict, node_fin: list, node_src: list, output_so_far: 
         return _lub_nodes([o["condNodeId"], o.get("colorNodeId")], node_fin, node_src)
     if kind == "alertcondition":
         return _lub_nodes([o["condNodeId"]], node_fin, node_src)
+    # A drawing is a CONFIRMED-spawn object (design 0.5 §5): floor at `confirmed`
+    # even when every value channel is historical-final; rise to `provisional`
+    # only via a lookahead-tainted value channel (RESERVED forward-offset/HTF
+    # slot, no lattice change). Mirror of the TS finality floor.
     if kind == "level":
-        return _lub_nodes([o["condNodeId"], o.get("priceNodeId")], node_fin, node_src)
+        f, sources = _lub_nodes([o["condNodeId"], o.get("priceNodeId")], node_fin, node_src)
+        return lub("confirmed", f), sources
     if kind == "zone":
-        return _lub_nodes([o["condNodeId"], o.get("topNodeId"), o.get("bottomNodeId")], node_fin, node_src)
+        f, sources = _lub_nodes(
+            [o["condNodeId"], o.get("topNodeId"), o.get("bottomNodeId")], node_fin, node_src
+        )
+        return lub("confirmed", f), sources
     if kind == "plotcandle":
         return _lub_nodes(
             [o["openNodeId"], o["highNodeId"], o["lowNodeId"], o["closeNodeId"]], node_fin, node_src

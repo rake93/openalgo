@@ -47,8 +47,11 @@ _KNOWN_OUTPUT_KINDS = frozenset(
         "zone",
     }
 )
-# Feature tags this runtime supports. Empty in v1 — grows as phases add IR kinds.
-SUPPORTED_FEATURES: frozenset[str] = frozenset()
+# Feature tags this runtime supports. `drawing-streams` flipped ON in Phase 1
+# (Pri 4) — the level/zone materializer (executor._materialize_drawing) now
+# executes, so a well-formed drawing IR ADMITS + materializes. Mirror of the TS
+# SUPPORTED_FEATURES.
+SUPPORTED_FEATURES: frozenset[str] = frozenset({"drawing-streams"})
 
 # Output kinds gated behind an IR feature — mirror of the TS GATED_OUTPUT_FEATURE.
 _GATED_OUTPUT_FEATURE = {"level": "drawing-streams", "zone": "drawing-streams"}
@@ -89,7 +92,13 @@ def admit_ir(ir: dict) -> list[dict]:
                 "detail": str(header.get("numericMode")),
             }
         )
-    for f in (header or {}).get("requiredFeatures") or []:
+    # Hardening (design §13 #1): normalize a non-list requiredFeatures to []
+    # BEFORE iterating — a bare string would otherwise iterate char-by-char and
+    # unhashable elements would raise TypeError. Matches the TS `Array.isArray`
+    # guard, so both runtimes treat a malformed header identically.
+    raw_features = (header or {}).get("requiredFeatures")
+    required_features = raw_features if isinstance(raw_features, list) else []
+    for f in required_features:
         if f not in SUPPORTED_FEATURES:
             errors.append(
                 {
@@ -116,7 +125,7 @@ def admit_ir(ir: dict) -> list[dict]:
                     "detail": str(o.get("kind")),
                 }
             )
-    declared_features = set((header or {}).get("requiredFeatures") or [])
+    declared_features = set(required_features)
     for o in ir.get("outputs", []):
         feat = _GATED_OUTPUT_FEATURE.get(o.get("kind"))
         if feat and feat not in declared_features:
@@ -145,6 +154,11 @@ def resolve_plan_cost(ir: dict, bar_count: int, limits=SCRIPT_LIMITS, mode: str 
     observed: list[dict] = []
     ctx = admission_cost_ctx(ir, bar_count, limits)
     recomputed: dict | None = None
+    # Worst-case drawing-materialization ops (design §7): kept OUT of
+    # totalOperations (node-only field) but ENFORCED here in Phase 1 — the runtime
+    # charges these per object-bar into the SAME budget, so the cap must account
+    # for totalOperations + objectLifecycleChecks. Mirror of the TS resolver.
+    drawing_ops = 0
 
     # barCount is independent of pricing — a too-large dataset is rejected even
     # when the IR is otherwise unpriceable.
@@ -166,6 +180,8 @@ def resolve_plan_cost(ir: dict, bar_count: int, limits=SCRIPT_LIMITS, mode: str 
             "perBarOperations": eval_cost_expr(cost["perBarOperations"], ctx),
             "estimatedPeakBytes": eval_cost_expr(cost["estimatedPeakBytes"], ctx),
         }
+        dim = cost["dims"]["objectLifecycleChecks"]
+        drawing_ops = 0 if dim == "n/a" else eval_cost_expr(dim, ctx)
     except Exception as err:  # never let a pricing failure escape admission
         observed.append({"code": "IR_UNPRICED_OPERATOR", "message": str(err)})
 
@@ -181,15 +197,19 @@ def resolve_plan_cost(ir: dict, bar_count: int, limits=SCRIPT_LIMITS, mode: str 
                     "detail": f"perBar={recomputed['perBarOperations']}",
                 }
             )
-        if recomputed["totalOperations"] > limits["maximumTotalOperations"]:
+        # Node ops + worst-case drawing object-bar ops vs the total cap. For a
+        # non-drawing IR drawing_ops is 0, so this is byte-identical to the prior
+        # node-only check (message + detail included).
+        total_with_drawings = recomputed["totalOperations"] + drawing_ops
+        if total_with_drawings > limits["maximumTotalOperations"]:
             observed.append(
                 {
                     "code": "IR_OPERATION_BUDGET_EXCEEDED",
                     "message": (
-                        f"totalOperations {recomputed['totalOperations']} exceeds "
+                        f"totalOperations {total_with_drawings} exceeds "
                         f"maximumTotalOperations {limits['maximumTotalOperations']}"
                     ),
-                    "detail": f"total={recomputed['totalOperations']}",
+                    "detail": f"total={total_with_drawings}",
                 }
             )
         if recomputed["estimatedPeakBytes"] > limits["maximumExecutionMemoryMb"] * _MB:

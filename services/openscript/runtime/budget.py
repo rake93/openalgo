@@ -86,6 +86,20 @@ class OperationBudget:
             )
         self._check_time()
 
+    def charge(self, ops: float) -> None:
+        """Charge a block of already-weighted work — the drawing materializer's
+        per-object-bar hook (design §7). The materializer computes
+        DRAW_BASE_OPS + DRAW_SCAN_WEIGHT*scan_bars + DRAW_OBJECT_WEIGHT*object_bars
+        (the SAME weights the admission estimate uses) and charges it here, so a
+        drawing output's runtime spend can never exceed its worst-case
+        objectLifecycleChecks estimate. Same cap checks as step()."""
+        self._ops += ops
+        if self._ops > self._limits["maximumTotalOperations"]:
+            raise BudgetExceeded(
+                "OS4001", f"{self._ops} operations exceeds {self._limits['maximumTotalOperations']}"
+            )
+        self._check_time()
+
     def checkpoint(self) -> None:
         """Wall-clock-only checkpoint (called after each expensive call/scan node)."""
         self._check_time()

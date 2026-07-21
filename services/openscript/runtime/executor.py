@@ -18,7 +18,13 @@ from services.openscript.limits import SCRIPT_LIMITS
 
 from .admit import IRAdmissionError, admit_ir, resolve_plan_cost
 from .operator_cost import cost_family_of
-from .plancost import clamp_numeric_input, declared_max
+from .plancost import (
+    DRAW_BASE_OPS,
+    DRAW_OBJECT_WEIGHT,
+    DRAW_SCAN_WEIGHT,
+    clamp_numeric_input,
+    declared_max,
+)
 from .plancost_config import plancost_mode
 from .ta_dispatch import facade_of, invoke_kernel
 
@@ -480,10 +486,184 @@ def _split_plot_by_palette(o, values, n, idx, pane, ir, inputs: dict) -> list[di
     return outputs
 
 
-def _collect_outputs(ir, values, n, inputs: dict) -> list[dict]:
+# ── Drawing materializer (design 0.5 §3/§4/§5/§7/§11) ────────────────────────
+# Byte-identical with the TS mirror (openalgo-openscript/src/runtime/collect-outputs.ts).
+
+
+def _sample_at(v, i: int) -> float:
+    """Read a value at a bar (scalar broadcasts, series indexes)."""
+    return float(v[i]) if _is_series(v) else float(v)
+
+
+def _time_at(dataset: dict, bar: int, n: int) -> float:
+    """Timestamp anchor for a bar: dataset["time"][bar], clamped to a valid
+    index; falls back to the bar index when no time column is available."""
+    last = n - 1
+    b = 0 if bar < 0 else last if bar > last else bar
+    t = dataset.get("time")
+    if t is not None and len(t) == n:
+        return float(t[b])
+    return float(b)
+
+
+def _format_draw_number(v: float) -> str:
+    """Deterministic, cross-language number->string for a label template
+    (design §11). Integers render bare; NaN -> "NaN"."""
+    if math.isnan(v):
+        return "NaN"
+    if math.isfinite(v) and float(v).is_integer():
+        return str(int(v))
+    return f"{v:.2f}"
+
+
+def _render_draw_text(spec: dict, s: int, values: list) -> str:
+    """Resolve an IRDrawText at the spawn bar: const verbatim; template formatted
+    once from its args sampled at s (design §11)."""
+    if spec.get("kind") == "const":
+        return spec["value"]
+    out = spec["fmt"]
+    for k, arg in enumerate(spec["args"]):
+        v = _sample_at(values[arg], s)
+        out = out.replace(f"{{{k}}}", _format_draw_number(v))
+    return out
+
+
+def _terminate_holds(term, b: int, top: float, bottom: float, dataset: dict) -> bool:
+    """Whether the terminate predicate holds at scanned bar b (design §4).
+    close_* are STRICT (>/<); cross_*/touch are INCLUSIVE (>=/<=). A zone tests
+    the NEAR edge in the named direction; touch is non-directional. For a level,
+    top == bottom == the single value L."""
+    close = float(dataset["close"][b])
+    high = float(dataset["high"][b])
+    low = float(dataset["low"][b])
+    if term == "close_above":
+        return close > top
+    if term == "close_below":
+        return close < bottom
+    if term == "cross_above":
+        return high >= top
+    if term == "cross_below":
+        return low <= bottom
+    if term == "touch":
+        entered_top = high >= top and low <= top
+        entered_bottom = high >= bottom and low <= bottom
+        return entered_top or entered_bottom
+    return False
+
+
+def _resolve_right_edge(o: dict, s: int, top: float, bottom: float, dataset: dict, n: int) -> dict:
+    """Resolve the right edge + open/mitigated flags for one object (design §3/§4)."""
+    last_bar_index = n - 1
+    right_pad = o.get("rightPad", 0)
+    x2_0 = s + right_pad
+    extend = o.get("extend")
+    if extend == "lastbar":
+        return {"x2bar": max(last_bar_index, x2_0), "open": True, "mitigated": False, "objBars": 1}
+    if extend == "bars":
+        bars = o["bars"] if isinstance(o.get("bars"), (int, float)) else 0
+        return {"x2bar": s + int(bars), "open": False, "mitigated": False, "objBars": 1}
+    # extend == 'until': forward scan from s+1; x2 = first terminate bar (inclusive).
+    term = o.get("terminate")
+    obj_bars = 0
+    for b in range(s + 1, last_bar_index + 1):
+        obj_bars += 1
+        if _terminate_holds(term, b, top, bottom, dataset):
+            return {"x2bar": b, "open": False, "mitigated": term == "touch", "objBars": obj_bars}
+    return {"x2bar": last_bar_index, "open": True, "mitigated": False, "objBars": obj_bars}
+
+
+def _anchor(dataset: dict, bar: int, n: int) -> dict:
+    return {"bar": int(bar), "time": _time_at(dataset, bar, n)}
+
+
+def _materialize_drawing(o, values, n, idx, pane, dataset, budget, total_state) -> dict:
+    """Materialize one level/zone output into a levels/zones output dict."""
+    oid = f"out_{idx}"
+    offset = o.get("offset", 0)
+    if budget is not None:
+        budget.charge(DRAW_BASE_OPS)
+
+    # Retention: <= the literal exactly (no clamp-up-to-1; maxKept:0 -> 0), <=
+    # maximumObjectsPerOutput, <= the remaining cross-output total (§10/§13).
+    raw = o.get("maxKept")
+    literal = int(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else 0
+    effective_max = max(0, min(literal, SCRIPT_LIMITS["maximumObjectsPerOutput"], total_state["remaining"]))
+
+    # Confirmed-spawn collection: scan cond backwards, keep the newest <= max (§5).
+    cond = _as_series(values[o["condNodeId"]], n)
+    spawns: list[int] = []
+    scanned = 0
+    if effective_max > 0:
+        for s in range(n - 1, -1, -1):
+            scanned += 1
+            if _truthy_scalar(cond[s]):
+                spawns.append(s)
+                if len(spawns) >= effective_max:
+                    break
+    if budget is not None:
+        budget.charge(DRAW_SCAN_WEIGHT * scanned)
+    spawns.reverse()  # ascending spawn-bar order (oldest -> newest)
+    total_state["remaining"] -= len(spawns)
+
+    kind = o["kind"]
+    if kind == "level":
+        price_v = values[o["priceNodeId"]]
+        items: list[dict] = []
+        for k, s in enumerate(spawns):
+            price = _sample_at(price_v, s)
+            edge = _resolve_right_edge(o, s, price, price, dataset, n)
+            if budget is not None:
+                budget.charge(DRAW_OBJECT_WEIGHT * edge["objBars"])
+            item = {
+                "id": f"{idx}:{int(_time_at(dataset, s, n))}",
+                "x1": _anchor(dataset, max(0, s + offset), n),
+                "x2": _anchor(dataset, edge["x2bar"], n),
+                "price": price,
+                "open": edge["open"],
+            }
+            label = o.get("label")
+            if label and (not o.get("labelLatestOnly") or k == len(spawns) - 1):
+                item["label"] = _render_draw_text(label, s, values)
+            items.append(item)
+        return {"kind": "levels", "id": oid, "title": o["title"], "pane": pane, "style": dict(o.get("style", {})), "items": items}
+
+    # zone
+    top_v = values[o["topNodeId"]]
+    bottom_v = values[o["bottomNodeId"]]
+    items = []
+    for _k, s in enumerate(spawns):
+        top = _sample_at(top_v, s)
+        bottom = _sample_at(bottom_v, s)
+        edge = _resolve_right_edge(o, s, top, bottom, dataset, n)
+        if budget is not None:
+            budget.charge(DRAW_OBJECT_WEIGHT * edge["objBars"])
+        item = {
+            "id": f"{idx}:{int(_time_at(dataset, s, n))}",
+            "x1": _anchor(dataset, max(0, s + offset), n),
+            "x2": _anchor(dataset, edge["x2bar"], n),
+            "top": top,
+            "bottom": bottom,
+            "open": edge["open"],
+        }
+        if edge["mitigated"]:
+            item["mitigated"] = True
+        text = o.get("text")
+        if text:
+            item["text"] = _render_draw_text(text, s, values)
+        items.append(item)
+    style = dict(o.get("style", {}))
+    if o.get("mitigatedColor") is not None:
+        style["mitigatedColor"] = o["mitigatedColor"]
+    return {"kind": "zones", "id": oid, "title": o["title"], "pane": pane, "style": style, "items": items}
+
+
+def _collect_outputs(ir, values, n, inputs: dict, dataset: dict | None = None, budget=None) -> list[dict]:
     overlay = ir["declaration"].get("overlay", False)
     pane = "overlay" if overlay else 1
     outputs: list[dict] = []
+    dataset = dataset or {}
+    # Running retained-object budget across ALL drawing outputs (design §10).
+    total_objects = {"remaining": SCRIPT_LIMITS["maximumTotalObjects"]}
     for idx, o in enumerate(ir["outputs"]):
         kind = o["kind"]
         oid = f"out_{idx}"
@@ -556,6 +736,8 @@ def _collect_outputs(ir, values, n, inputs: dict) -> list[dict]:
             cond = _as_series(values[o["condNodeId"]], n)
             fired = [i for i in range(n) if _truthy_scalar(cond[i])]
             outputs.append({"kind": "alert", "id": o["conditionId"], "title": o["title"], "message": o["message"], "firedAtBar": fired})
+        elif kind in ("level", "zone"):
+            outputs.append(_materialize_drawing(o, values, n, idx, pane, dataset, budget, total_objects))
     return outputs
 
 
@@ -599,4 +781,4 @@ def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None)
                 budget.record_bytes(int(value.nbytes))
             if node["op"] in ("call", "scan"):
                 budget.checkpoint()
-    return _collect_outputs(ir, values, n, inputs)
+    return _collect_outputs(ir, values, n, inputs, dataset, budget)

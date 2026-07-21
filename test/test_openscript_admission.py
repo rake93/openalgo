@@ -65,8 +65,10 @@ def test_missing_header_rejected_as_major_mismatch():
 
 
 def test_unsupported_feature_rejected():
+    # `drawing-streams` is SUPPORTED as of Phase 1 (Pri 4) — use a feature the
+    # runtime genuinely does not know so this still exercises the reject path.
     ir = _valid_ir()
-    ir["header"]["requiredFeatures"] = ["drawing-streams"]
+    ir["header"]["requiredFeatures"] = ["nonexistent-feature"]
     assert "IR_UNSUPPORTED_FEATURE" in _codes(ir)
 
 
@@ -86,7 +88,7 @@ def test_empty_dict_header_reports_both_major_and_numeric():
 
 def test_aggregates_across_categories():
     ir = _valid_ir()
-    ir["header"]["requiredFeatures"] = ["drawing-streams"]
+    ir["header"]["requiredFeatures"] = ["nonexistent-feature"]
     ir["nodes"].append({"id": 1, "op": "frobnicate"})
     codes = _codes(ir)
     assert "IR_UNSUPPORTED_FEATURE" in codes

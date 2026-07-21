@@ -76,10 +76,27 @@ FIELD_COUNTS: dict[str, int] = {
 # later). Identical constant in the TS mirror.
 _FIXED_BASE_BYTES = 4096
 
-# Drawing-output cost weights (design §7) — mirror of the TS constants.
+# Drawing-output cost weights (design §7) — CALIBRATED in Phase 1 against the
+# real materializer (executor._materialize_drawing), replacing 0.5's
+# conservative-high placeholders (1/4). Both the admission ESTIMATE (below) and
+# the runtime per-object-bar CHARGE (executor → budget.charge) multiply by these
+# SAME constants, so real <= charged <= estimate holds by construction. Mirror
+# of the TS constants (plancost.ts).
+#
+# Calibration snapshot (logical ops = 1 per comparison/arithmetic):
+#   - spawn scan, per scanned bar: 1 truthy test on cond → ~1 op; DRAW_SCAN_WEIGHT
+#     = 2 (~100% headroom).
+#   - lifecycle, per object-bar (worst case = zone terminate.touch): 2 edges *
+#     (2 cmp + 1 and) + 1 or → ~7 ops; DRAW_OBJECT_WEIGHT = 8 (>= every predicate
+#     family, ~14% headroom over the worst-case 7).
+#   - DRAW_BASE_OPS = 64: per-output fixed overhead — generous, unchanged.
 DRAW_BASE_OPS = 64
-DRAW_SCAN_WEIGHT = 1
-DRAW_OBJECT_WEIGHT = 4
+DRAW_SCAN_WEIGHT = 2
+DRAW_OBJECT_WEIGHT = 8
+
+# Deterministic per-retained-object memory (bytes), folded into estimatedPeakBytes
+# (design §13 hardening #4). Mirror of the TS DRAW_OBJECT_BYTES.
+_DRAW_OBJECT_BYTES = 64
 
 # Every materialized series buffer is 8 bytes (f64) per bar (design §5).
 _SERIES_BYTES_PER_BAR = 8
@@ -200,13 +217,21 @@ def estimate_plan_cost(ir: dict) -> dict:
     for o in ir.get("outputs", []):
         if o.get("kind") not in ("level", "zone"):
             continue
-        max_kept = o["maxKept"]
+        # Hardening (design §13 #2/#3): a drawing output MUST carry a finite
+        # numeric maxKept. A hand-forged IR that omits it is IR_UNPRICED_OPERATOR
+        # (matching TS, which now also validates) rather than a bare KeyError into
+        # a now-ENFORCED dim. No floor / clamp-up: maxKept:0 stays sound.
+        max_kept = o.get("maxKept")
+        if not _is_number(max_kept) or not _safe_finite(max_kept):
+            raise ValueError(f"unpriced operator: {o.get('kind')} output missing numeric maxKept")
         drawing_costs.append(
             _add(
                 _add(_lit(DRAW_BASE_OPS), _mul(_lit(DRAW_SCAN_WEIGHT), _bar_count())),
                 _mul(_lit(DRAW_OBJECT_WEIGHT), _mul(_lit(max_kept), _bar_count())),
             )
         )
+        # Hardening #4: worst-case retained drawing-object memory into peak bytes.
+        bytes_.append(_mul(_lit(_DRAW_OBJECT_BYTES), _lit(max_kept)))
     object_lifecycle_checks = _sum(drawing_costs) if drawing_costs else "n/a"
 
     return {
