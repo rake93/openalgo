@@ -4,7 +4,9 @@
 executor test that checks against the wasm facade.
 """
 
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -790,3 +792,158 @@ def test_new_week_idiom_across_holiday_skipped_monday():
     )
     vals = _line(_run("plot(dayofweek < dayofweek[1] ? 1 : 0)", ds))
     assert list(vals) == [0, 0, 0, 0, 0, 1, 0]
+
+
+# ── SuperTrend Cluster migration (P1 Pri2) ─────────────────────────────────
+#
+# Python mirror of the TS `executor: SuperTrend Cluster migration` block. Reads
+# the SAME shared conformance fixture, appends the SAME diagnostic plots, runs it
+# over the SAME deterministic dataset, and pins the SAME sampled numbers — so
+# both suites agreeing on these literals is the cross-language TS == Python proof.
+
+_STC_FIXTURE = (
+    Path(__file__).resolve().parents[1].parent
+    / "openalgo-openscript"
+    / "fixtures"
+    / "openscript"
+    / "positive-supertrend-cluster.json"
+)
+_STC_DIAG_PLOTS = [
+    'plot(dLast, "dLast")',
+    'plot(d3, "d3")',
+    'plot(st3, "st3")',
+    'plot(scBu, "scBu")',
+    'plot(scBe, "scBe")',
+]
+
+# [title, barIndex, expected] — pinned IDENTICALLY in tests/executor.test.ts.
+_STC_SAMPLES = [
+    ("Cluster Up Trend", 45, 129.6569647584731),
+    ("Cluster Up Trend", 60, 144.78293382617522),
+    ("Cluster Up Trend", 79, 163.98128373946182),
+    ("Cluster Up Trend", 90, 164.3919125830897),
+    ("Cluster Down Trend", 100, 170.6285456899888),
+    ("Cluster Down Trend", 120, 153.63667524601811),
+    ("Cluster Down Trend", 140, 134.12277181214623),
+    ("Cluster Down Trend", 155, 119.33904528892262),
+    ("dLast", 60, 1),
+    ("dLast", 100, -1),
+    ("dLast", 155, -1),
+    ("d3", 60, 1),
+    ("d3", 155, -1),
+    ("st3", 45, 132.1622455351587),
+    ("st3", 60, 147.26052937214482),
+    ("st3", 100, 171.43253219043487),
+    ("st3", 155, 116.77278030936407),
+    ("scBu", 60, 1),
+    ("scBu", 90, 0.6774193548387096),
+    ("scBu", 100, 0.2580645161290323),
+    ("scBe", 90, 0.32258064516129037),
+    ("scBe", 100, 0.7419354838709677),
+    ("scBe", 155, 1),
+]
+_STC_NAN_SAMPLES = [
+    ("Cluster Up Trend", 30),  # member-5 ATR(34) still in warmup
+    ("Cluster Up Trend", 100),  # dLast == -1 -> up line gated off
+    ("Cluster Down Trend", 60),  # dLast == 1 -> down line gated off
+]
+
+
+def _stc_dataset():
+    """160-bar triangle wave (up 100->179, down 179->100) with 0.25-step noise —
+    the IDENTICAL integer formula the TS mirror uses, so both runtimes see
+    bit-identical input."""
+    n = 160
+    o = np.empty(n)
+    h = np.empty(n)
+    lo = np.empty(n)
+    c = np.empty(n)
+    v = np.empty(n)
+    for i in range(n):
+        mid = 100 + i if i < 80 else 180 - (i - 79)
+        close = mid + (((i * 37) % 15) - 7) * 0.25
+        open_ = mid + (((i * 53) % 11) - 5) * 0.25
+        hi = max(open_, close)
+        low = min(open_, close)
+        o[i] = open_
+        c[i] = close
+        h[i] = hi + 1.0
+        lo[i] = low - 1.0
+        v[i] = 1000 + (i % 50)
+    return {"open": o, "high": h, "low": lo, "close": c, "volume": v}
+
+
+def _stc_source(with_diag=True):
+    base = json.loads(_STC_FIXTURE.read_text(encoding="utf-8"))["source"].rstrip()
+    return "\n".join([base, *_STC_DIAG_PLOTS]) if with_diag else base
+
+
+def _stc_lines(source, ds):
+    result = openscript.compile(source)
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert errors == [], errors
+    outputs = execute_ir(result.ir, ds, {})
+    return {o["title"]: o["values"] for o in outputs if o["kind"] == "line"}
+
+
+@pytest.mark.skipif(not _STC_FIXTURE.is_file(), reason="engine fixture not a sibling")
+def test_stc_sampled_values_match_typescript():
+    lines = _stc_lines(_stc_source(), _stc_dataset())
+    for title, bar, expected in _STC_SAMPLES:
+        got = lines[title][bar]
+        assert abs(got - expected) < 1e-9 * max(1, abs(expected)), f"{title}[{bar}]: {got} != {expected}"
+    for title, bar in _STC_NAN_SAMPLES:
+        assert math.isnan(lines[title][bar]), f"{title}[{bar}] expected na"
+
+
+@pytest.mark.skipif(not _STC_FIXTURE.is_file(), reason="engine fixture not a sibling")
+def test_stc_base_member_direction_flips_with_trend():
+    d3 = _stc_lines(_stc_source(), _stc_dataset())["d3"]
+    # Deep in the uptrend the base member is long; deep in the downtrend, short.
+    assert all(d3[i] == 1 for i in range(40, 80)), "uptrend should be long"
+    assert all(d3[i] == -1 for i in range(110, 160)), "downtrend should be short"
+
+
+@pytest.mark.skipif(not _STC_FIXTURE.is_file(), reason="engine fixture not a sibling")
+def test_stc_member3_matches_independent_supertrend_reference():
+    ds = _stc_dataset()
+    lines = _stc_lines(_stc_source(), ds)
+    st3, d3 = lines["st3"], lines["d3"]
+    # Reference member 3: SMA(hlc3, 8) + ATR(14), factor 2.5, carried per Pine's
+    # SuperTrend band logic — from openalgo.ta, independent of the port's scans.
+    hlc3 = (ds["high"] + ds["low"] + ds["close"]) / 3.0
+    s3 = ta.sma(hlc3, 8)
+    atr3 = ta.atr(ds["high"], ds["low"], ds["close"], 14)
+    ub = lb = dd = math.nan
+    for i in range(len(ds["close"])):
+        ub0 = s3[i] + 2.5 * atr3[i]
+        lb0 = s3[i] - 2.5 * atr3[i]
+        ps = s3[i - 1] if i > 0 else math.nan
+        cu = ub0 if math.isnan(ub) else (ub0 if (ub0 < ub or ps > ub) else ub)
+        cl = lb0 if math.isnan(lb) else (lb0 if (lb0 > lb or ps < lb) else lb)
+        if math.isnan(dd):
+            cd = 1.0
+        elif dd == -1 and s3[i] > ub:
+            cd = 1.0
+        elif dd == 1 and s3[i] < lb:
+            cd = -1.0
+        else:
+            cd = dd
+        cst = cl if cd == 1 else cu
+        if math.isnan(cst):
+            assert math.isnan(st3[i]), f"st3[{i}] na"
+        else:
+            assert abs(st3[i] - cst) < 1e-9 * max(1, abs(cst)), f"st3[{i}]"
+            assert d3[i] == cd, f"d3[{i}]"
+        ub, lb, dd = cu, cl, cd
+
+
+@pytest.mark.skipif(not _STC_FIXTURE.is_file(), reason="engine fixture not a sibling")
+def test_stc_base_fixture_runs_end_to_end():
+    result = openscript.compile(_stc_source(with_diag=False))
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert errors == []
+    outputs = execute_ir(result.ir, _stc_dataset(), {})
+    lines = sorted(o["title"] for o in outputs if o["kind"] == "line")
+    assert lines == ["Cluster Down Trend", "Cluster Up Trend"]
+    assert len([o for o in outputs if o["kind"] == "alert"]) == 3
