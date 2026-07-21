@@ -10,8 +10,8 @@
 import { autocompletion, type CompletionSource } from '@codemirror/autocomplete'
 import { StreamLanguage } from '@codemirror/language'
 import { type Diagnostic, linter, lintGutter } from '@codemirror/lint'
-import type { Extension } from '@codemirror/state'
-import { EditorView, hoverTooltip, keymap } from '@codemirror/view'
+import { type EditorState, type Extension, StateField } from '@codemirror/state'
+import { EditorView, hoverTooltip, keymap, showTooltip, type Tooltip } from '@codemirror/view'
 import { tags as t } from '@lezer/highlight'
 import { compile } from '@openalgo/openscript/compiler'
 import {
@@ -19,6 +19,7 @@ import {
   formatSource,
   hoverAt,
   openScriptStreamParser,
+  signatureAt,
   styleLint,
   toLintDiagnostics,
 } from '@openalgo/openscript/codemirror'
@@ -67,12 +68,45 @@ const openScriptHover = hoverTooltip((view, pos) => {
   }
 })
 
-// TODO(P4.1): signature-help tooltip. `signatureAt(source, pos)` is engine-tested
-// and exported from `@openalgo/openscript/codemirror`; wiring it to a live
-// CodeMirror tooltip needs a `showTooltip`-backed StateField driven off cursor
-// position (updated via EditorView.updateListener) so it can track `activeParam`
-// as the user types commas inside a call — deferred as a follow-up so completions
-// + hover can land now.
+/**
+ * Signature-help tooltip: a `showTooltip`-backed StateField that renders the
+ * active call's signature (active parameter bolded) whenever the cursor sits
+ * inside a builtin call. `signatureAt` is the engine's pure resolver.
+ */
+function signatureTooltip(state: EditorState): Tooltip | null {
+  const pos = state.selection.main.head
+  const info = signatureAt(state.doc.toString(), pos)
+  if (!info) return null
+  return {
+    pos,
+    above: true,
+    create: () => {
+      const dom = document.createElement('div')
+      dom.className = 'cm-os-signature'
+      const active = info.params[info.activeParam]
+      const label = active
+        ? escapeHtml(info.label).replace(
+            new RegExp(`\\b${active.name}\\b`),
+            `<strong>${escapeHtml(active.name)}</strong>`
+          )
+        : escapeHtml(info.label)
+      const detail = active?.doc
+        ? `<div class="param">${escapeHtml(active.name)}: ${escapeHtml(active.doc)}</div>`
+        : ''
+      dom.innerHTML = `<div class="sig">${label}</div>${detail}`
+      return { dom }
+    },
+  }
+}
+
+const signatureField = StateField.define<Tooltip | null>({
+  create: signatureTooltip,
+  update(value, tr) {
+    if (!tr.docChanged && !tr.selection) return value
+    return signatureTooltip(tr.state)
+  },
+  provide: (f) => showTooltip.from(f),
+})
 
 interface OpenScriptEditorProps {
   value: string
@@ -170,6 +204,18 @@ const createBaseTheme = (isDark: boolean): Extension => {
     '.cm-os-hover .doc': {
       color: isDark ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.65)',
     },
+    '.cm-os-signature': {
+      padding: '6px 8px',
+      maxWidth: '360px',
+      fontSize: '12px',
+      lineHeight: '1.4',
+      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+    },
+    '.cm-os-signature strong': { color: isDark ? '#38bdf8' : '#0284c7', fontWeight: 700 },
+    '.cm-os-signature .param': {
+      marginTop: '3px',
+      color: isDark ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.65)',
+    },
   })
 }
 
@@ -184,6 +230,7 @@ export function OpenScriptEditor({ value, onChange, readOnly = false }: OpenScri
       lintGutter(),
       autocompletion({ override: [openScriptCompletions] }),
       openScriptHover,
+      signatureField,
       formatKeymap,
       createSyntaxTheme(isDark),
       createBaseTheme(isDark),
