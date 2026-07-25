@@ -12,6 +12,7 @@
  * the /charts workspace and the /trading terminal.
  */
 
+import { descriptorFromIR } from '@openalgo/openscript'
 import type { IndicatorManifestEntry } from '@openalgo/openscript'
 import { Info } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -237,7 +238,14 @@ export function IndicatorSettingsDialog({
   onSave,
   onClose,
 }: IndicatorSettingsDialogProps) {
-  const entry = instance ? manifest.find((m) => m.id === instance.definitionId) : undefined
+  // IR OWNERSHIP is the gate, never `definitionId === 'ir'` — that sentinel is a
+  // platform-side UI convention, so binding behaviour to it is how a saved custom
+  // indicator surfaced elsewhere would silently lose its settings form.
+  const entry = instance
+    ? instance.ir
+      ? descriptorFromIR(instance.ir)
+      : manifest.find((m) => m.id === instance.definitionId)
+    : undefined
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [overrides, setOverrides] = useState<StyleOverrides>({})
   const [visibility, setVisibility] = useState<TimeframeVisibility>(DEFAULT_TF_VISIBILITY)
