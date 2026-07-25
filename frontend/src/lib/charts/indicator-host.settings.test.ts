@@ -25,7 +25,7 @@ vi.mock('./engine', () => ({
   getEngine: () => Promise.reject(new Error('not needed for settings-metadata resolution')),
 }))
 
-const { resolveSettingsEntry } = await import('./indicator-host')
+const { IndicatorHost, resolveSettingsEntry } = await import('./indicator-host')
 
 function irOf(src: string): IRProgram {
   const r = compile(`indicator("My Script")\n${src}`)
@@ -63,5 +63,63 @@ describe('settings metadata resolution', () => {
     const entry = resolveSettingsEntry({ definitionId: 'builtin.sma' }, registryManifest)
     expect(entry).toBeDefined()
     expect(entry?.inputs.length).toBeGreaterThan(0)
+  })
+})
+
+/** A minimal stand-in for the engine client's setInputs contract. */
+interface FakeEngine {
+  setInputs: (id: string, inputs: Record<string, unknown>) => Promise<{ outputs: unknown[] }>
+}
+
+/** Install a fake engine on a host without going through its real bootstrap. */
+function withEngine(host: unknown, engine: FakeEngine): void {
+  ;(host as { engine: FakeEngine }).engine = engine
+}
+
+/** Seed one instance straight into the host's private map (no worker session). */
+function withInstance(host: unknown, instance: object): void {
+  ;(host as { instances: Map<string, unknown> }).instances.set(
+    (instance as { instanceId: string }).instanceId,
+    instance
+  )
+}
+
+// These instances carry `definitionId: 'ir'` but NO `ir` field, so
+// `reconcileInputs` is deliberately not exercised — the subject here is the
+// commit transaction and its serialization, not input reconciliation.
+describe('IndicatorHost.setInputs — transaction', () => {
+  it('leaves the committed inputs untouched when the worker rejects', async () => {
+    const host = new IndicatorHost({ onIndicators: () => {}, onError: () => {} })
+    withEngine(host, { setInputs: () => Promise.reject(new Error('OS4001: too big')) })
+    const inst = { instanceId: 'i1', definitionId: 'ir', inputs: { len: 10 } }
+    withInstance(host, inst)
+
+    await expect(host.setInputs('i1', { len: 999 })).rejects.toThrow('OS4001')
+
+    // The worker never accepted len=999, so the instance must still read 10.
+    expect((inst as { inputs: Record<string, unknown> }).inputs.len).toBe(10)
+    expect((inst as { error?: string }).error).toContain('OS4001')
+  })
+
+  it('commits overlapping saves in issue order', async () => {
+    const host = new IndicatorHost({ onIndicators: () => {}, onError: () => {} })
+    const seen: number[] = []
+    withEngine(host, {
+      setInputs: async (_id, inputs) => {
+        // The FIRST call resolves SLOWER than the second, so an unserialized
+        // implementation would commit them out of order.
+        const len = inputs.len as number
+        await new Promise((r) => setTimeout(r, len === 20 ? 30 : 1))
+        seen.push(len)
+        return { outputs: [] }
+      },
+    })
+    const inst = { instanceId: 'i1', definitionId: 'ir', inputs: { len: 10 } }
+    withInstance(host, inst)
+
+    await Promise.all([host.setInputs('i1', { len: 20 }), host.setInputs('i1', { len: 30 })])
+
+    expect(seen).toEqual([20, 30])
+    expect((inst as { inputs: Record<string, unknown> }).inputs.len).toBe(30)
   })
 })

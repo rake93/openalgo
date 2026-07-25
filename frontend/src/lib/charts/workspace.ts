@@ -1261,8 +1261,22 @@ export class ChartWorkspaceController {
     await this.indicators.add(definitionId, inputs, styleOverrides, visibility)
   }
 
+  /**
+   * Save an indicator's inputs. `setInputs` now REJECTS when the worker refuses
+   * the patch (it keeps the previously committed inputs rather than advancing to
+   * values the engine never took), and the settings dialog calls this from a
+   * void-returning `onSave`, so the rejection is caught here — unhandled it would
+   * surface only as a console rejection with the user believing the save landed.
+   *
+   * A worker-side refusal also reaches the host's `onError` toast; both toasts
+   * occupy the same single slot, so this more specific message is what remains.
+   */
   async updateIndicatorInputs(instanceId: string, inputs: Record<string, unknown>): Promise<void> {
-    await this.indicators.setInputs(instanceId, inputs)
+    try {
+      await this.indicators.setInputs(instanceId, inputs)
+    } catch (e) {
+      this.cb.onToast(`indicator settings not applied: ${this.cleanError(e)}`, 'err')
+    }
   }
 
   updateIndicatorStyle(instanceId: string, styleOverrides: StyleOverrides): void {

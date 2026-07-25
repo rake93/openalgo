@@ -14,7 +14,13 @@ import type {
   IRProgram,
   OHLCVBar,
 } from '@openalgo/openscript'
-import { datasetFromBars, datasetKey, descriptorFromIR, toDatasetBuffers } from '@openalgo/openscript'
+import {
+  datasetFromBars,
+  datasetKey,
+  descriptorFromIR,
+  reconcileInputs,
+  toDatasetBuffers,
+} from '@openalgo/openscript'
 import { registryManifest } from '@openalgo/openscript/registry'
 import { OpenAlgoChartsRenderer } from '@openalgo/openscript/render/openalgo-charts'
 import type { EngineWorkerClient } from '@openalgo/openscript/worker-client'
@@ -170,6 +176,11 @@ export class IndicatorHost {
   private readonly renderers = new Map<string, OpenAlgoChartsRenderer>()
   /** Last full outputs per session — lets a style change re-render with no worker recompute. */
   private readonly lastOutputs = new Map<string, IndicatorOutput[]>()
+  /** Per-instance save queue. Await-before-commit is only sound if calls do not
+   *  overlap: two in flight can commit out of order, letting an older rejection
+   *  clobber a newer success. Both call sites are user-driven saves, so a rapid
+   *  double-save reaches this. */
+  private readonly saveQueue = new Map<string, Promise<unknown>>()
   private times: Float64Array = new Float64Array(0)
   private barCount = 0
   private currentKey = ''
@@ -418,14 +429,48 @@ export class IndicatorHost {
     return instanceId
   }
 
+  /**
+   * Save an input patch. Rejects when the worker refuses the patch — the callers
+   * must surface that, since a settings save that silently failed would leave the
+   * dialog showing values the engine never took.
+   */
   async setInputs(instanceId: string, inputs: Record<string, unknown>): Promise<void> {
+    const prior = this.saveQueue.get(instanceId) ?? Promise.resolve()
+    const run = prior
+      .catch(() => undefined) // a failed predecessor must not cancel this save
+      .then(() => this.commitInputs(instanceId, inputs))
+    this.saveQueue.set(instanceId, run)
+    try {
+      await run
+    } finally {
+      if (this.saveQueue.get(instanceId) === run) this.saveQueue.delete(instanceId)
+    }
+  }
+
+  /**
+   * Apply one input patch transactionally: the instance snapshot advances only
+   * after the worker ACCEPTS it. Advancing first (as this did before) left the
+   * instance holding values the worker never took, with the rejection unhandled.
+   */
+  private async commitInputs(instanceId: string, patch: Record<string, unknown>): Promise<void> {
     const instance = this.instances.get(instanceId)
     if (!instance || !this.engine) return
-    instance.inputs = { ...instance.inputs, ...inputs }
-    delete instance.error
-    this.emit()
-    const result = await this.engine.setInputs(instanceId, instance.inputs)
-    this.applyOutputs(instanceId, result.outputs, 'full')
+    const previous = instance.inputs
+    const next = instance.ir
+      ? reconcileInputs(instance.ir, { ...previous, ...patch })
+      : { ...previous, ...patch }
+    try {
+      const result = await this.engine.setInputs(instanceId, next)
+      instance.inputs = next
+      delete instance.error
+      this.applyOutputs(instanceId, result.outputs, 'full')
+      this.emit()
+    } catch (err) {
+      // `previous` stands — both the committed inputs and the last outputs.
+      instance.error = err instanceof Error ? err.message : String(err)
+      this.emit()
+      throw err
+    }
   }
 
   /**
@@ -558,6 +603,9 @@ export class IndicatorHost {
     this.renderers.clear()
     this.instances.clear()
     this.lastOutputs.clear()
+    // Any save still in flight resolves to a no-op (its instance is gone), so
+    // dropping the chain here just releases the retained promises.
+    this.saveQueue.clear()
   }
 
   private createRenderer(instance: IndicatorInstance): void {
