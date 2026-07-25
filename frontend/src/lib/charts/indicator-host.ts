@@ -14,7 +14,7 @@ import type {
   IRProgram,
   OHLCVBar,
 } from '@openalgo/openscript'
-import { datasetFromBars, datasetKey, toDatasetBuffers } from '@openalgo/openscript'
+import { datasetFromBars, datasetKey, descriptorFromIR, toDatasetBuffers } from '@openalgo/openscript'
 import { registryManifest } from '@openalgo/openscript/registry'
 import { OpenAlgoChartsRenderer } from '@openalgo/openscript/render/openalgo-charts'
 import type { EngineWorkerClient } from '@openalgo/openscript/worker-client'
@@ -124,6 +124,26 @@ export interface IndicatorInstance {
   visibility?: TimeframeVisibility
   /** Legend eye toggle — every plot hidden without tearing the session down. */
   hidden?: boolean
+}
+
+/**
+ * Resolve the settings metadata for one instance: its own IR when it owns one,
+ * the registry manifest otherwise.
+ *
+ * Exported and used by BOTH `IndicatorSettingsDialog` and its test, so the test
+ * exercises the production rule rather than a parallel copy that could stay
+ * green while the dialog regressed.
+ *
+ * IR OWNERSHIP is the gate, never `definitionId === 'ir'` — that sentinel is a
+ * platform-side UI convention, so binding behaviour to it is how a saved custom
+ * indicator surfaced elsewhere would silently lose its settings form.
+ */
+export function resolveSettingsEntry(
+  instance: Pick<IndicatorInstance, 'ir' | 'definitionId'>,
+  manifest: readonly IndicatorManifestEntry[]
+) {
+  if (instance.ir) return descriptorFromIR(instance.ir)
+  return manifest.find((m) => m.id === instance.definitionId)
 }
 
 export interface IndicatorHostCallbacks {

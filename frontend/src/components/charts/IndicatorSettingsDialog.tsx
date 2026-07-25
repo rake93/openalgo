@@ -12,7 +12,6 @@
  * the /charts workspace and the /trading terminal.
  */
 
-import { descriptorFromIR } from '@openalgo/openscript'
 import type { IndicatorManifestEntry } from '@openalgo/openscript'
 import { Info } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -46,7 +45,7 @@ import type {
   StyleOverrides,
   TimeframeVisibility,
 } from '@/lib/charts/indicator-host'
-import { DEFAULT_TF_VISIBILITY } from '@/lib/charts/indicator-host'
+import { DEFAULT_TF_VISIBILITY, resolveSettingsEntry } from '@/lib/charts/indicator-host'
 
 const SOURCES = ['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4', 'hlcc4']
 const STYLABLE = new Set(['line', 'hline', 'histogram', 'fill'])
@@ -238,14 +237,8 @@ export function IndicatorSettingsDialog({
   onSave,
   onClose,
 }: IndicatorSettingsDialogProps) {
-  // IR OWNERSHIP is the gate, never `definitionId === 'ir'` — that sentinel is a
-  // platform-side UI convention, so binding behaviour to it is how a saved custom
-  // indicator surfaced elsewhere would silently lose its settings form.
-  const entry = instance
-    ? instance.ir
-      ? descriptorFromIR(instance.ir)
-      : manifest.find((m) => m.id === instance.definitionId)
-    : undefined
+  // See resolveSettingsEntry's doc comment for why IR ownership is the gate.
+  const entry = instance ? resolveSettingsEntry(instance, manifest) : undefined
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [overrides, setOverrides] = useState<StyleOverrides>({})
   const [visibility, setVisibility] = useState<TimeframeVisibility>(DEFAULT_TF_VISIBILITY)
