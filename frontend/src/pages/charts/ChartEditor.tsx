@@ -11,8 +11,8 @@
  */
 
 import type { Diagnostic } from '@openalgo/openscript'
-import { compile } from '@openalgo/openscript/compiler'
 import { formatSource } from '@openalgo/openscript/codemirror'
+import { compile } from '@openalgo/openscript/compiler'
 import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
@@ -71,6 +71,7 @@ export default function ChartEditor() {
   const savedNameRef = useRef('')
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const mode = useThemeStore((s) => s.mode)
+  const appMode = useThemeStore((s) => s.appMode)
 
   const [ready, setReady] = useState(false)
   const [source, setSourceState] = useState(SAMPLE)
@@ -153,11 +154,14 @@ export default function ChartEditor() {
           apiKey: keyRes.api_key,
           wsUrl: cfgRes.websocket_url || 'ws://127.0.0.1:8765',
           container: containerRef.current,
-          isDark: () => useThemeStore.getState().mode === 'dark',
+          // The preview chart tracks the whole app theme (light, dark, and the
+          // analyzer palette), not just light/dark.
+          getTheme: () => {
+            const s = useThemeStore.getState()
+            return { mode: s.mode, appMode: s.appMode }
+          },
           callbacks: {
             onStatus: setStatus,
-            onWsState: () => undefined,
-            onIndicators: () => undefined,
             onSymbolLoaded: (info) => {
               setActive({ symbol: info.symbol, exchange: info.exchange })
               setIntervalValue(info.interval)
@@ -210,9 +214,12 @@ export default function ChartEditor() {
     }
   }, [ready, scriptId, compileAndPreview])
 
+  // The controller reads the theme from the store itself; naming both values
+  // here is what makes the preview chart rebuild when either changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mode and appMode are triggers, not reads
   useEffect(() => {
     controllerRef.current?.setTheme()
-  }, [mode])
+  }, [mode, appMode])
 
   const onSourceChange = useCallback(
     (next: string) => {

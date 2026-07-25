@@ -6,9 +6,9 @@
  * as an asset URL. Excluded from optimizeDeps so both survive pre-bundling.
  */
 
-import { EngineWorkerClient, type WorkerLike } from '@openalgo/openscript/worker-client'
-import EngineWorker from '@openalgo/openscript/worker?worker'
 import wasmUrl from '@openalgo/openscript/oa_wasm.wasm?url'
+import EngineWorker from '@openalgo/openscript/worker?worker'
+import { EngineWorkerClient, type WorkerLike } from '@openalgo/openscript/worker-client'
 
 let clientPromise: Promise<EngineWorkerClient> | null = null
 

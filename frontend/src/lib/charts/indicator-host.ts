@@ -122,6 +122,8 @@ export interface IndicatorInstance {
   styleOverrides?: StyleOverrides
   /** Timeframe visibility (Visibility tab); undefined = always visible. */
   visibility?: TimeframeVisibility
+  /** Legend eye toggle — every plot hidden without tearing the session down. */
+  hidden?: boolean
 }
 
 export interface IndicatorHostCallbacks {
@@ -205,6 +207,7 @@ export class IndicatorHost {
     inputs: Record<string, unknown>
     styleOverrides?: StyleOverrides
     visibility?: TimeframeVisibility
+    hidden?: boolean
   }[] {
     return this.list().map((i) => {
       const item: {
@@ -212,6 +215,7 @@ export class IndicatorHost {
         inputs: Record<string, unknown>
         styleOverrides?: StyleOverrides
         visibility?: TimeframeVisibility
+        hidden?: boolean
       } = {
         definitionId: i.definitionId,
         inputs: i.inputs,
@@ -221,6 +225,9 @@ export class IndicatorHost {
       }
       if (i.visibility) {
         item.visibility = i.visibility
+      }
+      if (i.hidden) {
+        item.hidden = true
       }
       return item
     })
@@ -249,7 +256,16 @@ export class IndicatorHost {
   /** (Re)bind to a chart after creation or rebuild; recreates all renderers. */
   attachChart(binding: ChartBinding): void {
     for (const renderer of this.renderers.values()) {
-      renderer.dispose()
+      // These renderers hold series on the *previous* chart, which the caller
+      // has usually destroyed already — taking every series with it. Disposal
+      // is then a no-op that throws reaching into the dead chart, and letting
+      // it escape would abandon the rest of the rebind, silently dropping the
+      // remaining indicators.
+      try {
+        renderer.dispose()
+      } catch {
+        /* previous chart already destroyed */
+      }
     }
     this.renderers.clear()
     this.binding = binding
@@ -404,6 +420,45 @@ export class IndicatorHost {
     this.rerenderInstance(instanceId)
   }
 
+  /**
+   * Hide or show every plot of one instance without disposing its session —
+   * the pane legend's eye toggle. Mirrors the timeframe-visibility path: the
+   * series are dropped while hidden and re-created from the cached outputs when
+   * shown again, so no worker recompute is involved either way.
+   */
+  setHidden(instanceId: string, hidden: boolean): void {
+    const instance = this.instances.get(instanceId)
+    if (!instance || instance.hidden === hidden) return
+    instance.hidden = hidden
+    this.emit()
+    this.rerenderInstance(instanceId)
+  }
+
+  /**
+   * Move a pane-owning instance one slot up or down the pane stack.
+   *
+   * Panes are handed out in instance order by `attachChart`, so the stack order
+   * *is* the instance order — reordering the map is what moves the pane, and
+   * asking the chart to move it would be undone by the next rebuild. Returns
+   * false at the ends of the stack, or for an overlay (which owns no pane).
+   * The caller rebuilds the chart to apply the new order.
+   */
+  movePane(instanceId: string, direction: -1 | 1): boolean {
+    const ordered = [...this.instances.values()]
+    const owners = ordered.filter((i) => i.pane !== undefined)
+    const at = owners.findIndex((i) => i.instanceId === instanceId)
+    const to = at + direction
+    if (at < 0 || to < 0 || to >= owners.length) return false
+    const ia = ordered.indexOf(owners[at])
+    const ib = ordered.indexOf(owners[to])
+    ordered[ia] = owners[to]
+    ordered[ib] = owners[at]
+    this.instances.clear()
+    for (const instance of ordered) this.instances.set(instance.instanceId, instance)
+    this.emit()
+    return true
+  }
+
   /** Set timeframe visibility (Visibility tab); hides/shows at the current interval. */
   setVisibility(instanceId: string, visibility: TimeframeVisibility | undefined): void {
     const instance = this.instances.get(instanceId)
@@ -533,8 +588,9 @@ export class IndicatorHost {
     const instance = this.instances.get(sessionId)
     // Cache the full snapshot so a later style change can re-render without a worker recompute.
     if (scope === 'full') this.lastOutputs.set(sessionId, outputs)
-    // Timeframe visibility (Visibility tab): hide every series off-timeframe.
-    if (instance && !this.instanceVisibleAtInterval(instance)) {
+    // Hidden by the legend's eye, or off-timeframe (Visibility tab): drop every
+    // series. The cached outputs stay, so unhiding needs no recompute.
+    if (instance && (instance.hidden || !this.instanceVisibleAtInterval(instance))) {
       for (const output of outputs) renderer.remove(output.id)
       return
     }

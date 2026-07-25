@@ -1,6 +1,7 @@
 /** Indicator engine session APIs (CSRF-protected web routes). */
 
 import type { StyleOverrides, TimeframeVisibility } from '@/lib/charts/indicator-host'
+import type { WorkspaceSnapshot } from '@/lib/charts/workspace'
 import { webClient } from './client'
 
 export interface ChartLayoutRecord {
@@ -13,14 +14,24 @@ export interface ChartLayoutRecord {
   updated_at: string | null
 }
 
-/** Serializable workspace state stored in layout_json. */
+/**
+ * Serializable workspace state stored in `layout_json` (a free-form JSON
+ * column, so adding to this shape needs no migration).
+ *
+ * `indicators` is the original flat list and stays for layouts written by
+ * earlier builds; `workspace` carries the full snapshot — chart type, transform
+ * settings, both indicator runtimes, drawings, studies, and trading
+ * preferences. A reader prefers `workspace` and falls back to `indicators`.
+ */
 export interface ChartLayoutState {
   indicators: {
     definitionId: string
     inputs: Record<string, unknown>
     styleOverrides?: StyleOverrides
     visibility?: TimeframeVisibility
+    hidden?: boolean
   }[]
+  workspace?: WorkspaceSnapshot
 }
 
 interface ApiEnvelope<T> {
