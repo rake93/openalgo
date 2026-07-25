@@ -35,6 +35,26 @@ export function tickDecimals(tick: number | undefined, refPrice: number): number
 export const priceDp = (tick: number | undefined, refPrice: number): number =>
   Math.max(2, tickDecimals(tick, refPrice))
 
+/**
+ * Display decimals capped by price magnitude.
+ *
+ * Some master-contract rows carry an implausibly fine tick — NIFTY's index row
+ * reports 0.0005, which would render a 23,767 print as `23,767.4492`. An index
+ * has no real tick, and the extra digits are noise a trader has to read past.
+ * Four decimals still make sense on a ₹3 penny stock, so the cap scales with
+ * price rather than being a flat rule.
+ *
+ * `priceDp` is left exactly as it was: order-entry snapping must stay
+ * tick-accurate even where display rounds.
+ */
+export function displayDp(tick: number | undefined, refPrice: number): number {
+  const dp = priceDp(tick, refPrice)
+  const price = Math.abs(refPrice)
+  if (price >= 1000) return Math.min(dp, 2)
+  if (price >= 100) return Math.min(dp, 3)
+  return dp
+}
+
 /** Snap a price to the instrument tick. */
 export function snapTick(price: number, tick: number | undefined, refPrice: number): number {
   const t = tickSize(tick, refPrice)
@@ -47,9 +67,19 @@ function groupIndian(intStr: string): string {
   return `${intStr.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',')},${intStr.slice(-3)}`
 }
 
-/** Fixed-decimal price with Indian grouping — byte-identical on every platform. */
-export function fmtPrice(n: number, tick: number | undefined, refPrice: number): string {
-  const [ip, fp] = Number(n).toFixed(priceDp(tick, refPrice)).split('.')
+/**
+ * Fixed-decimal price with Indian grouping — byte-identical on every platform.
+ * `decimals` overrides the tick-derived precision (see `displayDp`).
+ */
+export function fmtPrice(
+  n: number,
+  tick: number | undefined,
+  refPrice: number,
+  decimals?: number
+): string {
+  const [ip, fp] = Number(n)
+    .toFixed(decimals ?? priceDp(tick, refPrice))
+    .split('.')
   const neg = ip.startsWith('-')
   const grouped = groupIndian(neg ? ip.slice(1) : ip)
   return `${neg ? '-' : ''}${grouped}${fp ? `.${fp}` : ''}`
