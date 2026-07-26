@@ -1,0 +1,30 @@
+{
+  "name": "red-new-session-single-bar-and-gaps",
+  "note": "G1 design §9, item 4: a single-bar session, a weekend gap and a missing day in one dataset. IST days 07-23 (2 bars), 07-24 (1 bar), 07-27 (2 bars, 07-25/26 are the weekend), 07-29 (2 bars, 07-28 missing). What matters is localDayKey differences, not bar spacing, so a gap is not a session boundary in its own right -- it just means the next bar carries a different day key. The single-bar session at index 2 is the discriminator for the §3 scan-start exception: scanning from s+1 instead of s would test bar 3 first (same day as bar 4, predicate false), then bar 4 (boundary to 07-29, true), yielding x2bar=4 -- an object spanning three sessions instead of the one bar it belongs to.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nnewday = na(dayofmonth[1]) or dayofmonth != dayofmonth[1]\nplotlevel(newday, close, \"SR\", extend=extend.until, terminate=terminate.new_session)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784797200, 1784869200, 1785128400, 1785142800, 1785301200, 1785315600],
+    "open":   [10, 11, 20, 30, 31, 40, 41],
+    "high":   [11, 12, 21, 31, 32, 41, 42],
+    "low":    [9, 10, 19, 29, 30, 39, 40],
+    "close":  [10, 11, 20, 30, 31, 40, 41],
+    "volume": [100, 100, 100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "SR",
+        "items": [
+          { "x1bar": 0, "x2bar": 1, "price": 10, "open": false, "label": null },
+          { "x1bar": 2, "x2bar": 2, "price": 20, "open": false, "label": null },
+          { "x1bar": 3, "x2bar": 4, "price": 30, "open": false, "label": null },
+          { "x1bar": 5, "x2bar": 6, "price": 40, "open": true, "label": null }
+        ]
+      }
+    ]
+  }
+}

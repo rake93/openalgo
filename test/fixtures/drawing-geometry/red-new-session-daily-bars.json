@@ -1,0 +1,66 @@
+{
+  "name": "red-new-session-daily-bars",
+  "note": "G1 design §9, item 3, and the case that forces §3's scan-start exception. On daily bars every bar IS a session, so every object must be exactly one bar wide: x1bar == x2bar for all five. A level spawned at s must close at s because day(s) != day(s+1); with the standard scan starting at s+1 the first bar tested is s+1, whose own boundary also holds, so x2bar would be s+1 and every object would be drawn across the whole of the NEXT day. The last object has no successor bar, so the predicate cannot hold and it rides the live edge open at lastBarIndex -- still one bar wide.\n\nThis fixture deliberately carries an authoritative IR rather than source, so it exercises the RUNTIME's missing terminate case instead of stopping at the compiler's missing enum member. Its spawn condition is `bar_index >= 0` because on daily bars every bar is a session start, which keeps the hand-written IR trivial.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": null,
+  "ir": {
+    "version": 1,
+    "compilerVersion": "openscript-1.0",
+    "sourceHash": "red-new-session-daily-bars",
+    "header": {
+      "major": 1,
+      "minor": 0,
+      "compilerVersion": "openscript-1.0",
+      "requiredFeatures": ["drawing-streams"],
+      "numericMode": "f64-strict"
+    },
+    "declaration": { "name": "H", "overlay": true },
+    "inputs": [],
+    "nodes": [
+      { "id": 0, "op": "source", "source": "bar_index" },
+      { "id": 1, "op": "const", "value": 0 },
+      { "id": 2, "op": "binop", "operator": ">=", "args": [0, 1] },
+      { "id": 3, "op": "source", "source": "close" }
+    ],
+    "outputs": [
+      {
+        "kind": "level",
+        "condNodeId": 2,
+        "priceNodeId": 3,
+        "title": "SR",
+        "style": { "color": "#2962ff", "lineStyle": "solid" },
+        "offset": 0,
+        "rightPad": 0,
+        "extend": "until",
+        "terminate": "new_session",
+        "maxKept": 20,
+        "labelLatestOnly": false
+      }
+    ],
+    "meta": { "warmupBars": 0, "spans": {} }
+  },
+  "bars": {
+    "time":   [1784505600, 1784592000, 1784678400, 1784764800, 1784851200],
+    "open":   [10, 11, 12, 13, 14],
+    "high":   [11, 12, 13, 14, 15],
+    "low":    [9, 10, 11, 12, 13],
+    "close":  [10, 11, 12, 13, 14],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "SR",
+        "items": [
+          { "x1bar": 0, "x2bar": 0, "price": 10, "open": false, "label": null },
+          { "x1bar": 1, "x2bar": 1, "price": 11, "open": false, "label": null },
+          { "x1bar": 2, "x2bar": 2, "price": 12, "open": false, "label": null },
+          { "x1bar": 3, "x2bar": 3, "price": 13, "open": false, "label": null },
+          { "x1bar": 4, "x2bar": 4, "price": 14, "open": true, "label": null }
+        ]
+      }
+    ]
+  }
+}

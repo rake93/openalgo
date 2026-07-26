@@ -1,0 +1,30 @@
+{
+  "name": "red-new-session-right-pad-no-clamp",
+  "note": "G1 design §8, FROZEN: termination is authoritative, right_pad never clamps. Daily bars with right_pad=3, so each object's provisional right edge is s+3 while its termination resolves immediately at s. Every x2bar must be s -- strictly LESS than s+right_pad. Clamping up to x20 would push each object's right edge into the NEXT calendar day or beyond, which is precisely the boundary this mode exists to respect, so the clamp would reintroduce the bug in the one case the mode was built for. The green-level-right-pad-no-clamp twin pins the same rule on an implemented predicate, where §8 says it already holds but is unreachable in practice.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nnewday = na(dayofmonth[1]) or dayofmonth != dayofmonth[1]\nplotlevel(newday, close, \"SR\", right_pad=3, extend=extend.until, terminate=terminate.new_session)",
+  "ir": null,
+  "bars": {
+    "time":   [1784505600, 1784592000, 1784678400, 1784764800],
+    "open":   [10, 11, 12, 13],
+    "high":   [11, 12, 13, 14],
+    "low":    [9, 10, 11, 12],
+    "close":  [10, 11, 12, 13],
+    "volume": [100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "SR",
+        "items": [
+          { "x1bar": 0, "x2bar": 0, "price": 10, "open": false, "label": null },
+          { "x1bar": 1, "x2bar": 1, "price": 11, "open": false, "label": null },
+          { "x1bar": 2, "x2bar": 2, "price": 12, "open": false, "label": null },
+          { "x1bar": 3, "x2bar": 3, "price": 13, "open": true, "label": null }
+        ]
+      }
+    ]
+  }
+}

@@ -86,7 +86,7 @@ def test_the_fixture_case_count_is_exact():
     """Exact, not >=: these fixtures are the only thing preventing TS/Python drift and
     the only expression of the G1 matrix, so deleting one must fail loudly rather than
     quietly shrink the suite."""
-    assert len(FIXTURE_FILES) == 6
+    assert len(FIXTURE_FILES) == 13
 
 
 def test_every_fixture_name_matches_its_filename():
@@ -196,3 +196,43 @@ def test_drawing_geometry_matches_the_shared_fixture(path):
     geometry, outputs, dataset = _run_fixture(fx)
     assert geometry == fx["expect"]["drawings"], fx["note"]
     _check_anchors(outputs, dataset)
+
+
+# -- the UTC/IST acceptance pair ----------------------------------------------------
+#
+# G1's acceptance claim (design §9, item 5) is a statement about a PAIR of fixtures and
+# so cannot live inside either one: the same bars and the same program must produce
+# different geometry under different calendars. These guard the pair's integrity -- if
+# someone ever "fixes" the two red fixtures by reconciling their expectations, that is
+# not a fix and this fails.
+
+
+def _pair():
+    return (
+        _load(FIXTURE_DIR / "red-new-session-calendar-ist.json"),
+        _load(FIXTURE_DIR / "red-new-session-calendar-utc.json"),
+    )
+
+
+def test_the_acceptance_pair_differs_only_by_instrument():
+    ist, utc = _pair()
+    assert utc["bars"] == ist["bars"]
+    assert utc["source"] == ist["source"]
+    assert utc["instrument"] != ist["instrument"]
+
+
+def test_the_acceptance_pair_resolves_to_genuinely_different_calendars():
+    ist, utc = _pair()
+    a = calendar_for_instrument(**{k: ist["instrument"][k] for k in ("exchange", "symbol")})
+    b = calendar_for_instrument(**{k: utc["instrument"][k] for k in ("exchange", "symbol")})
+    assert a.calendar.utc_offset_seconds == 19800
+    assert b.calendar.utc_offset_seconds == 0
+    # Neither may be a silent fallback: an IST result that is a fallback and an IST
+    # result that is a real mapping are the same number and not the same answer.
+    assert a.provenance == "mapped"
+    assert b.provenance == "mapped"
+
+
+def test_the_acceptance_pair_expects_different_geometry():
+    ist, utc = _pair()
+    assert utc["expect"]["drawings"] != ist["expect"]["drawings"]

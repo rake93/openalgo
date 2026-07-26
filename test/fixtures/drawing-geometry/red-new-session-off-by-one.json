@@ -1,0 +1,28 @@
+{
+  "name": "red-new-session-off-by-one",
+  "note": "G1 design §9, item 2, and the reason §2 frames the predicate as boundary-AFTER-bar. Two IST sessions of three bars. The first session's object must end on bar 2, its own session's LAST bar. Rewriting the predicate as the intuitive day-change-at-bar form `day(t) != day(s)` fires on bar 3 instead -- the NEXT session's OPENING bar -- because §3's geometry is inclusive. That is bug 3 from the first conversion, reintroduced by construction, and it is a one-bar difference this fixture is built to catch: expected x2bar 2, mutant x2bar 3.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nnewday = na(dayofmonth[1]) or dayofmonth != dayofmonth[1]\nplotlevel(newday, close, \"SR\", extend=extend.until, terminate=terminate.new_session)",
+  "ir": null,
+  "bars": {
+    "time":   [1784523600, 1784530800, 1784538000, 1784610000, 1784617200, 1784624400],
+    "open":   [10, 11, 12, 20, 21, 22],
+    "high":   [11, 12, 13, 21, 22, 23],
+    "low":    [9, 10, 11, 19, 20, 21],
+    "close":  [10, 11, 12, 20, 21, 22],
+    "volume": [100, 100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "SR",
+        "items": [
+          { "x1bar": 0, "x2bar": 2, "price": 10, "open": false, "label": null },
+          { "x1bar": 3, "x2bar": 5, "price": 20, "open": true, "label": null }
+        ]
+      }
+    ]
+  }
+}
