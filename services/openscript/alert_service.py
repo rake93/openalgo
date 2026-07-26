@@ -175,6 +175,7 @@ def _evaluate_one(alert: dict) -> None:
         history_to_dataset,
     )
     from .runtime.budget import OperationBudget
+    from .runtime.calendar import calendar_for_instrument
     from .runtime.executor import execute_ir
     from .runtime.plancost import runtime_cost_ctx
 
@@ -206,7 +207,17 @@ def _evaluate_one(alert: dict) -> None:
     # ctx so charged <= admission estimate.
     cost_ctx = runtime_cost_ctx(compiled_ir, alert["inputs"], len(dataset["close"]))
     budget = OperationBudget(compiled_ir, cost_ctx)
-    outputs = execute_ir(compiled_ir, dataset, alert["inputs"], budget=budget)
+    resolution = calendar_for_instrument(alert["exchange"], alert["symbol"])
+    if resolution.warning_code:
+        logger.warning(
+            f"indicator alert {alert['id']}: calendar fallback "
+            f"{resolution.warning_code} for exchange={alert['exchange']!r} "
+            f"({resolution.provenance}); evaluating under "
+            f"{resolution.calendar.semantic_key}"
+        )
+    outputs = execute_ir(
+        compiled_ir, dataset, alert["inputs"], budget=budget, calendar=resolution.calendar
+    )
     alert_out = find_alert_output(outputs, alert["condition_id"])
     if alert_out is None:
         return
