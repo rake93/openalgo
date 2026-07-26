@@ -254,10 +254,13 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
     "alert": frozenset({"bar_close", "tick"}),
     # Drawing-object enums (design 0.5 §2/§4). `line.style_*` styles level lines
     # and zone borders (solid/dashed/dotted); `extend` is the right-edge growth
-    # mode; `terminate` is the directional termination predicate for extend.until.
+    # mode; `terminate` is the termination predicate for extend.until -- the first
+    # five are directional PRICE predicates, `new_session` (G1) is the calendar one.
     "line": frozenset({"style_solid", "style_dashed", "style_dotted"}),
     "extend": frozenset({"lastbar", "until", "bars"}),
-    "terminate": frozenset({"close_above", "close_below", "cross_above", "cross_below", "touch"}),
+    "terminate": frozenset(
+        {"close_above", "close_below", "cross_above", "cross_below", "touch", "new_session"}
+    ),
 }
 
 KNOWN_NAMESPACES = frozenset(

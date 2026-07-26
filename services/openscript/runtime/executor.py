@@ -586,11 +586,18 @@ def _render_draw_text(spec: dict, s: int, values: list) -> str:
     return out
 
 
-def _terminate_holds(term, b: int, top: float, bottom: float, dataset: dict) -> bool:
-    """Whether the terminate predicate holds at scanned bar b (design §4).
+def _terminate_holds(
+    term, b: int, top: float, bottom: float, dataset: dict, n: int, calendar: SessionCalendar
+) -> bool:
+    """Whether the terminate predicate holds at scanned bar b (design §4, G1 §2).
     close_* are STRICT (>/<); cross_*/touch are INCLUSIVE (>=/<=). A zone tests
     the NEAR edge in the named direction; touch is non-directional. For a level,
-    top == bottom == the single value L."""
+    top == bottom == the single value L.
+
+    `calendar` is read by new_session ONLY. The five price predicates must stay
+    calendar-independent by construction (the engine's tests/calendar-isolation.test.ts
+    is the standing guard); a local_day_key reachable from any of the five branches
+    below is a defect, not a refactor."""
     close = float(dataset["close"][b])
     high = float(dataset["high"][b])
     low = float(dataset["low"][b])
@@ -606,10 +613,43 @@ def _terminate_holds(term, b: int, top: float, bottom: float, dataset: dict) -> 
         entered_top = high >= top and low <= top
         entered_bottom = high >= bottom and low <= bottom
         return entered_top or entered_bottom
+    # G1 §2 -- BOUNDARY-AFTER-BAR: "is b the last bar of its session?", NEVER "did
+    # the day change at b?". §3's geometry is inclusive (x2 = b is part of the
+    # object), so a day-change-AT-bar test would fire on the NEXT session's OPENING
+    # bar and draw every session's levels onto it. The final loaded bar has no
+    # successor, so this cannot hold there and the object correctly falls through to
+    # the live edge (G1 §4) -- that fallthrough is the whole reason one output yields
+    # both bounded history and a live current session.
+    if term == "new_session":
+        if b + 1 > n - 1:
+            return False
+        t = dataset.get("time")
+        if t is None or len(t) != n:
+            return False
+        return local_day_key(float(t[b]), calendar) != local_day_key(float(t[b + 1]), calendar)
     return False
 
 
-def _resolve_right_edge(o: dict, s: int, top: float, bottom: float, dataset: dict, n: int) -> dict:
+def _scan_start_for(term, s: int) -> int:
+    """The first bar the extend.until forward scan tests, per predicate (G1 §3 --
+    the ONE scoped exception to phase-0.5 §3's blanket s+1).
+
+    The five price predicates start at s+1: an object spawned BECAUSE price did
+    something will usually satisfy its own break condition on the spawn bar, so
+    testing s would make them self-terminate as an artifact.
+
+    new_session starts at s, inclusive, because it is a calendar predicate with no
+    such degeneracy -- a one-bar object IS the correct answer. On daily bars every
+    bar is a session, so a level spawned at s must close at s (day(s) != day(s+1));
+    starting at s+1 would find the NEXT day's boundary and stretch the object across
+    the whole following session. For intraday data the two starts agree, since the
+    predicate is false from s up to the session's last bar."""
+    return s if term == "new_session" else s + 1
+
+
+def _resolve_right_edge(
+    o: dict, s: int, top: float, bottom: float, dataset: dict, n: int, calendar: SessionCalendar
+) -> dict:
     """Resolve the right edge + open/mitigated flags for one object (design §3/§4)."""
     last_bar_index = n - 1
     right_pad = o.get("rightPad", 0)
@@ -620,12 +660,20 @@ def _resolve_right_edge(o: dict, s: int, top: float, bottom: float, dataset: dic
     if extend == "bars":
         bars = o["bars"] if isinstance(o.get("bars"), (int, float)) else 0
         return {"x2bar": s + int(bars), "open": False, "mitigated": False, "objBars": 1}
-    # extend == 'until': forward scan from s+1; x2 = first terminate bar (inclusive).
+    # extend == 'until': forward scan from the per-predicate start (see
+    # _scan_start_for); x2 = the first terminate bar, INCLUSIVE.
+    #
+    # The terminate bar is returned DIRECTLY, never clamped up to x2_0 (G1 §8,
+    # FROZEN): termination is authoritative for every until predicate and right_pad
+    # is only the provisional INITIAL right edge, so x2bar < s + right_pad is a
+    # correct answer. Clamping would push a daily new_session object's right edge
+    # into the NEXT calendar day -- reintroducing the exact bug this mode exists to
+    # prevent, in the one case it was built for.
     term = o.get("terminate")
     obj_bars = 0
-    for b in range(s + 1, last_bar_index + 1):
+    for b in range(_scan_start_for(term, s), last_bar_index + 1):
         obj_bars += 1
-        if _terminate_holds(term, b, top, bottom, dataset):
+        if _terminate_holds(term, b, top, bottom, dataset, n, calendar):
             return {"x2bar": b, "open": False, "mitigated": term == "touch", "objBars": obj_bars}
     return {"x2bar": last_bar_index, "open": True, "mitigated": False, "objBars": obj_bars}
 
@@ -636,7 +684,9 @@ def _anchor(dataset: dict, bar: int, n: int) -> dict:
     return {"bar": int(bar), "time": _anchor_time(dataset, bar, n)}
 
 
-def _materialize_drawing(o, values, n, idx, pane, dataset, budget, total_state) -> dict:
+def _materialize_drawing(
+    o, values, n, idx, pane, dataset, budget, total_state, calendar: SessionCalendar
+) -> dict:
     """Materialize one level/zone output into a levels/zones output dict."""
     oid = f"out_{idx}"
     offset = o.get("offset", 0)
@@ -676,7 +726,7 @@ def _materialize_drawing(o, values, n, idx, pane, dataset, budget, total_state) 
             if not math.isfinite(spawn_time):
                 continue
             price = _sample_at(price_v, s)
-            edge = _resolve_right_edge(o, s, price, price, dataset, n)
+            edge = _resolve_right_edge(o, s, price, price, dataset, n, calendar)
             if budget is not None:
                 budget.charge(DRAW_OBJECT_WEIGHT * edge["objBars"])
             item = {
@@ -702,7 +752,7 @@ def _materialize_drawing(o, values, n, idx, pane, dataset, budget, total_state) 
             continue
         top = _sample_at(top_v, s)
         bottom = _sample_at(bottom_v, s)
-        edge = _resolve_right_edge(o, s, top, bottom, dataset, n)
+        edge = _resolve_right_edge(o, s, top, bottom, dataset, n, calendar)
         if budget is not None:
             budget.charge(DRAW_OBJECT_WEIGHT * edge["objBars"])
         item = {
@@ -725,7 +775,21 @@ def _materialize_drawing(o, values, n, idx, pane, dataset, budget, total_state) 
     return {"kind": "zones", "id": oid, "title": o["title"], "pane": pane, "style": style, "items": items}
 
 
-def _collect_outputs(ir, values, n, inputs: dict, dataset: dict | None = None, budget=None) -> list[dict]:
+def _collect_outputs(
+    ir,
+    values,
+    n,
+    inputs: dict,
+    dataset: dict | None = None,
+    budget=None,
+    calendar: SessionCalendar = IST_CALENDAR,
+) -> list[dict]:
+    """`calendar` reaches the drawing materializer here (G1 §6) so
+    `terminate.new_session` resolves its session boundaries against the SAME
+    calendar the run's context fields used. It defaults to IST for the same reason
+    `execute_ir` does -- direct callers and existing tests -- and `execute_ir`, the
+    ONLY caller, always passes its own explicitly, so no production path relies on
+    the default."""
     overlay = ir["declaration"].get("overlay", False)
     pane = "overlay" if overlay else 1
     outputs: list[dict] = []
@@ -805,7 +869,11 @@ def _collect_outputs(ir, values, n, inputs: dict, dataset: dict | None = None, b
             fired = [i for i in range(n) if _truthy_scalar(cond[i])]
             outputs.append({"kind": "alert", "id": o["conditionId"], "title": o["title"], "message": o["message"], "firedAtBar": fired})
         elif kind in ("level", "zone"):
-            outputs.append(_materialize_drawing(o, values, n, idx, pane, dataset, budget, total_objects))
+            outputs.append(
+                _materialize_drawing(
+                    o, values, n, idx, pane, dataset, budget, total_objects, calendar
+                )
+            )
     return outputs
 
 
@@ -860,4 +928,4 @@ def execute_ir(
                 budget.record_bytes(int(value.nbytes))
             if node["op"] in ("call", "scan"):
                 budget.checkpoint()
-    return _collect_outputs(ir, values, n, inputs, dataset, budget)
+    return _collect_outputs(ir, values, n, inputs, dataset, budget, calendar)

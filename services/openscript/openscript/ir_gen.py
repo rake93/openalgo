@@ -54,6 +54,7 @@ EXTEND_MAP = {"lastbar": "lastbar", "until": "until", "bars": "bars"}
 TERMINATE_MAP = {
     "close_above": "close_above", "close_below": "close_below",
     "cross_above": "cross_above", "cross_below": "cross_below", "touch": "touch",
+    "new_session": "new_session",
 }
 INPUT_TYPE = {
     "int": "integer", "float": "float", "bool": "bool", "string": "string", "source": "source",
