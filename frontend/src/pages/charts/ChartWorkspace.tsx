@@ -20,6 +20,8 @@ import {
   createLayout,
   deleteLayout,
   listLayouts,
+  listScripts,
+  type ScriptRecord,
   updateLayout,
 } from '@/api/indicators'
 import { DataWindow } from '@/components/charts/DataWindow'
@@ -144,6 +146,7 @@ export default function ChartWorkspace() {
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null)
   const [confirm, setConfirm] = useState<string | null>(null)
   const [layouts, setLayouts] = useState<ChartLayoutRecord[]>([])
+  const [scripts, setScripts] = useState<ScriptRecord[]>([])
   const [layoutId, setLayoutId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [markers, setMarkers] = useState(true)
@@ -480,11 +483,23 @@ export default function ChartWorkspace() {
     controllerRef.current?.drawing.cycleGroup(group)
   }, [])
 
-  const addIndicator = useCallback((id: string, source: 'engine' | 'library') => {
+  const addIndicator = useCallback((id: string, source: 'engine' | 'library' | 'script') => {
     const c = controllerRef.current
     if (!c) return
     if (source === 'engine') void c.addIndicator(id)
+    // The controller fetches the script's server-compiled IR and reports any
+    // reason it cannot be added, so there is nothing to handle here.
+    else if (source === 'script') void c.addSavedScript(Number(id))
     else c.addLibraryIndicator(id)
+  }, [])
+
+  // Re-read on every open rather than once: a script saved in the editor since
+  // the last open must be selectable without a page reload.
+  const openPicker = useCallback(() => {
+    setPickerOpen(true)
+    void listScripts()
+      .then(setScripts)
+      .catch(() => setScripts([]))
   }, [])
 
   // The draw tier's registry is fixed once the tier has loaded, so this is read
@@ -559,7 +574,7 @@ export default function ChartWorkspace() {
           setGrid((g) => ({ ...g, ...patch }))
           controllerRef.current?.setGrid(patch)
         }}
-        onOpenIndicators={() => setPickerOpen(true)}
+        onOpenIndicators={openPicker}
         onDock={setDock}
         onToggleRail={() => setRail((v) => !v)}
         onMagnet={() => {
@@ -794,6 +809,7 @@ export default function ChartWorkspace() {
         onOpenChange={setPickerOpen}
         engine={controllerRef.current?.manifest ?? []}
         library={controllerRef.current?.library.catalogue ?? []}
+        scripts={scripts}
         onAdd={addIndicator}
       />
 

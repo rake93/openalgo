@@ -38,7 +38,7 @@ import {
   TickBarAggregator,
 } from 'openalgo-charts'
 import { runTransform } from 'openalgo-charts/transform'
-import { getVersion } from '@/api/indicators'
+import { getScript, getVersion } from '@/api/indicators'
 import { buildChartTheme, isLightTheme, volumeColor } from '@/lib/trading/chartTheme'
 import { displayDp, fmtPrice, money, snapTick, tickSize } from '@/lib/trading/format'
 import {
@@ -1376,6 +1376,54 @@ export class ChartWorkspaceController {
     }
   ): Promise<string> {
     return this.indicators.addIr(ir, { ...options, script })
+  }
+
+  /**
+   * Add a saved OpenScript script from the picker.
+   *
+   * Fetches the script's current version and adds it from the SERVER's compiled
+   * IR — the same rule `restoreIndicators` obeys, kept beside it so the add and
+   * reopen paths cannot drift into different notions of what a saved indicator
+   * is. The stored IR wins even if it disagrees with the stored source: what
+   * goes on the chart has to be reproducible from what the server holds.
+   *
+   * Returns the new instance id, or undefined after reporting why it could not
+   * be added.
+   */
+  async addSavedScript(scriptId: number): Promise<string | undefined> {
+    let script: Awaited<ReturnType<typeof getScript>>
+    try {
+      script = await getScript(scriptId)
+    } catch (err) {
+      this.cb.onToast(`Could not add script ${scriptId} — ${errorText(err)}`, 'err')
+      return undefined
+    }
+    if (!script) {
+      this.cb.onToast(`Could not add script ${scriptId} — not found`, 'err')
+      return undefined
+    }
+    const label = script.name || `script ${scriptId}`
+    if (script.version_id === undefined) {
+      // Identity is script + version. With no version to pin, the indicator
+      // could be added but never restored, so it is refused up front.
+      this.cb.onToast(`Could not add ${label} — it has no saved version`, 'err')
+      return undefined
+    }
+    if (!script.compiled_ir) {
+      this.cb.onToast(
+        `Could not add ${label} — the server has no compiled IR for it. Check its diagnostics in the editor.`,
+        'err'
+      )
+      return undefined
+    }
+    return this.addScriptIndicator(
+      {
+        scriptId,
+        versionId: script.version_id,
+        ...(script.source_hash ? { sourceHash: script.source_hash } : {}),
+      },
+      script.compiled_ir
+    )
   }
 
   /** Live preview of the OpenScript editor — one preview session at a time. */

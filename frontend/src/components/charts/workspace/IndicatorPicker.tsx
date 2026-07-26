@@ -19,7 +19,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { cn } from '@/lib/utils'
 import { Icon } from './icons'
 
-export type IndicatorSource = 'engine' | 'library'
+export type IndicatorSource = 'engine' | 'library' | 'script'
+
+/** One saved OpenScript script, as the picker needs it. Deliberately the light
+ *  fields the list endpoint returns — no source, no IR: the controller fetches
+ *  the authoritative artifact when a row is actually chosen. */
+export interface PickerScript {
+  id: number
+  name: string
+  description: string | null
+}
 
 export interface PickerRow {
   id: string
@@ -28,6 +37,9 @@ export interface PickerRow {
   category: string
   overlay: boolean
   source: IndicatorSource
+  /** Extra text a search should match — a script's description, so one named
+   *  opaquely is still findable. */
+  keywords?: string
 }
 
 export interface IndicatorPickerProps {
@@ -35,14 +47,20 @@ export interface IndicatorPickerProps {
   onOpenChange(open: boolean): void
   engine: readonly IndicatorManifestEntry[]
   library: readonly IndicatorDescriptor[]
+  /** The user's own saved OpenScript scripts. */
+  scripts: readonly PickerScript[]
   onAdd(id: string, source: IndicatorSource): void
 }
+
+/** Category heading the user's own scripts collect under. */
+const SCRIPTS_CATEGORY = 'My Scripts'
 
 export function IndicatorPicker({
   open,
   onOpenChange,
   engine,
   library,
+  scripts,
   onAdd,
 }: IndicatorPickerProps) {
   const [query, setQuery] = useState('')
@@ -73,8 +91,24 @@ export function IndicatorPicker({
       overlay: d.placement === 'onchart',
       source: 'library',
     }))
-    return [...fromEngine, ...fromLibrary].sort((a, b) => a.name.localeCompare(b.name))
-  }, [engine, library])
+    const fromScripts: PickerRow[] = scripts.map((s) => ({
+      // The SCRIPT id, not a manifest key: it is what the controller fetches
+      // the authoritative IR with.
+      id: String(s.id),
+      name: s.name,
+      detail: s.description || 'OpenScript',
+      category: SCRIPTS_CATEGORY,
+      // Placement comes from the script's own `indicator()` declaration, which
+      // lives in the IR the controller has not fetched yet. The row does not
+      // claim to know.
+      overlay: true,
+      source: 'script',
+      ...(s.description ? { keywords: s.description } : {}),
+    }))
+    return [...fromEngine, ...fromLibrary, ...fromScripts].sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )
+  }, [engine, library, scripts])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -84,7 +118,8 @@ export function IndicatorPicker({
       return (
         r.name.toLowerCase().includes(q) ||
         r.detail.toLowerCase().includes(q) ||
-        r.category.toLowerCase().includes(q)
+        r.category.toLowerCase().includes(q) ||
+        (r.keywords?.toLowerCase().includes(q) ?? false)
       )
     })
   }, [rows, query, group])
@@ -126,6 +161,7 @@ export function IndicatorPicker({
                 ['all', 'All'],
                 ['engine', 'Engine'],
                 ['library', 'Library'],
+                ['script', 'Scripts'],
               ] as const
             ).map(([g, label]) => (
               <button
@@ -167,15 +203,20 @@ export function IndicatorPicker({
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] font-medium">{r.name}</span>
                     <span className="block truncate text-[11px] text-muted-foreground">
-                      {r.overlay ? 'On the price pane' : 'Own pane'} · {r.detail}
+                      {/* A script's placement comes from its own indicator()
+                          declaration, which lives in IR this row has not
+                          fetched — so it is not claimed here. */}
+                      {r.source === 'script'
+                        ? r.detail
+                        : `${r.overlay ? 'On the price pane' : 'Own pane'} · ${r.detail}`}
                     </span>
                   </span>
                   <span
                     className={cn(
                       'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em]',
-                      r.source === 'engine'
-                        ? 'bg-primary/12 text-primary'
-                        : 'bg-muted text-muted-foreground'
+                      r.source === 'engine' && 'bg-primary/12 text-primary',
+                      r.source === 'script' && 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+                      r.source === 'library' && 'bg-muted text-muted-foreground'
                     )}
                   >
                     {r.source}
