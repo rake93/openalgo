@@ -114,6 +114,28 @@ function parseInterval(tf: string): { cat: RangeCategory; value: number } | null
   return null
 }
 
+/**
+ * Identity of the saved script an indicator was built from.
+ *
+ * This — not `definitionId` — is what identifies a custom indicator. A layout
+ * persists it so the instance can re-fetch its own authoritative IR from the
+ * server on reopen; `definitionId: 'ir'` is a UI sentinel that says nothing
+ * about WHICH script is running.
+ *
+ * Its PRESENCE is what makes an instance durable. An editor preview is built
+ * from an unsaved buffer, has no identity to persist, and so has none.
+ */
+export interface ScriptIdentity {
+  scriptId: number
+  /** The immutable version. Pinning the version, not just the script, is what
+   *  keeps a reopened chart showing the indicator that was saved rather than
+   *  whatever the script has since become. */
+  versionId: number
+  /** sha-256 the server compiled this version from, for detecting a stored IR
+   *  that no longer matches the source it claims. */
+  sourceHash?: string
+}
+
 export interface IndicatorInstance {
   instanceId: string
   definitionId: string
@@ -124,6 +146,8 @@ export interface IndicatorInstance {
   error?: string
   /** Present for custom OpenScript indicators — runs as an IR session. */
   ir?: IRProgram
+  /** Present only on a DURABLE custom indicator; an editor preview has none. */
+  script?: ScriptIdentity
   /** Per-output color/width/opacity/visibility overrides (Style tab). */
   styleOverrides?: StyleOverrides
   /** Timeframe visibility (Visibility tab); undefined = always visible. */
@@ -399,11 +423,24 @@ export class IndicatorHost {
   /**
    * Add a custom OpenScript indicator from a compiled IRProgram. Mirrors `add()`
    * but takes declaration/inputs from the IR instead of the builtin manifest.
+   *
+   * Pass `script` to add a DURABLE indicator — one built from a saved script,
+   * which a layout can persist and later restore by re-fetching that version's
+   * IR. Omit it for an editor preview, which is built from an unsaved buffer
+   * and has no identity to persist.
+   *
+   * The distinction is about persistence only. Both kinds own an IR and both
+   * therefore run as `{kind:'ir'}` sessions on the incremental path: the engine
+   * gate is IR ownership and must never become "is this durable".
    */
   async addIr(
     ir: IRProgram,
-    inputs?: Record<string, unknown>,
-    styleOverrides?: StyleOverrides
+    options?: {
+      inputs?: Record<string, unknown>
+      styleOverrides?: StyleOverrides
+      visibility?: TimeframeVisibility
+      script?: ScriptIdentity
+    }
   ): Promise<string> {
     this.seq += 1
     const instanceId = `${this.hostId}i${this.seq}`
@@ -412,9 +449,14 @@ export class IndicatorHost {
       definitionId: 'ir',
       name: ir.declaration.shortName ?? ir.declaration.name,
       overlay: ir.declaration.overlay,
-      inputs: { ...Object.fromEntries(ir.inputs.map((i) => [i.id, i.defaultValue])), ...inputs },
+      inputs: {
+        ...Object.fromEntries(ir.inputs.map((i) => [i.id, i.defaultValue])),
+        ...options?.inputs,
+      },
       ir,
-      styleOverrides,
+      styleOverrides: options?.styleOverrides,
+      visibility: options?.visibility,
+      script: options?.script,
     }
     if (!ir.declaration.overlay) {
       instance.pane = this.nextPane

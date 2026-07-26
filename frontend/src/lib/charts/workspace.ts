@@ -62,6 +62,7 @@ import {
   type DataWindowRow,
   IndicatorHost,
   type IndicatorInstance,
+  type ScriptIdentity,
   type StyleOverrides,
   type TimeframeVisibility,
 } from './indicator-host'
@@ -1324,6 +1325,32 @@ export class ChartWorkspaceController {
 
   removeLibraryIndicator(instanceId: string): void {
     this.library.remove(instanceId)
+  }
+
+  /**
+   * Add a saved OpenScript indicator to the workspace — the durable
+   * counterpart of `previewIr`.
+   *
+   * Deliberately does NOT touch `previewId`. The preview is single-instance by
+   * design (`previewIr` clears the previous one first), which is right for an
+   * editor draft and wrong for a saved indicator: routing this through the
+   * preview slot would make adding a second saved indicator delete the first,
+   * and opening the editor delete both.
+   *
+   * `ir` is the server's authoritative IR for `script.versionId`. The caller
+   * supplies it rather than this fetching it, so the reopen contract — server
+   * IR, never a browser recompile — is enforced at one place, in the caller.
+   */
+  async addScriptIndicator(
+    script: ScriptIdentity,
+    ir: IRProgram,
+    options?: {
+      inputs?: Record<string, unknown>
+      styleOverrides?: StyleOverrides
+      visibility?: TimeframeVisibility
+    }
+  ): Promise<string> {
+    return this.indicators.addIr(ir, { ...options, script })
   }
 
   /** Live preview of the OpenScript editor — one preview session at a time. */
