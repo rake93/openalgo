@@ -9,6 +9,7 @@
  */
 
 import type {
+  CalendarResolution,
   IndicatorManifestEntry,
   IndicatorOutput,
   IRProgram,
@@ -231,6 +232,10 @@ export class IndicatorHost {
   private barCount = 0
   private currentKey = ''
   private meta = { symbol: '', exchange: '', timeframe: '' }
+  /** The calendar the worker resolved for this session (G7 design 6.5). Recorded
+   *  so a fallback is observable rather than silent; the UI may surface it later
+   *  with no further protocol change. */
+  private calendar: CalendarResolution | undefined
   private nextPane = 2
   private offOutputs: (() => void) | null = null
   private offErrors: (() => void) | null = null
@@ -247,6 +252,11 @@ export class IndicatorHost {
 
   list(): IndicatorInstance[] {
     return [...this.instances.values()].map((i) => ({ ...i }))
+  }
+
+  /** The session's resolved calendar, or undefined before the first session. */
+  calendarResolution(): CalendarResolution | undefined {
+    return this.calendar
   }
 
   /** Per-indicator output values at a bar index — feeds the crosshair data window. */
@@ -720,6 +730,15 @@ export class IndicatorHost {
         mode: 'realtime',
         meta: this.meta,
       })
+      if (result.calendar) {
+        this.calendar = result.calendar
+        if (result.calendar.provenance !== 'mapped') {
+          console.warn(
+            `[openscript] calendar ${result.calendar.warningCode} for exchange ` +
+              `"${result.calendar.normalizedExchange}"; using ${result.calendar.semanticKey}`
+          )
+        }
+      }
       this.applyOutputs(instance.instanceId, result.outputs, 'full')
     } catch (err) {
       instance.error = err instanceof Error ? err.message : String(err)
