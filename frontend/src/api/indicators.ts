@@ -1,5 +1,6 @@
 /** Indicator engine session APIs (CSRF-protected web routes). */
 
+import type { IRProgram } from '@openalgo/openscript'
 import type { StyleOverrides, TimeframeVisibility } from '@/lib/charts/indicator-host'
 import type { WorkspaceSnapshot } from '@/lib/charts/workspace'
 import { webClient } from './client'
@@ -85,11 +86,36 @@ export interface ScriptRecord {
   language: string
   visibility: string
   current_version_id: number | null
-  /** Present when a single script is fetched (get/create/update). */
+  /* Identity of the resolved version. Present whenever a version is resolved —
+   * i.e. on get/create/update, not on the list. `id` + `version_id` is what a
+   * durable indicator persists so it can re-fetch its own authoritative IR;
+   * `definitionId` is a UI sentinel and is not identity. */
+  version_id?: number
   version_number?: number
+  /** Canonical sha-256 of the exact source this version was compiled from. */
+  source_hash?: string
+  compiler_version?: string
+  /* The heavy half, present only when a single script is fetched. */
   source?: string
+  /**
+   * The server's own compiled IR, read from storage and never recompiled.
+   * `null` when the server could not compile the source — a failed compile, or
+   * a construct the Python port does not implement (`request.security`
+   * compiles in the browser and does not here). Callers must handle null
+   * rather than assume an IR is present.
+   */
+  compiled_ir?: IRProgram | null
+  diagnostics?: ScriptDiagnostic[]
   updated_at: string | null
   created_at: string | null
+}
+
+/** One compiler diagnostic as stored alongside a version. */
+export interface ScriptDiagnostic {
+  code: string
+  message: string
+  severity: string
+  [key: string]: unknown
 }
 
 export async function listScripts(): Promise<ScriptRecord[]> {
@@ -142,6 +168,11 @@ export interface ScriptVersion {
 /** A single version fetched with its full source (for preview / restore). */
 export interface ScriptVersionDetail extends ScriptVersion {
   source_code: string
+  diagnostics: ScriptDiagnostic[]
+  /** Authoritative IR for THIS version — how a layout pinned to an older
+   *  version restores without recompiling. Null when the server could not
+   *  compile it. */
+  compiled_ir: IRProgram | null
 }
 
 export async function listVersions(scriptId: number): Promise<ScriptVersion[]> {

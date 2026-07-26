@@ -350,7 +350,6 @@ def test_every_positive_fixture_compiles_and_admits():
     import json
     from pathlib import Path
 
-    from services.openscript import openscript
 
     fixtures_dir = (
         Path(__file__).resolve().parents[1].parent

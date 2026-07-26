@@ -19,14 +19,14 @@ import json
 from pathlib import Path
 
 import pytest
-
-from services.openscript import openscript
 from helpers.ir_canonical import (
     DIVERGENCES,
     canonical_ir,
     canonical_outputs,
     unexplained_fields,
 )
+
+from services.openscript import openscript
 
 FIXTURES_DIR = (
     Path(__file__).resolve().parents[1].parent / "openalgo-openscript" / "fixtures" / "openscript"

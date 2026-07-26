@@ -3,10 +3,16 @@
 immutable versioning, and chart layout persistence (architecture doc §15/§16).
 
 Scripts store source in immutable versions; every source change appends a new
-version and moves the script's current pointer. Server-side compilation of the
-stored source (the Python OpenScript port) lands next — until then `compiled_ir`
-is left null and the browser compiles for preview only. Alert endpoints land
-with the headless execution engine.
+version and moves the script's current pointer. Every version is compiled
+server-side by the Python OpenScript port and stored with its own `compiled_ir`,
+`source_hash` and diagnostics — client-submitted IR is never trusted.
+
+That stored IR is the artifact a saved indicator is rebuilt from: the fetch
+routes return it verbatim so a reopened chart never recompiles in the browser.
+It can legitimately be null (a source the server could not compile, e.g. one
+using `request.security`, which the TS front end supports and the Python port
+does not), so every consumer must handle that rather than assume an IR is
+present. Alert endpoints land with the headless execution engine.
 """
 
 import hashlib
@@ -146,6 +152,22 @@ def _script_row(
     version: IndicatorScriptVersion | None = None,
     include_source: bool = False,
 ) -> dict:
+    """Serialize a script, optionally with its full authoritative artifact.
+
+    `include_source` controls the heavy half. Without it the caller gets
+    identity only, which is what the picker needs — it lists every saved script,
+    and attaching each one's source and IR would grow that response without
+    bound. With it the caller gets everything needed to rebuild the indicator
+    without compiling anything: the immutable `version_id`, the canonical
+    `source_hash`, and the server's own `compiled_ir`.
+
+    `compiled_ir` is read straight out of storage and is never recomputed here.
+    That is the load-bearing property of the reopen contract — a version saved
+    by an earlier compiler must come back exactly as it was stored, and a
+    version stored with no IR (a source the server could not compile) must come
+    back as null so the client can report it rather than have it silently
+    repaired.
+    """
     row = {
         "id": script.id,
         "name": script.name,
@@ -157,9 +179,13 @@ def _script_row(
         "created_at": script.created_at.isoformat() if script.created_at else None,
     }
     if version is not None:
+        row["version_id"] = version.id
         row["version_number"] = version.version_number
+        row["source_hash"] = version.source_hash
+        row["compiler_version"] = version.compiler_version
         if include_source:
             row["source"] = version.source_code
+            row["compiled_ir"] = version.compiled_ir
             meta = version.metadata_json or {}
             row["diagnostics"] = meta.get("diagnostics", [])
     return row
@@ -362,6 +388,10 @@ def get_script_version(script_id: int, version_id: int):
                     "created_at": version.created_at.isoformat() if version.created_at else None,
                     "is_current": version.id == script.current_version_id,
                     "diagnostics": meta.get("diagnostics", []),
+                    # A layout pinned to a specific version restores through
+                    # this route, so it serves the authoritative IR too — from
+                    # storage, never a recompile.
+                    "compiled_ir": version.compiled_ir,
                 },
             }
         )
