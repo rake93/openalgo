@@ -22,7 +22,248 @@ from services.openscript.runtime.cost_expr import eval_cost_expr
 from services.openscript.runtime.plancost import admission_cost_ctx, estimate_plan_cost
 
 IR_MAJOR = 1
+IR_VERSION = 1
 NUMERIC_MODE = "f64-strict"
+
+# Node fields holding a reference to ANOTHER node, per op. A referenced id must
+# be an integer strictly below the referring node's own id: `nodes` is
+# topologically ordered and ids are array positions, so a forward or self
+# reference reads a slot the executor has not filled yet. Mirror of the TS
+# NODE_REF_FIELDS.
+_NODE_REF_FIELDS = {
+    "binop": ("args",),
+    "unop": ("arg",),
+    "select": ("cond", "then", "else"),
+    "hist": ("arg",),
+    "nz": ("arg", "replacement"),
+    "call": ("args",),
+    # `scan.init` is NOT listed: the executor seeds the recurrence with it as a
+    # literal number (`prev = init`), not as a node id.
+    "scan": ("inputs",),
+}
+
+
+def _is_node_index(v, exclusive_max: int) -> bool:
+    """A node reference is valid only as an in-range integer array position.
+
+    `bool` is excluded explicitly: `True` is an `int` in Python, so without this
+    guard a forged `arg: true` would index node 1 here while the TS gate
+    (`typeof v === 'number'`) rejects it — a cross-language divergence in what
+    counts as a runnable IR.
+    """
+    return isinstance(v, int) and not isinstance(v, bool) and 0 <= v < exclusive_max
+
+
+def _scan_expr_input_slots(expr, out: list) -> None:
+    """Collect `{k:'input', i}` slots from a ScanExpr. These index the SCAN
+    NODE's own `inputs` array, not the program's `inputs`."""
+    if not isinstance(expr, dict):
+        return
+    if expr.get("k") == "input":
+        out.append(expr.get("i"))
+        return
+    for v in expr.values():
+        if isinstance(v, list):
+            for e in v:
+                _scan_expr_input_slots(e, out)
+        elif isinstance(v, dict):
+            _scan_expr_input_slots(v, out)
+
+
+def _declared_input_ids(ir: dict) -> set:
+    return {
+        str(d.get("id")) for d in ir.get("inputs", []) if isinstance(d, dict) and d.get("id") is not None
+    }
+
+
+def _admit_node_structure(ir: dict, errors: list[dict]) -> None:
+    """Node shape: each entry must be a dict whose `id` is its own array
+    position. The executor indexes its values by position, so an id that
+    disagrees with the position does not fail — it silently evaluates the wrong
+    node."""
+    seen: set[int] = set()
+    for i, node in enumerate(ir["nodes"]):
+        if not isinstance(node, dict):
+            errors.append(
+                {
+                    "code": "IR_MALFORMED_NODE",
+                    "message": f"node at position {i} is not an object",
+                    "detail": str(i),
+                }
+            )
+            continue
+        node_id = node.get("id")
+        if not isinstance(node_id, int) or isinstance(node_id, bool):
+            errors.append(
+                {
+                    "code": "IR_MALFORMED_NODE",
+                    "message": f"node at position {i} has a non-integer id: {node_id}",
+                    "detail": str(i),
+                }
+            )
+            continue
+        if node_id in seen:
+            errors.append(
+                {
+                    "code": "IR_DUPLICATE_NODE_ID",
+                    "message": f"duplicate node id: {node_id}",
+                    "detail": str(node_id),
+                }
+            )
+            continue
+        seen.add(node_id)
+        if node_id != i:
+            errors.append(
+                {
+                    "code": "IR_MALFORMED_NODE",
+                    "message": f"node id {node_id} is not its array position {i}",
+                    "detail": str(i),
+                }
+            )
+
+
+def _admit_node_references(ir: dict, errors: list[dict]) -> None:
+    """Node-to-node and node-to-input wiring."""
+    declared_inputs = _declared_input_ids(ir)
+
+    def bad_ref(node_id, field, value):
+        errors.append(
+            {
+                "code": "IR_BAD_NODE_REF",
+                "message": (
+                    f"node {node_id} field '{field}' references {value}, "
+                    "which is not an evaluable earlier node"
+                ),
+                "detail": str(value),
+            }
+        )
+
+    for node in ir["nodes"]:
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        # Bound is the node's OWN id, not len(nodes): forward and self
+        # references read an unfilled slot.
+        bound = node_id if isinstance(node_id, int) and not isinstance(node_id, bool) else 0
+        for field in _NODE_REF_FIELDS.get(node.get("op"), ()):
+            value = node.get(field)
+            # Optional/absent: `nz.replacement` may be omitted, `scan.init` may be na.
+            if value is None:
+                continue
+            if isinstance(value, list):
+                for v in value:
+                    if not _is_node_index(v, bound):
+                        bad_ref(node_id, field, v)
+            elif not _is_node_index(value, bound):
+                bad_ref(node_id, field, value)
+        if node.get("op") == "input" and str(node.get("inputId")) not in declared_inputs:
+            errors.append(
+                {
+                    "code": "IR_BAD_INPUT_REF",
+                    "message": f"node {node_id} reads undeclared input '{node.get('inputId')}'",
+                    "detail": str(node.get("inputId")),
+                }
+            )
+        if (
+            node.get("op") == "htf"
+            and node.get("timeframeInputId") is not None
+            and str(node.get("timeframeInputId")) not in declared_inputs
+        ):
+            errors.append(
+                {
+                    "code": "IR_BAD_INPUT_REF",
+                    "message": (
+                        f"node {node_id} reads undeclared timeframe input "
+                        f"'{node.get('timeframeInputId')}'"
+                    ),
+                    "detail": str(node.get("timeframeInputId")),
+                }
+            )
+        if node.get("op") == "scan":
+            node_inputs = node.get("inputs")
+            arity = len(node_inputs) if isinstance(node_inputs, list) else 0
+            slots: list = []
+            _scan_expr_input_slots(node.get("expr"), slots)
+            for slot in slots:
+                if not _is_node_index(slot, arity):
+                    errors.append(
+                        {
+                            "code": "IR_BAD_INPUT_REF",
+                            "message": (
+                                f"scan node {node_id} expr reads slot {slot}, "
+                                f"outside its {arity} inputs"
+                            ),
+                            "detail": str(slot),
+                        }
+                    )
+
+
+def _admit_output_references(ir: dict, errors: list[dict]) -> None:
+    """Output wiring: `*NodeId` must resolve to a node, `colorInputId` to a
+    declared input, and a `fill`'s plot indices to `plot` outputs."""
+    bound = len(ir["nodes"])
+    outputs = ir["outputs"]
+    declared_inputs = _declared_input_ids(ir)
+
+    def check_refs(holder: dict, kind, where: str) -> None:
+        for key, value in holder.items():
+            if key == "nodeId" or key.endswith("NodeId"):
+                if not _is_node_index(value, bound):
+                    errors.append(
+                        {
+                            "code": "IR_BAD_NODE_REF",
+                            "message": (
+                                f"output '{kind}'{where} field '{key}' references {value}, "
+                                "which is not a node"
+                            ),
+                            "detail": str(value),
+                        }
+                    )
+            elif key == "colorInputId" and str(value) not in declared_inputs:
+                errors.append(
+                    {
+                        "code": "IR_BAD_INPUT_REF",
+                        "message": f"output '{kind}'{where} binds undeclared input '{value}'",
+                        "detail": str(value),
+                    }
+                )
+
+    for o in outputs:
+        if not isinstance(o, dict):
+            continue
+        kind = o.get("kind")
+        check_refs(o, kind, "")
+        if isinstance(o.get("style"), dict):
+            check_refs(o["style"], kind, " style")
+        # `label` (level) / `text` (zone) may be a numeric format template whose
+        # args are node ids sampled at the spawn bar.
+        for field in ("label", "text"):
+            t = o.get(field)
+            if isinstance(t, dict) and t.get("kind") == "template" and isinstance(t.get("args"), list):
+                for a in t["args"]:
+                    if not _is_node_index(a, bound):
+                        errors.append(
+                            {
+                                "code": "IR_BAD_NODE_REF",
+                                "message": (
+                                    f"output '{kind}' {field} template references {a}, "
+                                    "which is not a node"
+                                ),
+                                "detail": str(a),
+                            }
+                        )
+        if kind == "fill":
+            for field in ("topPlotIndex", "bottomPlotIndex"):
+                idx = o.get(field)
+                target = outputs[idx] if _is_node_index(idx, len(outputs)) else None
+                if not isinstance(target, dict) or target.get("kind") != "plot":
+                    errors.append(
+                        {
+                            "code": "IR_BAD_OUTPUT_REF",
+                            "message": f"fill '{field}' references {idx}, which is not a plot output",
+                            "detail": str(idx),
+                        }
+                    )
 
 # Bytes per megabyte — identical 1024*1024 on both runtimes.
 _MB = 1024 * 1024
@@ -68,6 +309,18 @@ class IRAdmissionError(Exception):
 def admit_ir(ir: dict) -> list[dict]:
     """Return every reason the runtime would refuse this IR (empty = admitted)."""
     errors: list[dict] = []
+    version = ir.get("version")
+    if version != IR_VERSION:
+        errors.append(
+            {
+                "code": "IR_VERSION_MISMATCH",
+                "message": (
+                    f"IR version {version if version is not None else '(none)'} is not "
+                    f"supported by runtime version {IR_VERSION}"
+                ),
+                "detail": "none" if version is None else str(version),
+            }
+        )
     # Match the TS gate exactly: distinguish an ABSENT header from a PRESENT-but-empty
     # one. In TS `h = ir.header`, `{}` is truthy (numericMode still checked) while
     # `undefined` is falsy (skipped). A non-dict header is treated as absent (rejected).
@@ -107,27 +360,52 @@ def admit_ir(ir: dict) -> list[dict]:
                     "detail": f,
                 }
             )
-    for node in ir.get("nodes", []):
-        if node.get("op") not in _KNOWN_NODE_OPS:
+    # Containers first: every pass below iterates these, so a non-list is
+    # reported once here and the dependent passes are skipped rather than
+    # raising a TypeError out of the gate.
+    nodes_ok = isinstance(ir.get("nodes"), list)
+    outputs_ok = isinstance(ir.get("outputs"), list)
+    inputs_ok = isinstance(ir.get("inputs"), list)
+    for field, ok in (("nodes", nodes_ok), ("outputs", outputs_ok), ("inputs", inputs_ok)):
+        if not ok:
             errors.append(
                 {
-                    "code": "IR_UNKNOWN_NODE_OP",
-                    "message": f"unknown node op: {node.get('op')}",
-                    "detail": str(node.get("op")),
+                    "code": "IR_MALFORMED",
+                    "message": f"IR field '{field}' must be an array",
+                    "detail": field,
                 }
             )
-    for o in ir.get("outputs", []):
-        if o.get("kind") not in _KNOWN_OUTPUT_KINDS:
-            errors.append(
-                {
-                    "code": "IR_UNKNOWN_OUTPUT_KIND",
-                    "message": f"unknown output kind: {o.get('kind')}",
-                    "detail": str(o.get("kind")),
-                }
-            )
+    if nodes_ok:
+        for node in ir["nodes"]:
+            op = node.get("op") if isinstance(node, dict) else None
+            if op not in _KNOWN_NODE_OPS:
+                errors.append(
+                    {
+                        "code": "IR_UNKNOWN_NODE_OP",
+                        "message": f"unknown node op: {op}",
+                        "detail": str(op),
+                    }
+                )
+    if outputs_ok:
+        for o in ir["outputs"]:
+            kind = o.get("kind") if isinstance(o, dict) else None
+            if kind not in _KNOWN_OUTPUT_KINDS:
+                errors.append(
+                    {
+                        "code": "IR_UNKNOWN_OUTPUT_KIND",
+                        "message": f"unknown output kind: {kind}",
+                        "detail": str(kind),
+                    }
+                )
+    if nodes_ok:
+        _admit_node_structure(ir, errors)
+    if nodes_ok and inputs_ok:
+        _admit_node_references(ir, errors)
+    if nodes_ok and outputs_ok and inputs_ok:
+        _admit_output_references(ir, errors)
     declared_features = set(required_features)
-    for o in ir.get("outputs", []):
-        feat = _GATED_OUTPUT_FEATURE.get(o.get("kind"))
+    for o in ir["outputs"] if outputs_ok else []:
+        feat = _GATED_OUTPUT_FEATURE.get(o.get("kind")) if isinstance(o, dict) else None
         if feat and feat not in declared_features:
             errors.append(
                 {
