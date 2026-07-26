@@ -136,6 +136,28 @@ export interface ScriptIdentity {
   sourceHash?: string
 }
 
+/**
+ * One persisted indicator in a saved layout.
+ *
+ * `script` present  -> a durable OpenScript indicator, restored by re-fetching
+ *                      that version's server-compiled IR.
+ * `script` absent   -> a registry builtin, restored from the manifest by
+ *                      `definitionId`.
+ *
+ * A legacy layout may contain `definitionId: 'ir'` with no `script`: an editor
+ * preview written by a build that persisted them. Those cannot be restored —
+ * there is no version to fetch — and consumers must say so rather than fail
+ * quietly.
+ */
+export interface IndicatorSnapshotEntry {
+  definitionId: string
+  inputs: Record<string, unknown>
+  script?: ScriptIdentity
+  styleOverrides?: StyleOverrides
+  visibility?: TimeframeVisibility
+  hidden?: boolean
+}
+
 export interface IndicatorInstance {
   instanceId: string
   definitionId: string
@@ -256,24 +278,37 @@ export class IndicatorHost {
     return rows
   }
 
-  /** Serializable state for persistence (localStorage / layouts API). */
-  snapshot(): {
-    definitionId: string
-    inputs: Record<string, unknown>
-    styleOverrides?: StyleOverrides
-    visibility?: TimeframeVisibility
-    hidden?: boolean
-  }[] {
-    return this.list().map((i) => {
-      const item: {
-        definitionId: string
-        inputs: Record<string, unknown>
-        styleOverrides?: StyleOverrides
-        visibility?: TimeframeVisibility
-        hidden?: boolean
-      } = {
+  /**
+   * Serializable state for persistence (localStorage / layouts API).
+   *
+   * Entry ORDER is load-bearing and must be preserved by any consumer:
+   * `attachChart` hands panes out in instance order, so the stack order IS the
+   * instance order. A pane index is therefore deliberately NOT persisted — it
+   * would be a second, conflicting source of truth, and it would leave a hole
+   * in the stack whenever one entry failed to restore.
+   *
+   * A custom OpenScript indicator is identified by `script`, never by
+   * `definitionId` — that stays the `'ir'` sentinel, which names the KIND of
+   * entry and says nothing about WHICH script is running. The IR itself is not
+   * persisted: reopen re-fetches the authoritative IR for `script.versionId`
+   * from the server, so a layout never carries a second copy of the program
+   * that could drift from it.
+   *
+   * An editor PREVIEW (IR-owning, but with no saved script behind it) is
+   * omitted entirely. It was compiled from an unsaved buffer, so there is no
+   * version to re-fetch — persisting one would write an entry guaranteed to
+   * fail on reopen.
+   */
+  snapshot(): IndicatorSnapshotEntry[] {
+    const entries: IndicatorSnapshotEntry[] = []
+    for (const i of this.list()) {
+      if (i.ir && !i.script) continue
+      const item: IndicatorSnapshotEntry = {
         definitionId: i.definitionId,
         inputs: i.inputs,
+      }
+      if (i.script) {
+        item.script = i.script
       }
       if (i.styleOverrides && Object.keys(i.styleOverrides).length > 0) {
         item.styleOverrides = i.styleOverrides
@@ -284,8 +319,9 @@ export class IndicatorHost {
       if (i.hidden) {
         item.hidden = true
       }
-      return item
-    })
+      entries.push(item)
+    }
+    return entries
   }
 
   private async ensureEngine(): Promise<EngineWorkerClient> {

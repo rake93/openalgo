@@ -1,7 +1,7 @@
 /** Indicator engine session APIs (CSRF-protected web routes). */
 
 import type { IRProgram } from '@openalgo/openscript'
-import type { StyleOverrides, TimeframeVisibility } from '@/lib/charts/indicator-host'
+import type { IndicatorSnapshotEntry } from '@/lib/charts/indicator-host'
 import type { WorkspaceSnapshot } from '@/lib/charts/workspace'
 import { webClient } from './client'
 
@@ -23,15 +23,14 @@ export interface ChartLayoutRecord {
  * earlier builds; `workspace` carries the full snapshot — chart type, transform
  * settings, both indicator runtimes, drawings, studies, and trading
  * preferences. A reader prefers `workspace` and falls back to `indicators`.
+ *
+ * Both are written from `IndicatorHost.snapshot()`, so `indicators` names that
+ * entry type rather than restating it: a duplicated inline shape would have
+ * hidden the durable indicator's `script` identity from every reader typed
+ * against this, while it sat there in the stored JSON.
  */
 export interface ChartLayoutState {
-  indicators: {
-    definitionId: string
-    inputs: Record<string, unknown>
-    styleOverrides?: StyleOverrides
-    visibility?: TimeframeVisibility
-    hidden?: boolean
-  }[]
+  indicators: IndicatorSnapshotEntry[]
   workspace?: WorkspaceSnapshot
 }
 

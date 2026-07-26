@@ -114,6 +114,34 @@ describe('adding a saved script indicator', () => {
   })
 })
 
+describe('what a saved layout carries', () => {
+  it('a saved indicator reaches the workspace snapshot with its identity', async () => {
+    await controller.addScriptIndicator(SCRIPT_A, SAVED)
+
+    const entries = controller.snapshot().indicators
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.script).toEqual(SCRIPT_A)
+  })
+
+  it('the editor preview never reaches it', async () => {
+    // The whole point: a layout saved while the editor happens to be open must
+    // not gain an entry that cannot be restored.
+    await controller.addScriptIndicator(SCRIPT_A, SAVED)
+    await controller.previewIr(DRAFT)
+
+    const entries = controller.snapshot().indicators
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.script).toEqual(SCRIPT_A)
+  })
+
+  it('preserves order across several saved indicators', async () => {
+    await controller.addScriptIndicator(SCRIPT_A, SAVED)
+    await controller.addScriptIndicator(SCRIPT_B, OTHER)
+
+    expect(controller.snapshot().indicators.map((e) => e.script?.scriptId)).toEqual([1, 2])
+  })
+})
+
 describe('the editor preview stays separate', () => {
   it('clearing the preview leaves saved indicators alone', async () => {
     const savedId = await controller.addScriptIndicator(SCRIPT_A, SAVED)
