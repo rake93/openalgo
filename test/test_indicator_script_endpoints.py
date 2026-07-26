@@ -21,16 +21,28 @@ from datetime import datetime
 import pytest
 import pytz
 from flask import Flask
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 
-# `indicator_db` builds its engine at IMPORT time from DATABASE_URL, so the temp
-# database has to be chosen before the import below. Set unconditionally rather
-# than with setdefault: a developer with a real DATABASE_URL exported must not
-# have this suite write into their live database.
 _DB_FD, _DB_PATH = tempfile.mkstemp(suffix=".db")
 os.close(_DB_FD)
-os.environ["DATABASE_URL"] = f"sqlite:///{_DB_PATH}"
+_TEMP_DB_URL = f"sqlite:///{_DB_PATH}"
 
-from database import indicator_db  # noqa: E402
+# `indicator_db` builds its engine at IMPORT time from DATABASE_URL, so a value
+# has to be present for the import below to succeed at all. It is restored
+# immediately afterwards: leaving it set leaks into every later test module in
+# the same pytest session, which silently pointed the master-contract tests at
+# this empty database.
+_ORIGINAL_DB_URL = os.environ.get("DATABASE_URL")
+os.environ["DATABASE_URL"] = _TEMP_DB_URL
+try:
+    from database import indicator_db
+finally:
+    if _ORIGINAL_DB_URL is None:
+        os.environ.pop("DATABASE_URL", None)
+    else:
+        os.environ["DATABASE_URL"] = _ORIGINAL_DB_URL
+
 from services.openscript import openscript  # noqa: E402
 from services.openscript.runtime.admit import admit_ir  # noqa: E402
 
@@ -61,10 +73,20 @@ def client():
     and pulling in the whole application would drag in broker plugins and the
     websocket proxy for no added coverage.
 
-    The scoped session and engine are released explicitly at teardown: a leaked
-    engine holds its SQLite file descriptor for the life of the process.
+    The scoped session is bound to the temp engine here rather than relying on
+    what `indicator_db` picked up at import: if an earlier test module already
+    imported it, the module-level engine points at whatever DATABASE_URL was
+    then, and this suite must never write into a real database. The original
+    bind is restored and the temp engine disposed at teardown — a leaked engine
+    holds its SQLite file descriptor for the life of the process.
     """
-    indicator_db.Base.metadata.create_all(indicator_db.engine)
+    engine = create_engine(
+        _TEMP_DB_URL, poolclass=NullPool, connect_args={"check_same_thread": False}
+    )
+    original_bind = indicator_db.db_session.get_bind()
+    indicator_db.db_session.remove()
+    indicator_db.db_session.configure(bind=engine)
+    indicator_db.Base.metadata.create_all(engine)
 
     app = Flask(__name__)
     app.secret_key = "test-key"
@@ -82,7 +104,8 @@ def client():
         yield c
 
     indicator_db.db_session.remove()
-    indicator_db.engine.dispose()
+    indicator_db.db_session.configure(bind=original_bind)
+    engine.dispose()
     try:
         os.unlink(_DB_PATH)
     except OSError:
