@@ -716,7 +716,7 @@ class IRGenerator:
             "labelLatestOnly": self._const_arg(call, None, "label_latest_only") is True,
         }
         self._apply_extend_args(out, call, extend)
-        label = self._draw_text(call, "label")
+        label = self._draw_text(call, "label", {"price": out["priceNodeId"]})
         if label is not None:
             out["label"] = label
         return out
@@ -753,7 +753,7 @@ class IRGenerator:
             mc = self._draw_color_opt(call, "mitigated_color")
             if mc is not None:
                 out["mitigatedColor"] = mc
-        text = self._draw_text(call, "text")
+        text = self._draw_text(call, "text", {"top": out["topNodeId"], "bottom": out["bottomNodeId"]})
         if text is not None:
             out["text"] = text
         return out
@@ -805,12 +805,41 @@ class IRGenerator:
             return cap
         return raw
 
-    def _draw_text(self, call: ast.CallExpr, name: str) -> dict | None:
-        """`label=`/`text=` -> IRDrawText. v1 lowers const strings; numeric format
-        templates (design §11) round-trip via the 'template' variant but are
-        materialized in Phase 1, not lowered here."""
+    def _draw_text(
+        self, call: ast.CallExpr, name: str, slots: dict[str, int] | None = None
+    ) -> dict | None:
+        """`label=`/`text=` -> IRDrawText (design §11). Mirror of the TS `drawText`.
+
+        A plain string stays `const`. A string containing a known NAMED
+        placeholder lowers to the frozen `template` variant: the name resolves
+        against the output's OWN geometry (`{price}` on a level, `{top}` /
+        `{bottom}` on a zone) and is rewritten into the positional `{0}`/`{1}`
+        form the materializer renders, with `args` as node ids sampled once at
+        the spawn bar.
+
+        An UNKNOWN placeholder is deliberately left in the text: the materializer
+        substitutes only the indices it has args for, so a typo shows up on the
+        chart rather than vanishing.
+
+        Insertion order of `slots` is the argument order, and must match the TS
+        object-literal order — the two IRs are compared node for node.
+        """
         v = self._const_arg(call, None, name)
-        return {"kind": "const", "value": v} if isinstance(v, str) else None
+        if not isinstance(v, str):
+            return None
+        if slots is None:
+            return {"kind": "const", "value": v}
+        args: list[int] = []
+        fmt = v
+        for placeholder, node_id in slots.items():
+            token = "{" + placeholder + "}"
+            if token not in fmt:
+                continue
+            fmt = fmt.replace(token, "{" + str(len(args)) + "}")
+            args.append(node_id)
+        if args:
+            return {"kind": "template", "fmt": fmt, "args": args}
+        return {"kind": "const", "value": v}
 
     def _draw_extend(self, call: ast.CallExpr) -> str:
         v = self._const_arg(call, None, "extend")
