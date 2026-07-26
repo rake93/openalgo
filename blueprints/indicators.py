@@ -27,6 +27,7 @@ from database.indicator_db import (
     db_session,
 )
 from services.openscript.compiler_service import compile_source
+from services.openscript.runtime.admit import admit_ir
 from utils.logging import get_logger
 from utils.session import check_session_validity
 
@@ -162,11 +163,12 @@ def _script_row(
     `source_hash`, and the server's own `compiled_ir`.
 
     `compiled_ir` is read straight out of storage and is never recomputed here.
-    That is the load-bearing property of the reopen contract — a version saved
-    by an earlier compiler must come back exactly as it was stored, and a
-    version stored with no IR (a source the server could not compile) must come
-    back as null so the client can report it rather than have it silently
-    repaired.
+    That is the load-bearing property of the reopen contract: an artifact the
+    runtime can run comes back exactly as it was stored. The one exception lives
+    in `_ensure_runnable_ir`, which the fetch routes call BEFORE serializing —
+    it repairs IR the runtime would REFUSE, and leaves everything else alone. A
+    version whose source the server cannot compile still reads back as null, so
+    the client reports it rather than having it papered over.
     """
     row = {
         "id": script.id,
@@ -189,6 +191,43 @@ def _script_row(
             meta = version.metadata_json or {}
             row["diagnostics"] = meta.get("diagnostics", [])
     return row
+
+
+def _ensure_runnable_ir(version: IndicatorScriptVersion | None) -> None:
+    """Repair a stored IR the runtime would refuse, from the version's OWN source.
+
+    Versions are immutable in the sense that matters — the SOURCE never changes,
+    so `source_hash`, `version_id` and `version_number` are untouched here and a
+    layout pinned to this version keeps resolving to it. What can go stale is the
+    derived artifact: IR compiled before the negotiation header existed (Python
+    ir-gen gained `header` in 34977a88c) has no `header` key, so admission
+    rejects it with IR_MAJOR_MISMATCH and the indicator cannot be added OR
+    restored. `compiled_ir` NULL — stored before the server compiled at all — is
+    the same problem in its extreme form.
+
+    The staleness test is the admission gate itself, so the criterion is exactly
+    "the runtime would refuse this" rather than a hand-maintained list of
+    compiler generations. A recompile that does not produce an admissible IR is
+    discarded: a source the server genuinely cannot compile must keep reading
+    back as null so the client reports it, rather than being papered over.
+    """
+    if version is None:
+        return
+    if version.compiled_ir is not None and not admit_ir(version.compiled_ir):
+        return
+    compiled = compile_source(version.source_code)
+    if compiled["ir"] is None or admit_ir(compiled["ir"]):
+        return
+    logger.info(
+        f"Recompiled stale IR for version {version.id} "
+        f"(script {version.script_id}, compiler {version.compiler_version})"
+    )
+    version.compiled_ir = compiled["ir"]
+    version.compiler_version = compiled["compiler_version"]
+    meta = dict(version.metadata_json or {})
+    meta["diagnostics"] = compiled["diagnostics"]
+    version.metadata_json = meta
+    db_session.commit()
 
 
 def _new_version(script_id: int, source: str, version_number: int) -> IndicatorScriptVersion:
@@ -230,8 +269,10 @@ def get_script(script_id: int):
         script = IndicatorScript.query.filter_by(id=script_id, user_id=_user()).first()
         if not script:
             return jsonify({"status": "error", "message": "script not found"}), 404
+        version = _current_version(script)
+        _ensure_runnable_ir(version)
         return jsonify(
-            {"status": "success", "data": _script_row(script, _current_version(script), include_source=True)}
+            {"status": "success", "data": _script_row(script, version, include_source=True)}
         )
     except Exception as e:
         logger.exception(f"Error fetching script {script_id}: {e}")
@@ -375,6 +416,7 @@ def get_script_version(script_id: int, version_id: int):
         ).first()
         if not version:
             return jsonify({"status": "error", "message": "version not found"}), 404
+        _ensure_runnable_ir(version)
         meta = version.metadata_json or {}
         return jsonify(
             {

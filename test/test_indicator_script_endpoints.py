@@ -199,17 +199,27 @@ def test_the_returned_ir_declares_the_scripts_inputs(client):
 # ── the artifact comes from storage, not from a recompile ────────────────────
 
 
+def _admissible_sentinel(source_ir: dict) -> dict:
+    """A structurally valid IR carrying a marker no compiler would emit.
+
+    It has to pass admission: an IR the runtime would refuse is repaired from
+    the stored source (see the stale-IR tests below), so an inadmissible
+    sentinel would prove the opposite of what these tests intend.
+    """
+    return {**source_ir, "marker": "from-storage-not-a-recompile"}
+
+
 def test_fetch_returns_the_stored_ir_rather_than_recompiling(client):
     """Mutation proof for the whole point of this endpoint.
 
-    A row's stored IR is replaced with a sentinel that no compiler would
-    produce. If the route recompiled the source on read, the sentinel would be
-    replaced by real IR; the contract requires it to come back verbatim. This is
-    what makes "existing saved versions work without migration or
-    recompilation" a fact rather than an assumption.
+    A row's stored IR is replaced with a marked copy no compiler would produce.
+    If the route recompiled the source on read, the marker would be gone; the
+    contract requires the stored artifact to come back verbatim. This is what
+    makes "existing saved versions work without migration or recompilation" a
+    fact rather than an assumption.
     """
     created = _create(client, "rsi-stored", RSI_SOURCE)
-    sentinel = {"version": 1, "marker": "from-storage-not-a-recompile"}
+    sentinel = _admissible_sentinel(created["compiled_ir"])
     version = indicator_db.IndicatorScriptVersion.query.filter_by(
         id=created["version_id"]
     ).first()
@@ -221,11 +231,120 @@ def test_fetch_returns_the_stored_ir_rather_than_recompiling(client):
     assert fetched["compiled_ir"] == sentinel
 
 
-def test_a_version_stored_without_ir_is_reported_as_null_not_recompiled(client):
-    """Rows written before server-side compilation existed have compiled_ir
-    NULL. They must read back as null so the client can say so, rather than
-    being silently repaired by a recompile the reopen contract forbids."""
-    created = _create(client, "rsi-legacy", RSI_SOURCE)
+def test_a_usable_stored_ir_is_never_recompiled(client):
+    """The reopen contract's core rule, stated as the boundary of the repair.
+
+    Recompiling is reserved for IR the RUNTIME WOULD REFUSE. An artifact that
+    admits is returned untouched, whatever else it contains — otherwise the
+    "server IR, never a browser recompile" guarantee would quietly become
+    "whatever the current compiler emits", and a saved layout could drift under
+    the user without the version ever changing.
+    """
+    created = _create(client, "rsi-usable", RSI_SOURCE)
+    sentinel = _admissible_sentinel(created["compiled_ir"])
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(
+        id=created["version_id"]
+    ).first()
+    version.compiled_ir = sentinel
+    indicator_db.db_session.commit()
+    indicator_db.db_session.remove()
+
+    fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
+    assert fetched["compiled_ir"] == sentinel
+    assert fetched["source"] == RSI_SOURCE
+
+
+# ── IR stored by an older compiler ───────────────────────────────────────────
+
+
+def _staleify(version_id: int) -> None:
+    """Strip the negotiation header from a stored version's IR.
+
+    Reproduces exactly what is in the wild: versions compiled before the Python
+    ir-gen emitted `header` (commit 34977a88c). `version: 1` is still there, so
+    the version check passes and admission fails on IR_MAJOR_MISMATCH instead.
+    """
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(id=version_id).first()
+    stale = {k: v for k, v in version.compiled_ir.items() if k != "header"}
+    version.compiled_ir = stale
+    indicator_db.db_session.commit()
+    indicator_db.db_session.remove()
+
+
+def test_a_header_less_stored_ir_would_be_refused_by_the_runtime(client):
+    """The premise. Without this the repair tests could pass vacuously."""
+    created = _create(client, "rsi-stale-premise", RSI_SOURCE)
+    _staleify(created["version_id"])
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(
+        id=created["version_id"]
+    ).first()
+    assert "IR_MAJOR_MISMATCH" in {e["code"] for e in admit_ir(version.compiled_ir)}
+    indicator_db.db_session.remove()
+
+
+def test_stale_stored_ir_is_repaired_on_fetch(client):
+    """A version whose IR predates the current compiler is recompiled from its
+    OWN stored source and comes back runnable.
+
+    Without this every script saved before the header existed is permanently
+    unaddable, and — worse — permanently unrestorable, because a saved layout
+    pins the version id.
+    """
+    created = _create(client, "rsi-stale", RSI_SOURCE)
+    _staleify(created["version_id"])
+
+    fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
+
+    assert admit_ir(fetched["compiled_ir"]) == []
+    assert fetched["compiled_ir"]["header"]["major"] == 1
+
+
+def test_the_repair_preserves_identity(client):
+    """The source did not change, so nothing that identifies the version may.
+    A layout pinned to this version has to keep resolving to it."""
+    created = _create(client, "rsi-stale-identity", RSI_SOURCE)
+    _staleify(created["version_id"])
+
+    fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
+
+    assert fetched["version_id"] == created["version_id"]
+    assert fetched["version_number"] == created["version_number"]
+    assert fetched["source_hash"] == created["source_hash"]
+    assert fetched["source"] == RSI_SOURCE
+
+
+def test_the_repair_persists(client):
+    """Repaired once, not on every read — and visible to the next reader,
+    including the version endpoint a restore goes through."""
+    created = _create(client, "rsi-stale-persist", RSI_SOURCE)
+    _staleify(created["version_id"])
+
+    client.get(f"/indicators/api/scripts/{created['id']}")
+
+    stored = indicator_db.IndicatorScriptVersion.query.filter_by(
+        id=created["version_id"]
+    ).first()
+    assert admit_ir(stored.compiled_ir) == []
+    indicator_db.db_session.remove()
+
+
+def test_the_version_endpoint_repairs_too(client):
+    """Restore reads through here, so a stale version has to heal on this path
+    as well — otherwise old layouts stay broken even once the script is addable."""
+    created = _create(client, "rsi-stale-version-route", RSI_SOURCE)
+    _staleify(created["version_id"])
+
+    fetched = client.get(
+        f"/indicators/api/scripts/{created['id']}/versions/{created['version_id']}"
+    ).get_json()["data"]
+
+    assert admit_ir(fetched["compiled_ir"]) == []
+
+
+def test_a_version_with_no_ir_at_all_is_repaired(client):
+    """`compiled_ir` NULL is the same problem in its most extreme form: stored
+    before the server compiled at all."""
+    created = _create(client, "rsi-null-ir", RSI_SOURCE)
     version = indicator_db.IndicatorScriptVersion.query.filter_by(
         id=created["version_id"]
     ).first()
@@ -234,8 +353,21 @@ def test_a_version_stored_without_ir_is_reported_as_null_not_recompiled(client):
     indicator_db.db_session.remove()
 
     fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
+
+    assert fetched["compiled_ir"] is not None
+    assert admit_ir(fetched["compiled_ir"]) == []
+
+
+def test_an_unrepairable_version_still_reports_null(client):
+    """A source the server cannot compile has nothing to repair from. It must
+    keep reading back as null so the client says so, rather than being papered
+    over."""
+    created = _create(client, "htf-unrepairable", HTF_SOURCE)
+
+    fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
+
     assert fetched["compiled_ir"] is None
-    assert fetched["source"] == RSI_SOURCE
+    assert fetched["diagnostics"]
 
 
 # ── diagnostics and source behaviour stay compatible ─────────────────────────
