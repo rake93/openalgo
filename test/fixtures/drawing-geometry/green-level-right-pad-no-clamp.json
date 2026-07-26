@@ -1,0 +1,27 @@
+{
+  "name": "green-level-right-pad-no-clamp",
+  "note": "G1 design §8, FROZEN: termination is authoritative and right_pad never clamps it. Spawn s=0 with right_pad=3 gives a provisional x2 of s+3=3, but close[1]=20 > L=10 terminates at bar 1, so x2bar=1 -- strictly LESS than s+right_pad. §8 says this already holds for all six until predicates and is merely unreachable in practice; this pins it on an implemented mode so it cannot drift.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nplotlevel(bar_index == 0, close, \"SR\", right_pad=3, extend=extend.until, terminate=terminate.close_above)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [10, 20, 20, 20, 20],
+    "high":   [11, 21, 21, 21, 21],
+    "low":    [9, 19, 19, 19, 19],
+    "close":  [10, 20, 20, 20, 20],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "SR",
+        "items": [
+          { "x1bar": 0, "x2bar": 1, "price": 10, "open": false, "label": null }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "green-level-close-above",
+  "note": "extend.until + terminate.close_above. Level L=close[1]=12. Bar 2 closes EXACTLY at 12, which is not a break (close_* is strict, design 0.5 §4); bar 3 closes 15 > 12 and terminates. x2 is inclusive (design 0.5 §3), so x2bar is the bar the predicate fired on.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nplotlevel(bar_index == 1, close, \"SR\", extend=extend.until, terminate=terminate.close_above)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [10, 12, 12, 15, 16],
+    "high":   [11, 13, 13, 16, 17],
+    "low":    [9, 11, 11, 14, 15],
+    "close":  [10, 12, 12, 15, 16],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "SR",
+        "items": [
+          { "x1bar": 1, "x2bar": 3, "price": 12, "open": false, "label": null }
+        ]
+      }
+    ]
+  }
+}

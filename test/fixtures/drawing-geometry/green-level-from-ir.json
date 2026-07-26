@@ -1,0 +1,62 @@
+{
+  "name": "green-level-from-ir",
+  "note": "The authoritative-IR branch of the harness. Same program and same bars as green-level-close-above, expressed as IR instead of source, so the two must agree: this pins the RUNTIME independently of the compiler, and proves the `ir` branch on a PASSING test rather than only on the red ones that use it.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": null,
+  "ir": {
+    "version": 1,
+    "compilerVersion": "openscript-1.0",
+    "sourceHash": "green-level-from-ir",
+    "header": {
+      "major": 1,
+      "minor": 0,
+      "compilerVersion": "openscript-1.0",
+      "requiredFeatures": ["drawing-streams"],
+      "numericMode": "f64-strict"
+    },
+    "declaration": { "name": "H", "overlay": true },
+    "inputs": [],
+    "nodes": [
+      { "id": 0, "op": "source", "source": "bar_index" },
+      { "id": 1, "op": "const", "value": 1 },
+      { "id": 2, "op": "binop", "operator": "==", "args": [0, 1] },
+      { "id": 3, "op": "source", "source": "close" }
+    ],
+    "outputs": [
+      {
+        "kind": "level",
+        "condNodeId": 2,
+        "priceNodeId": 3,
+        "title": "SR",
+        "style": { "color": "#2962ff", "lineStyle": "solid" },
+        "offset": 0,
+        "rightPad": 0,
+        "extend": "until",
+        "terminate": "close_above",
+        "maxKept": 20,
+        "labelLatestOnly": false
+      }
+    ],
+    "meta": { "warmupBars": 0, "spans": {} }
+  },
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [10, 12, 12, 15, 16],
+    "high":   [11, 13, 13, 16, 17],
+    "low":    [9, 11, 11, 14, 15],
+    "close":  [10, 12, 12, 15, 16],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "SR",
+        "items": [
+          { "x1bar": 1, "x2bar": 3, "price": 12, "open": false, "label": null }
+        ]
+      }
+    ]
+  }
+}

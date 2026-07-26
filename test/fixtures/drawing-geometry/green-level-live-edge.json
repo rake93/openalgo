@@ -1,0 +1,27 @@
+{
+  "name": "green-level-live-edge",
+  "note": "extend.until whose predicate NEVER fires: no close exceeds L=12 after the spawn bar, so the object falls through to x2bar=lastBarIndex with open=true (design 0.5 §3). This is the fall-through path G1 §4 relies on for the current session, pinned here on an implemented mode.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nplotlevel(bar_index == 1, close, \"SR\", extend=extend.until, terminate=terminate.close_above)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [10, 12, 11, 10, 9],
+    "high":   [11, 13, 12, 11, 10],
+    "low":    [9, 11, 10, 9, 8],
+    "close":  [10, 12, 11, 10, 9],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "SR",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 12, "open": true, "label": null }
+        ]
+      }
+    ]
+  }
+}

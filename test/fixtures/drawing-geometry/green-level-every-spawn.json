@@ -1,0 +1,29 @@
+{
+  "name": "green-level-every-spawn",
+  "note": "Three IST sessions, one spawn each, asserted in full. This is the harness capability that the first conversion's bug 2 defeated: a check that inspects only the NEWEST spawn passes when only one spawn exists. Here the expectation is the whole ascending item list, so a spawn condition that fires once instead of three times fails on length. The spawn condition is the real authoring form (first bar of a new calendar day, including bar 0 via na()), so the spawn side is proved on an IMPLEMENTED terminate mode before any new_session fixture depends on it.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nnewday = na(dayofmonth[1]) or dayofmonth != dayofmonth[1]\nplotlevel(newday, close, \"SR\", extend=extend.until, terminate=terminate.close_above)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784797200, 1784869200, 1784883600, 1785128400, 1785142800],
+    "open":   [10, 11, 12, 9, 8, 7],
+    "high":   [11, 12, 13, 10, 9, 8],
+    "low":    [9, 10, 11, 8, 7, 6],
+    "close":  [10, 11, 12, 9, 8, 7],
+    "volume": [100, 100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "SR",
+        "items": [
+          { "x1bar": 0, "x2bar": 1, "price": 10, "open": false, "label": null },
+          { "x1bar": 2, "x2bar": 5, "price": 12, "open": true, "label": null },
+          { "x1bar": 4, "x2bar": 5, "price": 8, "open": true, "label": null }
+        ]
+      }
+    ]
+  }
+}
