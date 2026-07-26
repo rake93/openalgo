@@ -17,7 +17,7 @@ import numpy as np
 from services.openscript.limits import SCRIPT_LIMITS
 
 from .admit import IRAdmissionError, admit_ir, resolve_plan_cost
-from .calendar import IST_CALENDAR, SessionCalendar, local_day_key
+from .calendar import DAY_SECONDS, IST_CALENDAR, SessionCalendar, local_day_key
 from .operator_cost import cost_family_of
 from .plancost import (
     DRAW_BASE_OPS,
@@ -64,9 +64,7 @@ _CONTEXT_IDS = frozenset(
 )
 
 
-def _resolve_context(
-    dataset: dict, cid: str, calendar: SessionCalendar = IST_CALENDAR
-) -> np.ndarray:
+def _resolve_context(dataset: dict, cid: str, calendar: SessionCalendar) -> np.ndarray:
     """Resolve a context/time series to a full float series.
 
     `bar_index`/`last_bar_index` derive from the length; `time` and the civil
@@ -79,9 +77,10 @@ def _resolve_context(
     Args:
         dataset: Column dict; `time` is epoch seconds (UTC), `close` sets the length.
         cid: The context id to resolve (one of `_CONTEXT_IDS`).
-        calendar: The session calendar whose offset defines the day boundary. The
-            IST default serves direct callers and existing tests; the production
-            path resolves it from the instrument and passes it explicitly.
+        calendar: The session calendar whose offset defines the day boundary.
+            REQUIRED, mirroring the TS `resolveContext`: `execute_ir` holds the one
+            IST default and always passes explicitly, so two adjacent links of the
+            same call chain cannot encode opposite policies.
 
     Returns:
         A float series of length `len(dataset["close"])`.
@@ -96,7 +95,7 @@ def _resolve_context(
         return (t_sec * 1000).astype(float)  # seconds → Pine milliseconds
     local = t_sec + calendar.utc_offset_seconds
     days = local_day_key(t_sec, calendar)  # the ONE day-boundary definition
-    sod = local - days * 86400  # second-of-day, 0..86399
+    sod = local - days * DAY_SECONDS  # second-of-day, 0..86399
     if cid == "hour":
         return (sod // 3600).astype(float)
     if cid == "minute":

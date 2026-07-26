@@ -8,6 +8,7 @@ only one would pass against an offset applied in the wrong direction.
 
 import dataclasses
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -102,6 +103,24 @@ def test_a_non_string_exchange_classifies_as_missing_rather_than_raising():
     assert r.normalized_exchange == ""
 
 
+def test_a_bom_prefixed_exchange_still_maps():
+    """A UTF-8 BOM surviving a CSV master-contract import must not read as unknown.
+
+    ES `trim()` counts U+FEFF as whitespace and Python's `str.strip()` does not, so
+    without an explicit strip TypeScript would map this and Python would classify it
+    `fallback-unknown` -- a divergence no fixture row can catch.
+    """
+    r = calendar_for_instrument(exchange="\ufeffNSE", symbol="SBIN")
+    assert r.provenance == "mapped"
+    assert r.normalized_exchange == "NSE"
+    assert r.warning_code is None
+    # Combined with ordinary whitespace, and on the trailing edge.
+    assert calendar_for_instrument(exchange=" \ufeffcrypto ", symbol="BTCUSDT").provenance == (
+        "mapped"
+    )
+    assert calendar_for_instrument(exchange="NSE\ufeff", symbol="SBIN").normalized_exchange == "NSE"
+
+
 def test_a_calendar_cannot_be_mutated():
     """A calendar whose offset drifted from its semantic_key would alias a cache entry."""
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -132,6 +151,20 @@ def test_local_day_key_floors_fractional_negatives_like_typescript():
     """int() would truncate toward zero here and disagree with Math.floor."""
     assert local_day_key(-1.5, UTC_CALENDAR) == -1
     assert local_day_key(-86400.5, UTC_CALENDAR) == -2
+
+
+def test_local_day_key_on_non_finite_input_pins_the_typescript_divergence():
+    """NaN propagates identically; infinity does NOT, and neither side raises.
+
+    Unreachable today (`_resolve_context` casts to int64 first) and deliberately not
+    engineered around -- pinned so a future change to it is a decision, not an
+    accident. TypeScript's `Math.floor(Infinity / 86400)` is `Infinity`; Python's
+    floor division collapses it to nan. It would matter to a future Python
+    `sessionStarts`: nan makes every bar a session start, `Infinity` makes none.
+    """
+    assert math.isnan(local_day_key(float("nan"), IST_CALENDAR))
+    assert math.isnan(local_day_key(float("inf"), IST_CALENDAR))
+    assert math.isnan(local_day_key(float("-inf"), IST_CALENDAR))
 
 
 def test_local_day_key_vectorizes_over_numpy_and_keeps_the_shape():

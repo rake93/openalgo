@@ -16,10 +16,18 @@ backlog note before adding a Python resampler.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
-IST_OFFSET_SECONDS = 19800
-_DAY_SECONDS = 86400
+# Module-private, mirroring the TypeScript side: re-exporting the bare offset would
+# only invite a second source of truth beside IST_CALENDAR.
+_IST_OFFSET_SECONDS = 19800
+
+# Public, also mirroring TypeScript: the engine's ONE spelling of the day length.
+# A caller that needs it (executor.py's second-of-day derivation) imports it rather
+# than re-declaring a bare 86400 -- the same second-source-of-truth pattern G7
+# removed for the offset.
+DAY_SECONDS = 86400
 
 
 @dataclass(frozen=True)
@@ -53,7 +61,7 @@ def fixed_offset_calendar(utc_offset_seconds: int) -> SessionCalendar:
     return SessionCalendar(utc_offset_seconds, f"fixed:{utc_offset_seconds}")
 
 
-IST_CALENDAR = fixed_offset_calendar(IST_OFFSET_SECONDS)
+IST_CALENDAR = fixed_offset_calendar(_IST_OFFSET_SECONDS)
 UTC_CALENDAR = fixed_offset_calendar(0)
 
 
@@ -72,14 +80,29 @@ def local_day_key(t_sec, calendar: SessionCalendar):
     truncates toward zero (disagreeing with TypeScript `Math.floor` on fractional
     negatives) AND raises on NaN/inf in a module documented never to raise.
 
+    NON-FINITE INPUTS -- `t_sec` must be finite; callers are responsible for that
+    (`_resolve_context` casts to int64 first, so no engine path can reach here with
+    one). The two languages agree on NaN and DIVERGE on infinity:
+
+        NaN  -> nan here, NaN in TypeScript (identical propagation).
+        +inf -> nan here, but `Math.floor(Infinity / 86400)` is `Infinity` in
+                TypeScript. Same for -inf.
+
+    Neither raises, so the never-raises contract holds on both sides. The divergence
+    is pinned by test rather than engineered around, because it is unreachable today.
+    It would matter to a future Python `sessionStarts`: a NaN day key makes
+    `day != prev_day` always true (every bar a session start), while TypeScript's
+    `Infinity !== Infinity` is always false (never one) -- opposite behaviour,
+    silently. See the engine's Python parity backlog.
+
     Args:
-        t_sec: UTC epoch seconds, scalar or numpy array.
+        t_sec: UTC epoch seconds, scalar or numpy array. Must be finite.
         calendar: The calendar whose offset defines the day boundary.
 
     Returns:
         The local day ordinal, same shape as `t_sec`.
     """
-    return (t_sec + calendar.utc_offset_seconds) // _DAY_SECONDS
+    return (t_sec + calendar.utc_offset_seconds) // DAY_SECONDS
 
 
 # Exchange -> CALENDAR (not a raw offset). Codes track utils/constants VALID_EXCHANGES.
@@ -107,6 +130,12 @@ _CALENDAR_BY_EXCHANGE = {
 # Needs per-symbol resolution AND a tz database; deferred, not unknown.
 _DEFERRED_PER_SYMBOL = frozenset({"GLOBAL_INDEX"})
 
+# Leading/trailing whitespace OR byte-order mark. `\s` is Python's own whitespace
+# class; U+FEFF is the character ES `trim()` removes and Python's `strip()` does not.
+# Written as an escape (re resolves \uXXXX in patterns) so no invisible character
+# lands in this source file. See `normalize_exchange` for why the two must agree.
+_TRIM_RE = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+
 _WARNING_BY_PROVENANCE = {
     "mapped": None,
     "fallback-unknown": "CALENDAR_FALLBACK_UNKNOWN_EXCHANGE",
@@ -126,9 +155,12 @@ class CalendarResolution:
         provenance: One of `mapped`, `fallback-unknown`, `fallback-missing`,
             `deferred-per-symbol`.
         normalized_exchange: Trimmed + upper-cased lookup key; `''` when absent.
-        warning_code: `None` iff `provenance == 'mapped'`. When this record is
-            serialized to JSON the key is OMITTED rather than sent as null, matching
-            the TypeScript side's optional-property behaviour.
+        warning_code: `None` iff `provenance == 'mapped'`. No Python path serializes
+            this record today, and nothing here implements key omission --
+            `dataclasses.asdict()` + `json.dumps` would emit `"warning_code": null`.
+            The TypeScript record OMITS the key entirely when absent, matching the
+            protocol's convention for optional fields, so any future Python
+            serializer must drop the key rather than send null.
     """
 
     calendar: SessionCalendar
@@ -145,13 +177,26 @@ def normalize_exchange(exchange) -> str:
     a worker boundary from a JavaScript host, and `(exchange or "").strip()` would
     raise on a non-str in a function documented never to raise.
 
+    Python's `str.strip()` and ES `String.trim()` are NOT the same character set, so
+    the trim is spelled out rather than left to `strip()`. The one realistic
+    disagreement is `U+FEFF` (BOM): ES counts it as whitespace and Python does not, so
+    a BOM surviving a UTF-8 CSV master-contract import gives `"\\ufeffNSE"` -- mapped
+    by TypeScript, `fallback-unknown` here. Stripping it closes that case.
+
+    RESIDUAL DIVERGENCE, accepted: Python still trims `U+0085` and `U+001C`-`U+001F`,
+    which ES `trim()` does not. Engineering full ES-`trim()` equivalence for control
+    characters that cannot appear in an exchange code is not worth it; the residual is
+    recorded in the engine's Python parity backlog.
+
     Args:
         exchange: The raw exchange code, from any source and of any type.
 
     Returns:
         The normalized lookup key, or `''` when the input is absent or not a string.
     """
-    return exchange.strip().upper() if isinstance(exchange, str) else ""
+    if not isinstance(exchange, str):
+        return ""
+    return _TRIM_RE.sub("", exchange).upper()
 
 
 def _resolved(calendar: SessionCalendar, provenance: str, normalized: str) -> CalendarResolution:
