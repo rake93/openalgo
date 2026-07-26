@@ -1,0 +1,170 @@
+{
+  "name": "green-f5m-sr-levels-all-sessions",
+  "note": "G1 design §10 -- the acceptance demonstration. This is the SHIPPED indicators/openscript/f5m-sr-levels.os, verbatim, after terminate.new_session collapsed its two mutually exclusive output sets into one: 30 level outputs became 15, the timeframe-dependent `bars=73` constant is gone, and with it the bug class where two sets that were not exactly exclusive drew and labelled the same session twice. Four IST sessions of five 5-minute bars. Every one of the 15 outputs is pinned across EVERY session, not just the newest: each spawns on its session's second bar (windowBars=1, so the window closes after bar 1) at 1/6/11/16, closes on its own session's LAST bar at 4/9/14, and the live session's object rides the live edge open at lastBarIndex=19. A 4-item expectation cannot be satisfied by the first conversion's bug 2, where a session reset true for every intraday bar spawned exactly once for the whole dataset. Non-window bars carry highs 50 above and lows 50 below the window's, so an over-capturing opening window moves every price. Labels are pinned on every session too: a level's label is a right-edge tag anchored at x2, so under the old extend.lastbar history set all 20 sessions' tags piled into one column and the port had to hide all but the newest with label_latest_only; per-session termination gives each session its own x2 and the tags spread out.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "// F5M S/R Levels [TickSniper] — OpenScript port of \"F5M SR Levels.pine\" v4.0\n//\n// Takes the opening window's high/low for the session and projects fixed\n// percentage resistance/support levels plus 25/50/75 equilibrium levels from it.\n//\n// CONVERSION NOTES — where this differs from the Pine, and why.\n//\n// 1. No request.security. The Pine reads the first completed bar of the session\n//    at a chosen base timeframe. This derives the same window from the bar\n//    clock instead: `sessionStart` + `windowMin` in IST minutes. The engine's\n//    calendar context (hour/minute) is IST, so 555 = 09:15 for NSE.\n//    This is not only a simplification. The server-side compiler does not\n//    implement request.security, so a script using it saves with no compiled IR\n//    and can never be added to a chart or restored into a layout. Avoiding it is\n//    what makes this port usable end to end.\n//    NO BASE-TIMEFRAME DROPDOWN. The Pine offers one (30s..2h) and this cannot:\n//    converting a chosen timeframe into a bar count needs the CHART's own\n//    interval, and v1 gives a script no way to read it — there is no\n//    `syminfo.interval`, and `request.security` (which is how the Pine learns\n//    it) is not implemented server-side. `windowBars` is that dropdown expressed\n//    in the one unit a script can actually count.\n//    MAPPING: the Pine's \"Base Timeframe (F5M TF)\" becomes `windowBars` — the\n//    number of CHART BARS the opening window spans. `windowBars = 1` is exactly\n//    the Pine's \"Chart\" setting: the session's first candle. For the Pine\n//    default of \"5\" (the first 5-minute candle), set `windowBars` to 5 on a\n//    1-minute chart, or leave it at 1 on a 5-minute chart.\n//    Counted in bars, not minutes, deliberately: a minute window over-captures\n//    whenever the chart interval does not divide it. On a 3-minute chart a\n//    \"first 5 minutes\" window admits the bar starting at 09:18, which covers\n//    09:18-09:21, so the capture silently spans six minutes. Verified against\n//    real NIFTY bars at 1m/3m/5m/15m.\n//\n// 2. Drawing model. The Pine creates a line per level, pushes its right edge\n//    forward on every bar, then on the next day's first bar snaps x2 back to the\n//    previous day's last bar — so each session's levels are bounded to their own\n//    session and the live one keeps growing. OpenScript drawing streams are\n//    declarative: one confirmed bar spawns one object, and\n//    `extend=extend.until, terminate=terminate.new_session` closes it on the LAST\n//    bar of the session it spawned in. That is the same bound, reached by\n//    declaration instead of by bookkeeping.\n//    ONE output covers both of the Pine's cases. The predicate needs a following\n//    bar in a different calendar day, so it can never hold on the final loaded\n//    bar: the current session's object stays open and rides the live edge, while\n//    every past session's object is closed at its own last bar. The session\n//    calendar is resolved from the instrument at execution, so the same saved\n//    indicator bounds to IST days on NSE and to the venue's days elsewhere.\n//    `max_kept` is the single knob for how many sessions are retained. Like\n//    Pine's own `max_lines_count` it is a declaration argument and must be a\n//    compile-time constant (OS2023), so history depth is edited here rather than\n//    exposed as an input.\n//\n// 3. Labels carry the level's own price via the `{price}` placeholder, which\n//    lowers to a spawn-sampled template (design §11) formatted to 2 decimals.\n//    The Pine also prints the percentage; that would need a second placeholder\n//    bound to an input value, which the template surface does not offer, so the\n//    percentage stays in the input name instead.\n//    EVERY retained session is labelled, as the Pine labels every session it\n//    draws. The port previously set `label_latest_only=true`, and that was a\n//    consequence of the old lifetime model rather than a taste call: a level's\n//    label is a RIGHT-EDGE tag anchored at x2, so while every retained object\n//    rode to the live edge, all 20 sessions x 15 labels landed in one column and\n//    only the newest was legible. Per-session termination gives each session its\n//    own x2, so the tags now spread one column per session and the previous\n//    sessions' S/R prices are readable again.\n//\n// 4. Two defects in the source Pine are NOT reproduced:\n//    - its L5 label prints r4's price (`fmtLbl(r4, i_p5, \"+\")` at line 224)\n//      while drawing the line at r5, so the top label reads the L4 price;\n//    - its fifth percentage input is titled \"Level 4 %\", duplicating the fourth.\n//\n// 5. Alert messages carry no emoji, per the repository's plain-text rule.\n\nindicator(\"F5M S/R Levels [TickSniper]\", shorttitle=\"FTF S/R\", overlay=true)\n\nshowBase = input.bool(true, \"Show F5M High/Low Base\", group=\"Visibility\")\nshowEQ = input.bool(true, \"Show Equilibrium Levels (25/50/75)\", group=\"Visibility\")\nshowUp = input.bool(true, \"Show Resistance (Upside)\", group=\"Visibility\")\nshowDn = input.bool(true, \"Show Support (Downside)\", group=\"Visibility\")\n\nsessionHour = input.int(9, \"Session start hour (IST)\", minval=0, maxval=23, group=\"Calculation\")\nsessionMinute = input.int(15, \"Session start minute (IST)\", minval=0, maxval=59, group=\"Calculation\")\nwindowBars = input.int(1, \"Opening window (chart bars)\", minval=1, maxval=120, group=\"Calculation\")\n\np1 = input.float(0.1306, \"Level 1 %\", minval=0.0001, maxval=100, step=0.0001, group=\"Levels\")\np2 = input.float(0.2611, \"Level 2 %\", minval=0.0001, maxval=100, step=0.0001, group=\"Levels\")\np3 = input.float(0.5, \"Level 3 %\", minval=0.0001, maxval=100, step=0.0001, group=\"Levels\")\np4 = input.float(0.7389, \"Level 4 %\", minval=0.0001, maxval=100, step=0.0001, group=\"Levels\")\np5 = input.float(1.0, \"Level 5 %\", minval=0.0001, maxval=100, step=0.0001, group=\"Levels\")\n\nbaseCol = input.color(#000000, \"F5M Base H/L\", group=\"Colors\")\neq25Col = input.color(#ffeb3b, \"Equilibrium 25%\", group=\"Colors\")\neq50Col = input.color(#9e9e9e, \"Equilibrium 50%\", group=\"Colors\")\neq75Col = input.color(#ffeb3b, \"Equilibrium 75%\", group=\"Colors\")\nupCol1 = input.color(#00e5ff, \"Resistance L1\", group=\"Colors\")\nupCol2 = input.color(#00c853, \"Resistance L2\", group=\"Colors\")\nupCol3 = input.color(#76ff03, \"Resistance L3\", group=\"Colors\")\nupCol4 = input.color(#b9f6ca, \"Resistance L4\", group=\"Colors\")\nupCol5 = input.color(#800000, \"Resistance L5\", group=\"Colors\")\ndnCol1 = input.color(#ff9100, \"Support L1\", group=\"Colors\")\ndnCol2 = input.color(#ff1744, \"Support L2\", group=\"Colors\")\ndnCol3 = input.color(#d500f9, \"Support L3\", group=\"Colors\")\ndnCol4 = input.color(#7c4dff, \"Support L4\", group=\"Colors\")\ndnCol5 = input.color(#800000, \"Support L5\", group=\"Colors\")\nlw = input.int(1, \"Line Width\", minval=1, maxval=3, group=\"Colors\")\n\n// The opening window, counted in BARS from the session's first bar.\n//\n// Counting bars rather than minutes is what makes this exact on every chart\n// interval. A minute window over-captures whenever the interval does not divide\n// it: on a 3-minute chart a \"first 5 minutes\" window admits the bar starting at\n// 09:18, which covers 09:18-09:21, so the capture silently spans six minutes.\n// One bar is also precisely what the Pine reads when its base timeframe is set\n// to \"Chart\".\n// `newDay` is what makes this repeat: `inSession` is true for EVERY bar of a\n// normal intraday feed (all of them are at or after the open), so keying the\n// reset off `not inSession[1]` alone fires once for the whole dataset and only\n// the first session ever spawns. The `not inSession[1]` arm is still needed for\n// feeds that carry pre-open bars, where the day starts below `sessionStart`.\nminuteOfDay = hour * 60 + minute\nsessionStart = sessionHour * 60 + sessionMinute\ninSession = minuteOfDay >= sessionStart\nnewDay = ta.change(dayofmonth) != 0\nsessionFirstBar = inSession and (newDay or not inSession[1])\n\nvar barsIn = 0\nbarsIn := sessionFirstBar ? 1 : barsIn + 1\n\ninWindow = inSession and barsIn <= windowBars\nfirstWindowBar = barsIn == 1\nwindowClosed = barsIn == windowBars + 1\n\n// Running high/low across the window. `firstWindowBar` reseeds each session, so\n// the value carried between sessions is never blended into the next one.\nvar winH = na\nwinH := firstWindowBar ? high : (inWindow ? math.max(winH, high) : winH)\n\nvar winL = na\nwinL := firstWindowBar ? low : (inWindow ? math.min(winL, low) : winL)\n\nf5H = winH\nf5L = winL\nhlRange = f5H - f5L\n\nr1 = f5H * (1 + p1 / 100)\nr2 = f5H * (1 + p2 / 100)\nr3 = f5H * (1 + p3 / 100)\nr4 = f5H * (1 + p4 / 100)\nr5 = f5H * (1 + p5 / 100)\n\ns1 = f5L * (1 - p1 / 100)\ns2 = f5L * (1 - p2 / 100)\ns3 = f5L * (1 - p3 / 100)\ns4 = f5L * (1 - p4 / 100)\ns5 = f5L * (1 - p5 / 100)\n\neq25 = f5L + hlRange * 0.25\neq50 = f5L + hlRange * 0.5\neq75 = f5L + hlRange * 0.75\n\n// Exactly once per session: `barsIn` is reseeded to 1 on the session's first bar\n// and counts up from there, so `barsIn == windowBars + 1` is true on one bar of\n// each session and no other.\nspawn = windowClosed and not na(f5H) and not na(f5L)\n\nplotlevel(spawn and showBase, f5H, \"F5M High\", color=baseCol, width=2, style=line.style_solid, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"High {price}\")\nplotlevel(spawn and showBase, f5L, \"F5M Low\", color=baseCol, width=2, style=line.style_solid, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"Low {price}\")\nplotlevel(spawn and showEQ, eq25, \"EQ 25%\", color=eq25Col, width=1, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"EQ25 {price}\")\nplotlevel(spawn and showEQ, eq50, \"EQ 50%\", color=eq50Col, width=1, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"EQ50 {price}\")\nplotlevel(spawn and showEQ, eq75, \"EQ 75%\", color=eq75Col, width=1, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"EQ75 {price}\")\nplotlevel(spawn and showUp, r1, \"Resistance 1\", color=upCol1, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"R1 {price}\")\nplotlevel(spawn and showUp, r2, \"Resistance 2\", color=upCol2, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"R2 {price}\")\nplotlevel(spawn and showUp, r3, \"Resistance 3\", color=upCol3, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"R3 {price}\")\nplotlevel(spawn and showUp, r4, \"Resistance 4\", color=upCol4, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"R4 {price}\")\nplotlevel(spawn and showUp, r5, \"Resistance 5\", color=upCol5, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"R5 {price}\")\nplotlevel(spawn and showDn, s1, \"Support 1\", color=dnCol1, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"S1 {price}\")\nplotlevel(spawn and showDn, s2, \"Support 2\", color=dnCol2, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"S2 {price}\")\nplotlevel(spawn and showDn, s3, \"Support 3\", color=dnCol3, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"S3 {price}\")\nplotlevel(spawn and showDn, s4, \"Support 4\", color=dnCol4, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"S4 {price}\")\nplotlevel(spawn and showDn, s5, \"Support 5\", color=dnCol5, width=lw, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=20, label=\"S5 {price}\")\n\nalertcondition(not na(r1) and ta.crossover(close, r1), title=\"F5M R1 Crossed\", message=\"Crossed Resistance L1\")\nalertcondition(not na(r4) and ta.crossover(close, r4), title=\"F5M R4 Crossed\", message=\"Crossed Resistance L4\")\nalertcondition(not na(s1) and ta.crossunder(close, s1), title=\"F5M S1 Broken\", message=\"Broke Support L1\")\nalertcondition(not na(s4) and ta.crossunder(close, s4), title=\"F5M S4 Broken\", message=\"Broke Support L4\")\n",
+  "ir": null,
+  "bars": {
+    "time":   [1784519100, 1784519400, 1784519700, 1784520000, 1784520300, 1784605500, 1784605800, 1784606100, 1784606400, 1784606700, 1784691900, 1784692200, 1784692500, 1784692800, 1784693100, 1784778300, 1784778600, 1784778900, 1784779200, 1784779500],
+    "open":   [95.0, 95.0, 95.0, 95.0, 95.0, 190.0, 190.0, 190.0, 190.0, 190.0, 285.0, 285.0, 285.0, 285.0, 285.0, 380.0, 380.0, 380.0, 380.0, 380.0],
+    "high":   [100.0, 150.0, 150.0, 150.0, 150.0, 200.0, 250.0, 250.0, 250.0, 250.0, 300.0, 350.0, 350.0, 350.0, 350.0, 400.0, 450.0, 450.0, 450.0, 450.0],
+    "low":    [90.0, 40.0, 40.0, 40.0, 40.0, 180.0, 130.0, 130.0, 130.0, 130.0, 270.0, 220.0, 220.0, 220.0, 220.0, 360.0, 310.0, 310.0, 310.0, 310.0],
+    "close":  [95.0, 95.0, 95.0, 95.0, 95.0, 190.0, 190.0, 190.0, 190.0, 190.0, 285.0, 285.0, 285.0, 285.0, 285.0, 380.0, 380.0, 380.0, 380.0, 380.0],
+    "volume": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "F5M High",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 100.0, "open": false, "label": "High 100.00" },
+          { "x1bar": 6, "x2bar": 9, "price": 200.0, "open": false, "label": "High 200.00" },
+          { "x1bar": 11, "x2bar": 14, "price": 300.0, "open": false, "label": "High 300.00" },
+          { "x1bar": 16, "x2bar": 19, "price": 400.0, "open": true, "label": "High 400.00" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "F5M Low",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 90.0, "open": false, "label": "Low 90.00" },
+          { "x1bar": 6, "x2bar": 9, "price": 180.0, "open": false, "label": "Low 180.00" },
+          { "x1bar": 11, "x2bar": 14, "price": 270.0, "open": false, "label": "Low 270.00" },
+          { "x1bar": 16, "x2bar": 19, "price": 360.0, "open": true, "label": "Low 360.00" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "EQ 25%",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 92.5, "open": false, "label": "EQ25 92.50" },
+          { "x1bar": 6, "x2bar": 9, "price": 185.0, "open": false, "label": "EQ25 185.00" },
+          { "x1bar": 11, "x2bar": 14, "price": 277.5, "open": false, "label": "EQ25 277.50" },
+          { "x1bar": 16, "x2bar": 19, "price": 370.0, "open": true, "label": "EQ25 370.00" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "EQ 50%",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 95.0, "open": false, "label": "EQ50 95.00" },
+          { "x1bar": 6, "x2bar": 9, "price": 190.0, "open": false, "label": "EQ50 190.00" },
+          { "x1bar": 11, "x2bar": 14, "price": 285.0, "open": false, "label": "EQ50 285.00" },
+          { "x1bar": 16, "x2bar": 19, "price": 380.0, "open": true, "label": "EQ50 380.00" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "EQ 75%",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 97.5, "open": false, "label": "EQ75 97.50" },
+          { "x1bar": 6, "x2bar": 9, "price": 195.0, "open": false, "label": "EQ75 195.00" },
+          { "x1bar": 11, "x2bar": 14, "price": 292.5, "open": false, "label": "EQ75 292.50" },
+          { "x1bar": 16, "x2bar": 19, "price": 390.0, "open": true, "label": "EQ75 390.00" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Resistance 1",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 100.1306, "open": false, "label": "R1 100.13" },
+          { "x1bar": 6, "x2bar": 9, "price": 200.2612, "open": false, "label": "R1 200.26" },
+          { "x1bar": 11, "x2bar": 14, "price": 300.3918, "open": false, "label": "R1 300.39" },
+          { "x1bar": 16, "x2bar": 19, "price": 400.5224, "open": true, "label": "R1 400.52" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Resistance 2",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 100.2611, "open": false, "label": "R2 100.26" },
+          { "x1bar": 6, "x2bar": 9, "price": 200.5222, "open": false, "label": "R2 200.52" },
+          { "x1bar": 11, "x2bar": 14, "price": 300.7833, "open": false, "label": "R2 300.78" },
+          { "x1bar": 16, "x2bar": 19, "price": 401.0444, "open": true, "label": "R2 401.04" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Resistance 3",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 100.49999999999999, "open": false, "label": "R3 100.50" },
+          { "x1bar": 6, "x2bar": 9, "price": 200.99999999999997, "open": false, "label": "R3 201.00" },
+          { "x1bar": 11, "x2bar": 14, "price": 301.49999999999994, "open": false, "label": "R3 301.50" },
+          { "x1bar": 16, "x2bar": 19, "price": 401.99999999999994, "open": true, "label": "R3 402.00" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Resistance 4",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 100.73890000000002, "open": false, "label": "R4 100.74" },
+          { "x1bar": 6, "x2bar": 9, "price": 201.47780000000003, "open": false, "label": "R4 201.48" },
+          { "x1bar": 11, "x2bar": 14, "price": 302.2167, "open": false, "label": "R4 302.22" },
+          { "x1bar": 16, "x2bar": 19, "price": 402.95560000000006, "open": true, "label": "R4 402.96" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Resistance 5",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 101.0, "open": false, "label": "R5 101.00" },
+          { "x1bar": 6, "x2bar": 9, "price": 202.0, "open": false, "label": "R5 202.00" },
+          { "x1bar": 11, "x2bar": 14, "price": 303.0, "open": false, "label": "R5 303.00" },
+          { "x1bar": 16, "x2bar": 19, "price": 404.0, "open": true, "label": "R5 404.00" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Support 1",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 89.88246, "open": false, "label": "S1 89.88" },
+          { "x1bar": 6, "x2bar": 9, "price": 179.76492, "open": false, "label": "S1 179.76" },
+          { "x1bar": 11, "x2bar": 14, "price": 269.64738, "open": false, "label": "S1 269.65" },
+          { "x1bar": 16, "x2bar": 19, "price": 359.52984, "open": true, "label": "S1 359.53" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Support 2",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 89.76501, "open": false, "label": "S2 89.77" },
+          { "x1bar": 6, "x2bar": 9, "price": 179.53002, "open": false, "label": "S2 179.53" },
+          { "x1bar": 11, "x2bar": 14, "price": 269.29503, "open": false, "label": "S2 269.30" },
+          { "x1bar": 16, "x2bar": 19, "price": 359.06004, "open": true, "label": "S2 359.06" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Support 3",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 89.55, "open": false, "label": "S3 89.55" },
+          { "x1bar": 6, "x2bar": 9, "price": 179.1, "open": false, "label": "S3 179.10" },
+          { "x1bar": 11, "x2bar": 14, "price": 268.65, "open": false, "label": "S3 268.65" },
+          { "x1bar": 16, "x2bar": 19, "price": 358.2, "open": true, "label": "S3 358.20" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Support 4",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 89.33499, "open": false, "label": "S4 89.33" },
+          { "x1bar": 6, "x2bar": 9, "price": 178.66998, "open": false, "label": "S4 178.67" },
+          { "x1bar": 11, "x2bar": 14, "price": 268.00497, "open": false, "label": "S4 268.00" },
+          { "x1bar": 16, "x2bar": 19, "price": 357.33996, "open": true, "label": "S4 357.34" }
+        ]
+      },
+      {
+        "kind": "levels",
+        "title": "Support 5",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "price": 89.1, "open": false, "label": "S5 89.10" },
+          { "x1bar": 6, "x2bar": 9, "price": 178.2, "open": false, "label": "S5 178.20" },
+          { "x1bar": 11, "x2bar": 14, "price": 267.3, "open": false, "label": "S5 267.30" },
+          { "x1bar": 16, "x2bar": 19, "price": 356.4, "open": true, "label": "S5 356.40" }
+        ]
+      }
+    ]
+  }
+}
