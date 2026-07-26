@@ -38,6 +38,7 @@ import {
   TickBarAggregator,
 } from 'openalgo-charts'
 import { runTransform } from 'openalgo-charts/transform'
+import { getVersion } from '@/api/indicators'
 import { buildChartTheme, isLightTheme, volumeColor } from '@/lib/trading/chartTheme'
 import { displayDp, fmtPrice, money, snapTick, tickSize } from '@/lib/trading/format'
 import {
@@ -62,6 +63,7 @@ import {
   type DataWindowRow,
   IndicatorHost,
   type IndicatorInstance,
+  type IndicatorSnapshotEntry,
   type ScriptIdentity,
   type StyleOverrides,
   type TimeframeVisibility,
@@ -90,6 +92,29 @@ const VISIBLE_BARS = 140
 const VOLUME_MARGIN_TOP = 4
 
 const nowSec = () => Math.floor(Date.now() / 1000)
+
+/** The `definitionId` sentinel a custom OpenScript entry carries. It marks the
+ *  KIND of entry; `script` is what identifies WHICH script. */
+const IR_DEFINITION_ID = 'ir'
+
+/** Outcome of resolving one saved entry: an IR to add, a reason it cannot be
+ *  restored, or neither (a registry builtin, added by `definitionId`). */
+interface RestoreResolution {
+  ir?: IRProgram
+  error?: string
+}
+
+/** Name a saved entry in a message the user can act on. */
+function describeRestoreEntry(item: IndicatorSnapshotEntry): string {
+  if (item.script) {
+    return `script ${item.script.scriptId} (version ${item.script.versionId})`
+  }
+  return item.definitionId
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
 
 /** Crosshair snapshot: the hovered bar plus each indicator's reading there. */
 export interface CrosshairData {
@@ -1413,16 +1438,94 @@ export class ChartWorkspaceController {
     if (typeof snap.markers === 'boolean') this.markers.setEnabled(snap.markers)
   }
 
-  /** Re-add saved indicator instances once a dataset exists. */
+  /**
+   * Re-add saved indicator instances once a dataset exists.
+   *
+   * A durable OpenScript entry is rebuilt from the SERVER's compiled IR for the
+   * exact version it was saved against — never through the registry (whose
+   * manifest has no `'ir'` entry, which is what used to throw
+   * `unknown indicator: ir`), and never by recompiling its source in the
+   * browser. Pinning the version is what keeps a reopened chart showing the
+   * indicator that was saved rather than whatever the script has since become.
+   *
+   * Every failure is reported. A layout that cannot restore an indicator has to
+   * say which one and why: silently dropping it is how custom indicators
+   * disappeared from saved layouts without a word.
+   *
+   * Entry ORDER is placement (panes are handed out in instance order), so the
+   * IR fetches run concurrently but the adds stay strictly sequential.
+   */
   async restoreIndicators(snap: Partial<WorkspaceSnapshot> | undefined): Promise<void> {
     if (!snap) return
-    for (const item of snap.indicators ?? []) {
-      const id = await this.indicators
-        .add(item.definitionId, item.inputs, item.styleOverrides, item.visibility)
-        .catch(() => undefined)
-      if (id && item.hidden) this.indicators.setHidden(id, true)
+    const entries = snap.indicators ?? []
+    // Resolve every durable entry's IR first, in parallel — a layout with
+    // several custom indicators would otherwise pay one full round trip each.
+    const resolved = await Promise.all(entries.map((item) => this.resolveRestoreIr(item)))
+
+    const failures: string[] = []
+    for (const [index, item] of entries.entries()) {
+      const outcome = resolved[index] as RestoreResolution
+      if (outcome.error) {
+        failures.push(outcome.error)
+        continue
+      }
+      try {
+        const id = outcome.ir
+          ? await this.addScriptIndicator(item.script as ScriptIdentity, outcome.ir, {
+              inputs: item.inputs,
+              ...(item.styleOverrides ? { styleOverrides: item.styleOverrides } : {}),
+              ...(item.visibility ? { visibility: item.visibility } : {}),
+            })
+          : await this.indicators.add(
+              item.definitionId,
+              item.inputs,
+              item.styleOverrides,
+              item.visibility
+            )
+        if (item.hidden) this.indicators.setHidden(id, true)
+      } catch (err) {
+        failures.push(`${describeRestoreEntry(item)}: ${errorText(err)}`)
+      }
+    }
+
+    if (failures.length > 0) {
+      this.cb.onToast(
+        `Could not restore ${failures.length === 1 ? 'an indicator' : `${failures.length} indicators`} from this layout — ${failures.join('; ')}`,
+        'err'
+      )
     }
     this.library.restore(snap.libraryIndicators ?? [])
+  }
+
+  /**
+   * Fetch the authoritative IR for one saved entry, or explain why it cannot be
+   * restored. A registry builtin resolves to neither and is added by
+   * `definitionId` further down.
+   */
+  private async resolveRestoreIr(item: IndicatorSnapshotEntry): Promise<RestoreResolution> {
+    if (!item.script) {
+      // `'ir'` with no identity is an editor preview persisted by an older
+      // build. There is no version to fetch, so it can only be reported.
+      if (item.definitionId === IR_DEFINITION_ID) {
+        return { error: `${describeRestoreEntry(item)}: saved without a script reference` }
+      }
+      return {}
+    }
+    try {
+      const version = await getVersion(item.script.scriptId, item.script.versionId)
+      if (!version) {
+        return { error: `${describeRestoreEntry(item)}: version not found` }
+      }
+      if (!version.compiled_ir) {
+        // The server stored this version without IR — a source it could not
+        // compile. Nothing to run, and recompiling in the browser is exactly
+        // what the reopen contract forbids.
+        return { error: `${describeRestoreEntry(item)}: the server has no compiled IR for it` }
+      }
+      return { ir: version.compiled_ir }
+    } catch (err) {
+      return { error: `${describeRestoreEntry(item)}: ${errorText(err)}` }
+    }
   }
 
   destroy(): void {

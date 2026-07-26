@@ -485,10 +485,13 @@ export class IndicatorHost {
       definitionId: 'ir',
       name: ir.declaration.shortName ?? ir.declaration.name,
       overlay: ir.declaration.overlay,
-      inputs: {
-        ...Object.fromEntries(ir.inputs.map((i) => [i.id, i.defaultValue])),
-        ...options?.inputs,
-      },
+      // Reconciled against the IR's own declarations rather than merged over
+      // the defaults. Inputs arriving here come from a saved layout, so they
+      // may name a setting the script no longer declares, hold the wrong type,
+      // or sit outside the declared range — `reconcileInputs` drops, defaults
+      // and clamps accordingly. It is also what `commitInputs` uses, so a value
+      // cannot enter an instance one way on restore and another way on save.
+      inputs: reconcileInputs(ir, options?.inputs ?? {}),
       ir,
       styleOverrides: options?.styleOverrides,
       visibility: options?.visibility,
