@@ -1,0 +1,25 @@
+{
+  "description": "G7 exchange -> calendar resolution. Replayed identically by tests/calendar-resolution.test.ts and test/test_openscript_calendar.py. Fixed UTC offsets only - no DST, no IANA.",
+  "cases": [
+    { "exchange": "NSE", "symbol": "SBIN", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "NSE" },
+    { "exchange": "BSE", "symbol": "SBIN", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "BSE" },
+    { "exchange": "NFO", "symbol": "NIFTY28JUL26FUT", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "NFO" },
+    { "exchange": "BFO", "symbol": "SENSEX28JUL26FUT", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "BFO" },
+    { "exchange": "CDS", "symbol": "USDINR28JUL26FUT", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "CDS" },
+    { "exchange": "BCD", "symbol": "USDINR28JUL26FUT", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "BCD" },
+    { "exchange": "MCX", "symbol": "CRUDEOIL28JUL26FUT", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "MCX" },
+    { "exchange": "NCDEX", "symbol": "GUARSEED28JUL26FUT", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "NCDEX" },
+    { "exchange": "NCO", "symbol": "CASTOR28JUL26FUT", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "NCO" },
+    { "exchange": "NSE_INDEX", "symbol": "NIFTY", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "NSE_INDEX" },
+    { "exchange": "BSE_INDEX", "symbol": "SENSEX", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "BSE_INDEX" },
+    { "exchange": "MCX_INDEX", "symbol": "MCXBULLDEX", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "MCX_INDEX" },
+    { "exchange": "CRYPTO", "symbol": "BTCUSDT", "utcOffsetSeconds": 0, "semanticKey": "fixed:0", "provenance": "mapped", "warningCode": null, "normalizedExchange": "CRYPTO" },
+    { "exchange": "crypto", "symbol": "BTCUSDT", "utcOffsetSeconds": 0, "semanticKey": "fixed:0", "provenance": "mapped", "warningCode": null, "normalizedExchange": "CRYPTO" },
+    { "exchange": "  nse  ", "symbol": "SBIN", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "mapped", "warningCode": null, "normalizedExchange": "NSE" },
+    { "exchange": "GLOBAL_INDEX", "symbol": "US30", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "deferred-per-symbol", "warningCode": "CALENDAR_DEFERRED_PER_SYMBOL", "normalizedExchange": "GLOBAL_INDEX" },
+    { "exchange": "GLOBAL_INDEX", "symbol": "GIFTNIFTY", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "deferred-per-symbol", "warningCode": "CALENDAR_DEFERRED_PER_SYMBOL", "normalizedExchange": "GLOBAL_INDEX" },
+    { "exchange": "MOONBASE", "symbol": "X", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "fallback-unknown", "warningCode": "CALENDAR_FALLBACK_UNKNOWN_EXCHANGE", "normalizedExchange": "MOONBASE" },
+    { "exchange": "", "symbol": "X", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "fallback-missing", "warningCode": "CALENDAR_FALLBACK_MISSING_EXCHANGE", "normalizedExchange": "" },
+    { "exchange": "   ", "symbol": "X", "utcOffsetSeconds": 19800, "semanticKey": "fixed:19800", "provenance": "fallback-missing", "warningCode": "CALENDAR_FALLBACK_MISSING_EXCHANGE", "normalizedExchange": "" }
+  ]
+}

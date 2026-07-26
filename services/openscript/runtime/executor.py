@@ -17,6 +17,7 @@ import numpy as np
 from services.openscript.limits import SCRIPT_LIMITS
 
 from .admit import IRAdmissionError, admit_ir, resolve_plan_cost
+from .calendar import IST_CALENDAR, SessionCalendar, local_day_key
 from .operator_cost import cost_family_of
 from .plancost import (
     DRAW_BASE_OPS,
@@ -61,17 +62,29 @@ def _resolve_source(dataset: dict, source_id: str) -> np.ndarray:
 _CONTEXT_IDS = frozenset(
     {"time", "bar_index", "last_bar_index", "dayofweek", "dayofmonth", "hour", "minute", "month", "year"}
 )
-_IST_OFFSET_SECONDS = 19800  # +05:30, fixed (no DST)
 
 
-def _resolve_context(dataset: dict, cid: str) -> np.ndarray:
+def _resolve_context(
+    dataset: dict, cid: str, calendar: SessionCalendar = IST_CALENDAR
+) -> np.ndarray:
     """Resolve a context/time series to a full float series.
 
-    `bar_index`/`last_bar_index` derive from the length; `time` and the IST
+    `bar_index`/`last_bar_index` derive from the length; `time` and the civil
     calendar fields derive from the dataset `time` column (epoch SECONDS, UTC).
-    Calendar math is fixed IST (UTC+05:30, no DST) via Howard Hinnant's
-    civil_from_days with floor division throughout — matching the TS runtime
-    integer-for-integer. All series are na-free from bar 0.
+    Calendar math is fixed-offset (no DST) via Howard Hinnant's civil_from_days
+    with floor division throughout — matching the TS runtime integer-for-integer.
+    The offset comes from the supplied calendar, not a module constant. All series
+    are na-free from bar 0.
+
+    Args:
+        dataset: Column dict; `time` is epoch seconds (UTC), `close` sets the length.
+        cid: The context id to resolve (one of `_CONTEXT_IDS`).
+        calendar: The session calendar whose offset defines the day boundary. The
+            IST default serves direct callers and existing tests; the production
+            path resolves it from the instrument and passes it explicitly.
+
+    Returns:
+        A float series of length `len(dataset["close"])`.
     """
     n = len(dataset["close"])
     if cid == "bar_index":
@@ -81,9 +94,9 @@ def _resolve_context(dataset: dict, cid: str) -> np.ndarray:
     t_sec = np.asarray(dataset["time"], dtype=np.int64)
     if cid == "time":
         return (t_sec * 1000).astype(float)  # seconds → Pine milliseconds
-    ist = t_sec + _IST_OFFSET_SECONDS
-    days = ist // 86400  # days since 1970-01-01 in IST (floor)
-    sod = ist - days * 86400  # second-of-day, 0..86399
+    local = t_sec + calendar.utc_offset_seconds
+    days = local_day_key(t_sec, calendar)  # the ONE day-boundary definition
+    sod = local - days * 86400  # second-of-day, 0..86399
     if cid == "hour":
         return (sod // 3600).astype(float)
     if cid == "minute":
@@ -299,12 +312,14 @@ def _math_call(fn, args):
     return f(a, b) if _is_series(a) or _is_series(b) else float(f(a, b))
 
 
-def _eval_node(node, values, dataset, inputs, decls, n, ta_cache):
+def _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar: SessionCalendar):
+    # `calendar` is REQUIRED, mirroring the TS `evalNode`: a default here is how a
+    # wrong calendar would silently reach production.
     op = node["op"]
     if op == "source":
         src = node["source"]
         if src in _CONTEXT_IDS:
-            return _resolve_context(dataset, src)
+            return _resolve_context(dataset, src, calendar)
         return _resolve_source(dataset, src)
     if op == "const":
         return _const_value(node["value"])
@@ -795,7 +810,13 @@ def _collect_outputs(ir, values, n, inputs: dict, dataset: dict | None = None, b
     return outputs
 
 
-def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None) -> list[dict]:
+def execute_ir(
+    ir: dict,
+    dataset: dict,
+    inputs: dict | None = None,
+    budget=None,
+    calendar: SessionCalendar = IST_CALENDAR,
+) -> list[dict]:
     """Run a compiled IRProgram over a dataset (dict of float numpy arrays with
     keys open/high/low/close/volume). Returns a list of output dicts; `line`
     outputs carry their numpy `values`, `alert` outputs carry `firedAtBar`.
@@ -803,6 +824,11 @@ def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None)
     `budget` is an optional `OperationBudget` (see budget.py) — stepped once
     per node before evaluation, exactly like the TS executor, raising
     `BudgetExceeded` (OS4001/OS4002) when a limit is crossed.
+
+    `calendar` is the session calendar the context/time fields resolve against
+    (G7). It defaults to IST for direct callers and existing tests; NO production
+    path may rely on that default — the caller resolves the instrument's calendar
+    with `calendar_for_instrument` and passes it explicitly.
     """
     errors = admit_ir(ir)
     if errors:
@@ -826,7 +852,7 @@ def execute_ir(ir: dict, dataset: dict, inputs: dict | None = None, budget=None)
     for node in nodes:
         if budget is not None:
             budget.step(node)
-        value = _eval_node(node, values, dataset, inputs, decls, n, ta_cache)
+        value = _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar)
         values[node["id"]] = value
         # Deterministic series-buffer accounting + wall-clock checkpoint after
         # each expensive kernel/scan node (design §7 cancellation granularity).
