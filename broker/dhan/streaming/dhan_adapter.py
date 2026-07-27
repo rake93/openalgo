@@ -867,6 +867,26 @@ class DhanWebSocketAdapter(BaseBrokerWebSocketAdapter):
                     "oi": data.get("oi", 0),
                     "oi_high": data.get("oi_high", 0),
                     "oi_low": data.get("oi_low", 0),
+                    # A tradeable symbol subscribes to Depth alone (this payload
+                    # embeds the LTP), so everything a consumer needs per-trade
+                    # has to travel here or it is simply unavailable downstream.
+                    # Dhan's FULL packet already carries all of it; only the
+                    # depth branch was dropping it on the floor.
+                    #
+                    # last_quantity      size of the last print, for order flow
+                    #                    (sticky -- difference `volume` for the
+                    #                    quantity traded since the last message)
+                    # total_*_quantity   pending book totals, straight from the
+                    #                    exchange, so buy/sell pressure needs no
+                    #                    bid/ask inference
+                    # average_price      day VWAP, for LTP-vs-VWAP positioning
+                    #
+                    # The names match what Zerodha, Angel and the Noren brokers
+                    # already emit, so consumers stay broker-agnostic.
+                    "last_quantity": data.get("ltq", 0),
+                    "average_price": data.get("atp", 0),
+                    "total_buy_quantity": data.get("total_buy_quantity", 0),
+                    "total_sell_quantity": data.get("total_sell_quantity", 0),
                     "depth": data.get("depth", {"buy": [], "sell": []}),
                     "depth_level": 5,
                 }
