@@ -113,6 +113,8 @@ export interface TradingSnapshot {
   buySellButtons: boolean
   ladderGroupBy: number
   ladderMaxRows: number
+  /** Where the user dragged the Buy/Sell panel, offset from its docked corner. */
+  buttonOffset?: { x: number; y: number }
 }
 
 export interface TradingLayerOptions {
@@ -150,6 +152,12 @@ export class TradingLayer {
   private bracketLines: { entry: PriceLine; tp: PriceLine; sl: PriceLine } | null = null
   private ladder: DomLadder | null = null
   private buttons: BuySellButtons | null = null
+  /**
+   * Where the panel was dragged to, kept on the layer rather than only on the
+   * primitive, so it survives the panel being torn down and remounted — on a
+   * chart rebuild, or when the buttons are toggled off and on again.
+   */
+  private buttonOffset = { x: 0, y: 0 }
 
   private qty = 1
   private product = 'MIS'
@@ -212,25 +220,10 @@ export class TradingLayer {
       margin: { x: 14, y: this.o.topInset() },
       qty: this.qtyChip(),
     })
+    this.buttons.setOffset(this.buttonOffset.x, this.buttonOffset.y)
     const lp = this.o.marketPrice()
     if (lp != null) this.buttons.setMark(lp)
     chart.addPrimitive(this.buttons, 0)
-  }
-
-  /**
-   * Re-place the Buy/Sell panel. Called when the legend stack grows or shrinks
-   * (an indicator added or removed), since its offset is derived from that.
-   */
-  remountButtons(): void {
-    if (!this.chart || !this.showButtons) return
-    if (this.buttons) {
-      this.chart.removePrimitive(this.buttons)
-      this.buttons = null
-    }
-    this.mountButtons()
-    const panel = this.buttons as BuySellButtons | null
-    if (this.depthTop) panel?.setPrices(this.depthTop.bid, this.depthTop.ask)
-    else if (this.lastLtp != null) panel?.setMark(this.lastLtp)
   }
 
   private mountLadder(): void {
@@ -711,7 +704,43 @@ export class TradingLayer {
     }
   }
 
-  onDrag(externalId: string, price: number): void {
+  /** Grab point of a panel drag, in plot pixels, plus the offset it started at. */
+  private panelDrag: { x: number; y: number; ox: number; oy: number } | null = null
+
+  /**
+   * Convert a drag's price/time to plot pixels.
+   *
+   * The Buy/Sell panel is docked in screen space — it deliberately does not move
+   * with pan or zoom — but the drag bus reports chart coordinates, so the two have
+   * to be reconciled. Panning is suspended while a primitive drag is armed, so the
+   * scales hold still and the conversion tracks the cursor exactly.
+   */
+  private dragPixels(price: number, time: number): { x: number; y: number } | null {
+    const chart = this.chart
+    const pane = chart?.panes()[0]
+    if (!chart || !pane) return null
+    const x = chart.timeToCoordinate(time)
+    const y = pane.priceScale.priceToY(price)
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
+  }
+
+  onDrag(externalId: string, price: number, time = 0): void {
+    if (externalId === 'trade:move') {
+      const p = this.dragPixels(price, time)
+      const panel = this.buttons
+      if (!p || !panel) return
+      if (!this.panelDrag) {
+        const o = panel.offset()
+        this.panelDrag = { x: p.x, y: p.y, ox: o.x, oy: o.y }
+        return
+      }
+      this.buttonOffset = {
+        x: this.panelDrag.ox + (p.x - this.panelDrag.x),
+        y: this.panelDrag.oy + (p.y - this.panelDrag.y),
+      }
+      panel.setOffset(this.buttonOffset.x, this.buttonOffset.y)
+      return
+    }
     if (externalId.startsWith('bk-')) {
       this.setBracketPrice(externalId.slice(3) as 'entry' | 'tp' | 'sl', price)
       return
@@ -727,7 +756,14 @@ export class TradingLayer {
     rec.line.setPrice(this.o.snap(price))
   }
 
-  onDragEnd(externalId: string, price: number): void {
+  onDragEnd(externalId: string, price: number, time = 0): void {
+    if (externalId === 'trade:move') {
+      this.onDrag(externalId, price, time)
+      this.panelDrag = null
+      // Persist where it was dropped, so it is still there after a reload.
+      this.o.onDirty()
+      return
+    }
     if (externalId.startsWith('bk-')) return
     if (!externalId.startsWith('order:') || externalId.endsWith('::close')) return
     const oid = externalId.slice(6)
@@ -884,11 +920,16 @@ export class TradingLayer {
       buySellButtons: this.showButtons,
       ladderGroupBy: this.ladderGroupBy,
       ladderMaxRows: this.ladderMaxRows,
+      buttonOffset: { ...this.buttonOffset },
     }
   }
 
   restore(snap: Partial<TradingSnapshot> | undefined): void {
     if (!snap) return
+    if (snap.buttonOffset) {
+      this.buttonOffset = { x: snap.buttonOffset.x || 0, y: snap.buttonOffset.y || 0 }
+      this.buttons?.setOffset(this.buttonOffset.x, this.buttonOffset.y)
+    }
     if (snap.qty) this.qty = Math.max(1, Math.floor(snap.qty))
     if (snap.product) this.product = snap.product
     if (typeof snap.armed === 'boolean') this.armed = snap.armed

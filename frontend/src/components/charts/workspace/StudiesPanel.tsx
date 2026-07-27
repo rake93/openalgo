@@ -15,7 +15,6 @@
 import { Switch } from '@/components/ui/switch'
 import type {
   FootprintConfig,
-  FootprintTimeframe,
   MarketProfileConfig,
   ProfileHover,
   VolumeProfileConfig,
@@ -29,6 +28,8 @@ export interface StudiesPanelProps {
   market: MarketProfileConfig
   footprint: FootprintConfig
   footprintBars: number
+  /** Chart timeframe label — the footprint buckets on the chart's own bars. */
+  interval?: string
   hover: ProfileHover | null
   onVolume(patch: Partial<VolumeProfileConfig>): void
   onMarket(patch: Partial<MarketProfileConfig>): void
@@ -292,27 +293,19 @@ export function StudiesPanel(p: StudiesPanelProps) {
                 : 'Not collecting'}
             </span>
           </p>
-          <Field label="Bars built from">
-            <TinySelect
-              value={p.footprint.timeframe.mode}
-              onChange={(e) =>
-                p.onFootprint({ timeframe: tfFor(e.target.value, p.footprint.timeframe) })
-              }
-            >
-              <option value="interval">Time</option>
-              <option value="ticks">Tick count</option>
-              <option value="volume">Volume</option>
-            </TinySelect>
+          <Field label="Bars built from" hint="Footprint columns line up with the candles">
+            <span className="text-[11px] tabular-nums text-muted-foreground">
+              Chart timeframe{p.interval ? ` (${p.interval})` : ''}
+            </span>
           </Field>
-          <Field label={tfLabel(p.footprint.timeframe)}>
+          <Field label="Cell text" hint="Largest size the numbers grow to; 10 pins one size">
             <TinyInput
               type="number"
-              min={1}
+              min={10}
+              max={28}
               step={1}
-              value={tfValue(p.footprint.timeframe)}
-              onChange={(e) =>
-                p.onFootprint({ timeframe: tfWith(p.footprint.timeframe, Number(e.target.value)) })
-              }
+              value={p.footprint.maxFont}
+              onChange={(e) => p.onFootprint({ maxFont: Number(e.target.value) })}
             />
           </Field>
           <Field label="Row size" hint="0 = auto, scaled to the instrument">
@@ -464,32 +457,3 @@ function Check({
   )
 }
 
-/* ── footprint timeframe helpers ─────────────────────────────────────────── */
-
-function tfFor(mode: string, current: FootprintTimeframe): FootprintTimeframe {
-  if (mode === 'ticks')
-    return { mode: 'ticks', count: current.mode === 'ticks' ? current.count : 250 }
-  if (mode === 'volume') {
-    return { mode: 'volume', perBar: current.mode === 'volume' ? current.perBar : 5000 }
-  }
-  return { mode: 'interval', seconds: current.mode === 'interval' ? current.seconds : 300 }
-}
-
-function tfLabel(tf: FootprintTimeframe): string {
-  if (tf.mode === 'ticks') return 'Ticks per bar'
-  if (tf.mode === 'volume') return 'Volume per bar'
-  return 'Seconds per bar'
-}
-
-function tfValue(tf: FootprintTimeframe): number {
-  if (tf.mode === 'ticks') return tf.count
-  if (tf.mode === 'volume') return tf.perBar
-  return tf.seconds
-}
-
-function tfWith(tf: FootprintTimeframe, value: number): FootprintTimeframe {
-  const v = Math.max(1, Math.round(value))
-  if (tf.mode === 'ticks') return { mode: 'ticks', count: v }
-  if (tf.mode === 'volume') return { mode: 'volume', perBar: v }
-  return { mode: 'interval', seconds: v }
-}

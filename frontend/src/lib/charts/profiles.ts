@@ -37,12 +37,6 @@ import { asPrimitive } from './tier-compat'
 
 export type ProfileOverlay = 'volume' | 'market' | 'footprint'
 
-/** Timeframe the live footprint aggregates into. */
-export type FootprintTimeframe =
-  | { mode: 'interval'; seconds: number }
-  | { mode: 'ticks'; count: number }
-  | { mode: 'volume'; perBar: number }
-
 /**
  * `visible` is the volume profile every trader means by default: one
  * distribution over the bars currently on screen, recomputed as the viewport
@@ -101,8 +95,13 @@ export interface MarketProfileConfig {
 
 export interface FootprintConfig {
   enabled: boolean
-  timeframe: FootprintTimeframe
   rowSize: number
+  /**
+   * Largest size the cell numbers grow to, in px. They are fitted to each cell
+   * between 10 and this, so a zoomed-in chart reads bigger rather than just having
+   * bigger boxes. Set it to 10 to pin one size.
+   */
+  maxFont: number
   displayMode: FootprintOptions['displayMode']
   imbalanceRatio: number
   stackedImbalances: number
@@ -152,8 +151,8 @@ export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
   },
   footprint: {
     enabled: false,
-    timeframe: { mode: 'interval', seconds: 300 },
     rowSize: 0,
+    maxFont: 18,
     displayMode: 'bidask',
     imbalanceRatio: 3,
     stackedImbalances: 3,
@@ -230,8 +229,12 @@ export class ProfileManager {
   /** Live footprint state — only ever built from ticks seen this session. */
   private agg: FootprintAggregator | null = null
   private footprintBars: FootprintBar[] = []
+  /** The quote prints are classified against — the book *before* the print. */
   private bestBid = 0
   private bestAsk = 0
+  /** Newest book seen, promoted to the classification quote on the next update. */
+  private nextBid = 0
+  private nextAsk = 0
   private lastTradePrice = 0
 
   constructor(cb: ProfileManagerCallbacks) {
@@ -249,6 +252,64 @@ export class ProfileManager {
   /** Live footprint bars accumulated so far (empty until ticks arrive). */
   get footprintBarCount(): number {
     return this.footprintBars.length
+  }
+
+  /** The live tape itself, oldest first — read-only. */
+  get footprintTape(): readonly FootprintBar[] {
+    return this.footprintBars
+  }
+
+  private vaCache: {
+    key: string
+    current?: { poc: number; vah: number; val: number }
+    previous?: { poc: number; vah: number; val: number }
+  } | null = null
+
+  /**
+   * Value area of the last two *day* sessions, for reading where value migrated.
+   *
+   * Always grouped by day regardless of the market profile's own session setting,
+   * because day-over-day migration is the read this answers. Deliberately
+   * independent of whether the Market profile study is switched on — the direction
+   * readout should not require a study to be visible — and cached against the bar
+   * count and last bar time, since recomputing a profile over thousands of bars on
+   * every tick would be far too expensive.
+   *
+   * Works on instruments with no volume at all (indices): `pocAndValueArea` ranks
+   * levels by TPO period count, so this needs only OHLC.
+   */
+  valueAreas(): {
+    current?: { poc: number; vah: number; val: number }
+    previous?: { poc: number; vah: number; val: number }
+  } {
+    if (!this.timeIndexed) return {}
+    const bars = this.rawBars
+    if (bars.length === 0) return {}
+
+    const key = `${bars.length}:${bars[bars.length - 1].time}`
+    if (this.vaCache?.key === key) return this.vaCache
+
+    const c = this.settings.market
+    const window = TRADING_HOURS[c.window]
+    const res = computeMarketProfile(bars, {
+      tickSize: this.cb.tickSize(),
+      rowTicks: this.rowTicks(c.rowSize, 'profile'),
+      session: 'day',
+      blockMinutes: c.blockMinutes,
+      valueAreaPercent: c.valueAreaPercent,
+      initialBalancePeriods: c.initialBalancePeriods,
+      compositeSessions: 1,
+      tailEdges: 2,
+      ...(window ? { window } : {}),
+    })
+    const s = res.sessions
+    const va = (n: number) => ({ poc: s[n].poc, vah: s[n].vah, val: s[n].val })
+    this.vaCache = {
+      key,
+      current: s.length > 0 ? va(s.length - 1) : undefined,
+      previous: s.length > 1 ? va(s.length - 2) : undefined,
+    }
+    return this.vaCache
   }
 
   /* ── lifecycle ─────────────────────────────────────────────────────────── */
@@ -331,7 +392,26 @@ export class ProfileManager {
   private refreshData(): void {
     if (this.volumePrim) this.volumePrim.setData(this.computeVolume())
     if (this.marketPrim) this.marketPrim.setData(this.computeMarket())
-    if (this.footprintPrim) this.footprintPrim.setBars([...this.footprintBars])
+    this.pushTape()
+  }
+
+  /**
+   * Hand the tape to the primitive with each column's chart open and close
+   * attached, so the candle drawn behind the cells has a body and not just a
+   * range. The tape is keyed by chart bar time, so this is an exact lookup; only
+   * the tail of the history is indexed because the tape is always at the right
+   * edge and capped at a few hundred bars.
+   */
+  private pushTape(): void {
+    if (!this.footprintPrim) return
+    const tail = this.rawBars.slice(-(this.footprintBars.length + 2))
+    const byTime = new Map(tail.map((b) => [b.time, b]))
+    this.footprintPrim.setBars(
+      this.footprintBars.map((f) => {
+        const b = byTime.get(f.time)
+        return b ? { ...f, open: b.open, close: b.close } : { ...f }
+      })
+    )
   }
 
   /* ── computation ───────────────────────────────────────────────────────── */
@@ -450,6 +530,7 @@ export class ProfileManager {
       statsRows: c.statsRows,
       showCandle: c.showCandle,
       showPoc: c.showPoc,
+      maxFont: Math.max(10, c.maxFont),
       tickSize: this.cb.tickSize() * this.rowTicks(c.rowSize, 'footprint'),
     }
   }
@@ -471,15 +552,12 @@ export class ProfileManager {
   }
 
   setFootprintConfig(patch: Partial<FootprintConfig>): void {
-    const tfChanged =
-      patch.timeframe !== undefined &&
-      JSON.stringify(patch.timeframe) !== JSON.stringify(this.settings.footprint.timeframe)
     const rowChanged =
       patch.rowSize !== undefined && patch.rowSize !== this.settings.footprint.rowSize
     this.settings.footprint = { ...this.settings.footprint, ...patch }
-    if (tfChanged || rowChanged) {
-      // The aggregator bakes in the timeframe and the row grid, so changing
-      // either restarts the tape rather than mixing two bucketings.
+    if (rowChanged) {
+      // The aggregator bakes in the row grid, so changing it restarts the tape
+      // rather than mixing two bucketings.
       this.agg = null
       this.footprintBars = []
       this.ensureAggregator()
@@ -498,22 +576,63 @@ export class ProfileManager {
 
   /* ── live order flow ───────────────────────────────────────────────────── */
 
+  /**
+   * The aggregator runs in `bar` mode: the host stamps every print with the time
+   * of the chart bar it landed in, and a new column opens when that time moves
+   * on. The footprint therefore always shares the chart's bucketing — including
+   * tick and volume bars, when the chart itself is on one — and every column
+   * resolves to a bar the chart actually has, which is what the primitive needs
+   * to position it.
+   */
   private ensureAggregator(): void {
     if (this.agg || !this.settings.footprint.enabled) return
     const c = this.settings.footprint
     this.agg = new FootprintAggregator(
-      c.timeframe,
+      { mode: 'bar' },
       this.cb.tickSize(),
       this.rowTicks(c.rowSize, 'footprint')
     )
   }
 
-  /** Best bid/ask, used to classify each print as hitting the bid or the ask. */
+  /**
+   * Drop the live tape and the quote it classifies against.
+   *
+   * The tape is stamped with the chart's bar times and the instrument's prices,
+   * so it means nothing once either changes — carrying it across a symbol or
+   * timeframe switch would leave the old instrument's columns and a cumulative
+   * delta that spans two different things. Called whenever the feed reconnects.
+   */
+  resetTape(): void {
+    this.agg = null
+    this.footprintBars = []
+    this.bestBid = 0
+    this.bestAsk = 0
+    this.nextBid = 0
+    this.nextAsk = 0
+    this.lastTradePrice = 0
+    this.footprintPrim?.setBars([])
+    this.ensureAggregator()
+  }
+
+  /**
+   * Best bid/ask, used to classify each print as hitting the bid or the ask.
+   *
+   * The book is deliberately lagged one update. A depth packet carries both a new
+   * book and the last traded price, but the print happened *before* that book —
+   * it is what moved it. Classifying against the book that arrived alongside the
+   * print inverts the ordinary case: a buy lifting the ask consumes that level,
+   * so the post-trade best bid sits at the traded price and the print reads as a
+   * sell. Holding the previous book back as the classification quote is the quote
+   * rule as actually defined, and keeps this correct however the host orders its
+   * `onDepth` / `onTrade` calls.
+   */
   onDepth(depth: MarketDepth): void {
     const bid = depth.bids?.[0]?.price
     const ask = depth.asks?.[0]?.price
-    if (typeof bid === 'number' && bid > 0) this.bestBid = bid
-    if (typeof ask === 'number' && ask > 0) this.bestAsk = ask
+    this.bestBid = this.nextBid
+    this.bestAsk = this.nextAsk
+    if (typeof bid === 'number' && bid > 0) this.nextBid = bid
+    if (typeof ask === 'number' && ask > 0) this.nextAsk = ask
   }
 
   /**
@@ -522,6 +641,9 @@ export class ProfileManager {
    * and an in-between print falls back to the tick rule (compare with the
    * previous print). Without a real classified tape this is the honest best
    * available, and it is what the panel's caveat refers to.
+   *
+   * `time` is the time of the **chart bar** the print landed in, not the time of
+   * the print itself — see {@link ensureAggregator}.
    */
   onTrade(tick: { time: number; price: number; qty: number }): void {
     if (!this.settings.footprint.enabled || !tick.qty) return
@@ -540,7 +662,7 @@ export class ProfileManager {
     // Bound the live tape so a long session cannot grow without limit.
     if (this.footprintBars.length > 400)
       this.footprintBars.splice(0, this.footprintBars.length - 400)
-    this.footprintPrim?.setBars([...this.footprintBars])
+    this.pushTape()
   }
 
   /* ── hover inspector ───────────────────────────────────────────────────── */
@@ -603,10 +725,16 @@ export class ProfileManager {
 
   restore(snap: Partial<ProfileSettings> | undefined): void {
     if (!snap) return
+    // Layouts saved before the footprint moved onto the chart's bar clock carry
+    // a `timeframe` of its own. Drop it rather than let it ride along as dead
+    // state that snapshot() would keep writing back out.
+    const { timeframe: _legacy, ...footprint } = (snap.footprint ?? {}) as FootprintConfig & {
+      timeframe?: unknown
+    }
     this.settings = {
       volume: { ...DEFAULT_PROFILE_SETTINGS.volume, ...snap.volume },
       market: { ...DEFAULT_PROFILE_SETTINGS.market, ...snap.market },
-      footprint: { ...DEFAULT_PROFILE_SETTINGS.footprint, ...snap.footprint },
+      footprint: { ...DEFAULT_PROFILE_SETTINGS.footprint, ...footprint },
     }
   }
 

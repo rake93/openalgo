@@ -25,6 +25,7 @@ import {
   updateLayout,
 } from '@/api/indicators'
 import { DataWindow } from '@/components/charts/DataWindow'
+import { DirectionPanel } from '@/components/charts/workspace/DirectionPanel'
 import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
 import { ChartTopBar } from '@/components/charts/workspace/ChartTopBar'
 import { DrawingProperties } from '@/components/charts/workspace/DrawingProperties'
@@ -84,7 +85,7 @@ const EMPTY_TRADING: TradingViewState = {
   depthTop: null,
 }
 
-type Dock = 'none' | 'studies' | 'trade'
+type Dock = 'none' | 'studies' | 'trade' | 'direction'
 
 interface ContextMenuState {
   x: number
@@ -692,7 +693,7 @@ export default function ChartWorkspace() {
           <aside className="flex w-[288px] shrink-0 flex-col border-l border-border bg-background">
             <header className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
               <h2 className="text-[12px] font-semibold">
-                {dock === 'studies' ? 'Studies' : 'Trade'}
+                {dock === 'studies' ? 'Studies' : dock === 'direction' ? 'Direction' : 'Trade'}
               </h2>
               <button
                 type="button"
@@ -711,6 +712,7 @@ export default function ChartWorkspace() {
                   market={profiles.market}
                   footprint={profiles.footprint}
                   footprintBars={controllerRef.current?.profiles.footprintBarCount ?? 0}
+                  interval={interval}
                   hover={profileHover}
                   onVolume={(patch) => {
                     controllerRef.current?.profiles.setVolumeConfig(patch)
@@ -724,6 +726,22 @@ export default function ChartWorkspace() {
                     controllerRef.current?.profiles.setFootprintConfig(patch)
                     setProfiles((s) => ({ ...s, footprint: { ...s.footprint, ...patch } }))
                   }}
+                />
+              ) : dock === 'direction' ? (
+                <DirectionPanel
+                  verdict={
+                    controllerRef.current?.direction ?? {
+                      composite: 'neutral',
+                      score: 0,
+                      agreeing: 0,
+                      participating: 0,
+                      signals: [],
+                    }
+                  }
+                  symbol={symbol?.symbol ?? ''}
+                  interval={interval}
+                  isPut={controllerRef.current?.isPut}
+                  oiFromSession={controllerRef.current?.oiBaselineIsSession}
                 />
               ) : (
                 <TradePanel

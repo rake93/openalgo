@@ -57,6 +57,7 @@ import {
   makeTransform,
   type TransformSettings,
 } from './chart-types'
+import { type DirectionVerdict, readDirection } from './direction'
 import { DrawingManager, type DrawingSnapshot } from './drawing'
 import { EventMarkerLayer, expiryEvent, type TradeRow, tradeMarkers } from './event-markers'
 import {
@@ -279,6 +280,16 @@ export class ChartWorkspaceController {
   private ticker: TickBarAggregator | null = null
   private offLtp: (() => void) | null = null
   private offDepth: (() => void) | null = null
+  /** Last cumulative day volume seen, for {@link tradedSince}. -1 = no baseline. */
+  private cumVolume = -1
+  /**
+   * Exchange-stated fields off the depth payload, for the direction readout. Left
+   * undefined until seen — a broker that omits one must read as "unknown", not 0.
+   */
+  private book: { oi?: number; tbq?: number; tsq?: number; vwap?: number } = {}
+  /** Fallback baseline: first OI and price seen live, when history carries none. */
+  private baseOi: number | undefined
+  private basePrice: number | undefined
 
   /** Raw broker bars — the single source of truth every view derives from. */
   private rawBars: Bar[] = []
@@ -669,8 +680,8 @@ export class ChartWorkspaceController {
       this.trading.onClick(id)
     })
     chart.subscribeDrag(
-      (id, price) => this.trading.onDrag(id, price),
-      (id, price) => this.trading.onDragEnd(id, price)
+      (id, price, time) => this.trading.onDrag(id, price, time),
+      (id, price, time) => this.trading.onDragEnd(id, price, time)
     )
 
     // The library tier's legends emit rather than opening a dialog (the engine
@@ -814,8 +825,8 @@ export class ChartWorkspaceController {
       chart.removePrimitive(legend)
       this.indicatorLegends.delete(id)
     }
-    // The stack just changed height, so the Buy/Sell panel has to move with it.
-    this.trading.remountButtons()
+    // The Buy/Sell panel no longer tracks the stack's height — it floats over the
+    // indicator rows at a fixed dock — so a legend change does not move it.
   }
 
   /** Route `os:<instanceId>::<action>` from an engine-backed indicator legend. */
@@ -856,18 +867,18 @@ export class ChartWorkspaceController {
   }
 
   /**
-   * Where the inline Buy/Sell panel has to start so it clears the price pane's
-   * legend stack: the symbol row, the volume row when volume is overlaid, and
-   * one row per on-chart indicator from either runtime.
+   * Where the inline Buy/Sell panel docks: clear of the symbol row, and sitting
+   * *over* the indicator legends rather than below them.
+   *
+   * It used to clear the whole legend stack, which meant every indicator added or
+   * removed shifted the panel down or up — and once dragged, it had to be put back
+   * again. The panel is a floating control on the top layer, so overlaying the
+   * indicator rows is both stable and what a trader expects; its hits declare a
+   * priority so a legend underneath cannot swallow them.
    */
   private priceLegendInset(): number {
-    const rows =
-      1 +
-      (this.volumeMode === 'overlay' ? 1 : 0) +
-      this.indicators.list().filter((i) => i.pane === undefined).length +
-      this.library.list().filter((i) => i.overlay).length
-    // 6px top inset plus ~18px per row, matching PaneLegend's own metrics.
-    return 12 + rows * 18
+    // 6px top inset plus ~18px for the symbol row, matching PaneLegend's metrics.
+    return 12 + 18
   }
 
   /** Push the hovered bar's readings into each engine-backed legend row. */
@@ -1092,6 +1103,13 @@ export class ChartWorkspaceController {
     const last = this.rawBars[this.rawBars.length - 1]
     if (this.builder && last) this.builder.seed(last)
     this.depthActive = false
+    this.cumVolume = -1
+    this.book = {}
+    this.baseOi = undefined
+    this.basePrice = undefined
+    // The footprint keys off this instrument's prices and this timeframe's bar
+    // times, so it starts over whenever either changes.
+    this.profiles.resetTape()
     this.offLtp?.()
     this.offDepth?.()
     this.offLtp = this.ws.onLtp((e: LtpEvent) => {
@@ -1104,10 +1122,11 @@ export class ChartWorkspaceController {
       this.depthActive = true
       this.trading.onDepth(depth)
       this.profiles.onDepth(depth)
+      this.absorbBook(depth)
       if (typeof depth.ltp === 'number' && depth.ltp > 0) {
         this.cb.onWsState('live')
         this.stopLtpFallback()
-        this.onTick({ ltp: depth.ltp, ltq: depth.ltq })
+        this.onTick({ ltp: depth.ltp, ltq: depth.ltq, volume: depth.volume })
       }
     })
     // One subscription per symbol: indices have no order book (LTP), tradeables
@@ -1119,23 +1138,155 @@ export class ChartWorkspaceController {
     }
   }
 
-  private onTick(e: { symbol?: string; ltp: number; ltq?: number; timeSec?: number }): void {
+  /**
+   * Keep the exchange-stated fields off a depth payload, and latch the baseline
+   * the OI buildup is measured from.
+   *
+   * Each field is stored only when present, so a broker that sends open interest
+   * but not the book totals leaves those unknown rather than zero. The baseline
+   * takes the first OI *and* the price from that same message, so both sides of the
+   * buildup comparison start at one instant.
+   */
+  private absorbBook(depth: MarketDepth): void {
+    if (typeof depth.oi === 'number' && depth.oi > 0) this.book.oi = depth.oi
+    if (typeof depth.totalBuyQty === 'number') this.book.tbq = depth.totalBuyQty
+    if (typeof depth.totalSellQty === 'number') this.book.tsq = depth.totalSellQty
+    if (typeof depth.atp === 'number' && depth.atp > 0) this.book.vwap = depth.atp
+    if (this.baseOi === undefined && this.book.oi !== undefined && depth.ltp > 0) {
+      this.baseOi = this.book.oi
+      this.basePrice = depth.ltp
+    }
+  }
+
+  /**
+   * The reference open interest and price a buildup is measured against.
+   *
+   * Indian convention reads "change in OI" against the **previous session's
+   * close**, so that is what this finds: the last loaded bar before today's
+   * session anchor, whose `oi` the history API carries per bar. Falling back to
+   * the first value seen after connecting would measure an arbitrary window and
+   * silently disagree with every OI table the user compares it to.
+   *
+   * Falls back in two steps: today's first bar when only today is loaded, then the
+   * first live observation when history reports no open interest at all.
+   */
+  private oiBaseline(): { oi?: number; price?: number } {
+    if (!this.sym) return {}
+    const anchor = sessionAnchor(nowSec(), this.sym.exchange)
+    let prevSessionClose: Bar | undefined
+    let firstToday: Bar | undefined
+    for (const b of this.rawBars) {
+      if (b.oi === undefined) continue
+      if (b.time < anchor) prevSessionClose = b
+      else if (!firstToday) firstToday = b
+    }
+    const ref = prevSessionClose ?? firstToday
+    if (ref?.oi !== undefined) return { oi: ref.oi, price: ref.close }
+    return { oi: this.baseOi, price: this.basePrice }
+  }
+
+  /** True when the OI baseline came from history rather than the live session. */
+  get oiBaselineIsSession(): boolean {
+    return this.oiBaseline().oi !== undefined && this.rawBars.some((b) => b.oi !== undefined)
+  }
+
+  /**
+   * Current market-direction verdict, assembled from the studies and the feed.
+   *
+   * Collection only — every rule lives in {@link readDirection}. Inputs absent for
+   * this instrument (no open interest on equity, no book at all on a quote-only
+   * index) are simply not supplied, and the engine reports those signals as
+   * unavailable rather than guessing.
+   */
+  get direction(): DirectionVerdict {
+    const vas = this.profiles.valueAreas()
+    const tape = this.profiles.footprintTape
+    const last = tape[tape.length - 1]
+
+    let cum = 0
+    const cvdSeries = tape.map((b) => (cum += b.delta))
+    const base = this.oiBaseline()
+    // The live feed is the freshest OI; history's last bar covers a chart opened
+    // outside market hours, when no depth packet has arrived yet.
+    const lastHistoryOi = [...this.rawBars].reverse().find((b) => b.oi !== undefined)?.oi
+
+    return readDirection({
+      hasOi: this.sym ? DERIVATIVE_EXCHANGES.has(this.sym.exchange) : false,
+      oi: this.book.oi ?? lastHistoryOi,
+      baselineOi: base.oi,
+      price: this.lastLtp ?? undefined,
+      baselinePrice: base.price,
+      totalBuyQty: this.book.tbq,
+      totalSellQty: this.book.tsq,
+      vwap: this.book.vwap,
+      tick: this.sym?.tick,
+      valueArea: vas.current,
+      prevValueArea: vas.previous,
+      barDelta: last?.delta,
+      barVolume: last
+        ? last.cells.reduce((a, c) => a + c.bidVol + c.askVol, 0)
+        : undefined,
+      cvdSeries: tape.length > 0 ? cvdSeries : undefined,
+    })
+  }
+
+  /** True for a charted put, where a rising premium means a falling underlying. */
+  get isPut(): boolean {
+    return /PE$/.test(this.sym?.symbol ?? '')
+  }
+
+  /**
+   * Quantity traded since the previous message.
+   *
+   * `ltq` is the size of the *last* trade and is sticky — the broker repeats it
+   * unchanged on every book update until the next print — so summing it counts
+   * the same trade over and over. Cumulative day volume differences cleanly
+   * instead, and every broker's depth payload carries it. The first message only
+   * establishes the baseline, and a drop means the daily reset rather than a
+   * negative quantity.
+   *
+   * A feed with no cumulative volume at all (an index streaming LTP only) has
+   * nothing better than the sticky value, so it falls back to assuming one print
+   * per message. Once a baseline exists it is never abandoned for that guess.
+   */
+  private tradedSince(e: { ltq?: number; volume?: number }): number {
+    const cum = e.volume
+    if (typeof cum !== 'number' || !(cum > 0)) return this.cumVolume < 0 ? (e.ltq ?? 0) : 0
+    const prev = this.cumVolume
+    this.cumVolume = cum
+    return prev < 0 || cum < prev ? 0 : cum - prev
+  }
+
+  private onTick(e: {
+    symbol?: string
+    ltp: number
+    ltq?: number
+    volume?: number
+    timeSec?: number
+  }): void {
     if (this.destroyed || !this.sym) return
     if (e.symbol && e.symbol !== this.sym.symbol) return
     this.lastLtp = e.ltp
     this.cb.onLtp(e.ltp, this.changePct())
     this.ltpLine?.setPrice(e.ltp)
     this.trading.onLtp(e.ltp)
-    this.profiles.onTrade({ time: e.timeSec ?? nowSec(), price: e.ltp, qty: e.ltq ?? 0 })
+    const time = e.timeSec ?? nowSec()
+    const qty = this.tradedSince(e)
     // Exactly one aggregator is live: the clock-bucketing candle builder, or
     // the tick/volume aggregator when the timeframe is a live-bar mode.
     const update = this.ticker
-      ? this.ticker.onTick({ time: e.timeSec ?? nowSec(), price: e.ltp, qty: e.ltq ?? 0 })
-      : this.builder?.onTick({ time: e.timeSec ?? nowSec(), price: e.ltp, ltq: e.ltq })
+      ? this.ticker.onTick({ time, price: e.ltp, qty })
+      : this.builder?.onTick({ time, price: e.ltp, ltq: qty })
     if (update) {
       this.liveBucket = update.bar.time
       if (update.isNew) this.rawBars.push(update.bar)
       else this.rawBars[this.rawBars.length - 1] = update.bar
+      // The footprint buckets on the chart's own bar clock, not one of its own:
+      // its columns are positioned by an exact time match against the plotted
+      // bars, so any other bucketing lands on times the chart does not have and
+      // is silently dropped. This also means the footprint inherits whatever the
+      // chart is bucketing by, tick and volume bars included.
+      this.profiles.onTrade({ time: update.bar.time, price: e.ltp, qty })
       this.applyData()
       this.indicators.onBar(update.bar, update.isNew)
       this.library.onData()

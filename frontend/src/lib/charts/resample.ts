@@ -134,6 +134,7 @@ export function resampleBars(bars: readonly Bar[], targetSec: number, exchange =
         low: bar.low,
         close: bar.close,
         volume: bar.volume ?? 0,
+        ...(bar.oi === undefined ? {} : { oi: bar.oi }),
       }
       continue
     }
@@ -141,6 +142,9 @@ export function resampleBars(bars: readonly Bar[], targetSec: number, exchange =
     current.low = Math.min(current.low, bar.low)
     current.close = bar.close
     current.volume = (current.volume ?? 0) + (bar.volume ?? 0)
+    // Open interest is a level, not a flow: the bucket inherits its last reading
+    // rather than a sum, exactly as `close` does.
+    if (bar.oi !== undefined) current.oi = bar.oi
   }
   if (current) out.push(current)
   return out

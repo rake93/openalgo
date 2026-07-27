@@ -55,7 +55,7 @@ export interface ChartTopBarProps {
   grid: GridOptions
   indicatorCount: number
   studyCount: number
-  dock: 'none' | 'studies' | 'trade'
+  dock: 'none' | 'studies' | 'trade' | 'direction'
   drawingRail: boolean
   magnet: boolean
   markers: boolean
@@ -69,7 +69,7 @@ export interface ChartTopBarProps {
   onVolumeMode(mode: VolumeMode): void
   onGrid(patch: Partial<GridOptions>): void
   onOpenIndicators(): void
-  onDock(next: 'none' | 'studies' | 'trade'): void
+  onDock(next: 'none' | 'studies' | 'trade' | 'direction'): void
   onToggleRail(): void
   onMagnet(): void
   onResetScale(): void
@@ -345,6 +345,16 @@ export function ChartTopBar(p: ChartTopBarProps) {
             {p.studyCount}
           </span>
         )}
+      </TBtn>
+
+      <TBtn
+        onClick={() => p.onDock(p.dock === 'direction' ? 'none' : 'direction')}
+        active={p.dock === 'direction'}
+        className="shrink-0"
+        title="Who is in control, per study and overall"
+      >
+        <Icon name="trend" className="h-4 w-4" />
+        <span className="hidden lg:inline">Direction</span>
       </TBtn>
 
       <TBtn
