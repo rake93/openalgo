@@ -44,61 +44,6 @@ export interface DrawingManagerCallbacks {
   onChange(state: DrawingState): void
 }
 
-/**
- * One rail button. A group with several tools cycles them on repeat clicks, so
- * a family of four line tools stays one button instead of four.
- */
-export interface RailGroup {
-  id: string
-  iconKey: string
-  title: string
-  tools: string[]
-}
-
-export const DRAWING_RAIL: (RailGroup | { separator: true })[] = [
-  { id: 'cursor', iconKey: 'cursor', title: 'Cursor (Esc)', tools: [] },
-  { separator: true },
-  {
-    id: 'lines',
-    iconKey: 'trend',
-    title: 'Trend line · Ray · Extended line · Arrow',
-    tools: ['trend-line', 'ray', 'extended-line', 'arrow'],
-  },
-  {
-    id: 'horizontal',
-    iconKey: 'hline',
-    title: 'Horizontal line · Horizontal ray',
-    tools: ['horizontal-line', 'horizontal-ray'],
-  },
-  {
-    id: 'vertical',
-    iconKey: 'vline',
-    title: 'Vertical line · Cross line',
-    tools: ['vertical-line', 'cross-line'],
-  },
-  { separator: true },
-  { id: 'rectangle', iconKey: 'rect', title: 'Rectangle', tools: ['rectangle'] },
-  { id: 'ellipse', iconKey: 'ellipse', title: 'Ellipse', tools: ['ellipse'] },
-  { id: 'channel', iconKey: 'channel', title: 'Parallel channel', tools: ['parallel-channel'] },
-  { separator: true },
-  {
-    id: 'fib',
-    iconKey: 'fib',
-    title: 'Fib retracement · Fib extension',
-    tools: ['fib-retracement', 'fib-extension'],
-  },
-  {
-    id: 'position',
-    iconKey: 'position',
-    title: 'Long position · Short position',
-    tools: ['long-position', 'short-position'],
-  },
-  { id: 'measure', iconKey: 'measure', title: 'Measure', tools: ['measure'] },
-  { separator: true },
-  { id: 'text', iconKey: 'text', title: 'Text', tools: ['text'] },
-  { id: 'path', iconKey: 'path', title: 'Free-form path', tools: ['path'] },
-]
-
 /** TradingView-style swatch grid for the properties bar. */
 export const DRAWING_SWATCHES = [
   '#ffffff',
@@ -257,19 +202,6 @@ export class DrawingManager {
 
   setTool(toolId: string | null): void {
     this.controller?.setTool(toolId)
-    this.emit()
-  }
-
-  /** Advance through a rail group's tools, so repeat clicks cycle the family. */
-  cycleGroup(group: RailGroup): void {
-    if (!this.controller) return
-    if (group.tools.length === 0) {
-      this.controller.setTool(null)
-      this.emit()
-      return
-    }
-    const at = group.tools.indexOf(this.controller.activeTool() ?? '')
-    this.controller.setTool(group.tools[(at + 1) % group.tools.length])
     this.emit()
   }
 

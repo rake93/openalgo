@@ -48,7 +48,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { DEFAULT_TRANSFORM_SETTINGS, type TransformSettings } from '@/lib/charts/chart-types'
-import { type Drawing, POSITION_TOOLS, type RailGroup } from '@/lib/charts/drawing'
+import { type Drawing, POSITION_TOOLS } from '@/lib/charts/drawing'
 import type { IndicatorInstance } from '@/lib/charts/indicator-host'
 import type { LibraryIndicatorInstance } from '@/lib/charts/library-indicators'
 import type { ProfileHover, ProfileSettings } from '@/lib/charts/profiles'
@@ -480,8 +480,8 @@ export default function ChartWorkspace() {
     void controllerRef.current?.setInterval(iv)
   }, [])
 
-  const onRailPick = useCallback((group: RailGroup) => {
-    controllerRef.current?.drawing.cycleGroup(group)
+  const onRailPick = useCallback((toolId: string | null) => {
+    controllerRef.current?.drawing.setTool(toolId)
   }, [])
 
   const addIndicator = useCallback((id: string, source: 'engine' | 'library' | 'script') => {
@@ -610,7 +610,6 @@ export default function ChartWorkspace() {
             canUndo={drawState.canUndo}
             canRedo={drawState.canRedo}
             hasSelection={Boolean(drawState.selected)}
-            toolNames={toolNames}
             onPick={onRailPick}
             onUndo={() => controllerRef.current?.drawing.undo()}
             onRedo={() => controllerRef.current?.drawing.redo()}
@@ -860,10 +859,18 @@ export default function ChartWorkspace() {
           price={ctxMenu.price}
           items={ctxMenu.items}
           hasOrders={trading.orders.length > 0}
+          railVisible={rail}
+          grid={grid}
           onPick={(side: OrderSide, type: OrderType) =>
             controllerRef.current?.trading.placeFromContext(side, type)
           }
           onCancelAll={() => void controllerRef.current?.trading.cancelAll()}
+          onResetScale={() => controllerRef.current?.resetScale()}
+          onToggleRail={() => setRail((v) => !v)}
+          onGrid={(patch) => {
+            setGrid((g) => ({ ...g, ...patch }))
+            controllerRef.current?.setGrid(patch)
+          }}
           onClose={() => setCtxMenu(null)}
         />
       )}

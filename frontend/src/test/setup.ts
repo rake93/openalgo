@@ -22,19 +22,27 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 
-// Mock ResizeObserver
-window.ResizeObserver = vi.fn().mockImplementation(() => ({
-  observe: vi.fn(),
-  unobserve: vi.fn(),
-  disconnect: vi.fn(),
-}))
+// Mock ResizeObserver / IntersectionObserver.
+//
+// Real classes rather than `vi.fn(() => ({...}))`: floating-ui — which Radix's
+// popper uses for every dropdown and popover — calls `new ResizeObserver(...)`,
+// and a mock function is not a constructor, so any test that opens a menu died
+// with "is not a constructor" before reaching its assertions. Also assigned on
+// globalThis, since library code reaches for whichever is in scope.
+class MockObserver {
+  observe = vi.fn()
+  unobserve = vi.fn()
+  disconnect = vi.fn()
+  takeRecords = vi.fn(() => [])
+  root = null
+  rootMargin = ''
+  thresholds: number[] = []
+}
 
-// Mock IntersectionObserver
-window.IntersectionObserver = vi.fn().mockImplementation(() => ({
-  observe: vi.fn(),
-  unobserve: vi.fn(),
-  disconnect: vi.fn(),
-}))
+window.ResizeObserver = MockObserver as unknown as typeof ResizeObserver
+globalThis.ResizeObserver = MockObserver as unknown as typeof ResizeObserver
+window.IntersectionObserver = MockObserver as unknown as typeof IntersectionObserver
+globalThis.IntersectionObserver = MockObserver as unknown as typeof IntersectionObserver
 
 // Mock scrollTo
 window.scrollTo = vi.fn()
