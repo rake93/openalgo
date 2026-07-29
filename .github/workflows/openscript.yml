@@ -150,17 +150,25 @@ jobs:
       # a corpus that resolves but yields zero goldens still reads as green.
       - name: OpenScript suite
         working-directory: openalgo
+        # Both of these are consumed at IMPORT time by `database/auth_db.py`,
+        # which test_openscript_calendar_alerts.py reaches by patching
+        # `database.auth_db.get_api_key_for_tradingview` -- patching a symbol
+        # requires importing its module first. Locally they come from a .env
+        # file, which is why they only surface in CI.
+        #
+        # Set EXPLICITLY rather than by copying .sample.env: `load_dotenv` lives
+        # in utils/config.py, which this import path does not pull in, so a .env
+        # would only work by import-order luck.
         env:
-          # `database/auth_db.py` raises at IMPORT time unless this is set and is
-          # >= 32 characters. test_openscript_calendar_alerts.py patches
-          # `database.auth_db.get_api_key_for_tradingview`, and patching a symbol
-          # requires importing its module first -- so the guard fires there even
-          # though the value is never used for anything. Locally it comes from a
-          # .env file, which is why this only shows up in CI.
-          #
-          # Throwaway, deliberately self-describing: it hashes nothing real, and
-          # no real credential exists on this runner for it to protect.
+          # Must be >= 32 chars or auth_db raises. Throwaway and self-describing:
+          # it hashes nothing real, and no credential exists here to protect.
           API_KEY_PEPPER: ci-only-dummy-pepper-not-a-secret-0123456789
+          # auth_db does `create_engine(os.getenv("DATABASE_URL"))`; unset gives
+          # `ArgumentError: Expected string or URL object, got None`. Relative to
+          # the working directory, and `db/` is tracked so the path exists. The
+          # endpoint tests are unaffected -- they mkstemp their own DB and set
+          # DATABASE_URL themselves before importing indicator_db.
+          DATABASE_URL: sqlite:///db/openscript-ci.db
         run: |
           set -euo pipefail
           uv run python -m pytest test/test_openscript_*.py test/test_indicator_script_endpoints.py \
