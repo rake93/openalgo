@@ -237,7 +237,9 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
         }
     ),
     "location": frozenset({"abovebar", "belowbar", "top", "bottom", "absolute"}),
-    "size": frozenset({"tiny", "small", "normal", "large", "huge", "auto"}),
+    # `medium` is new (label-size design §3.1) — it was previously only an IR
+    # bucket name that `normal` lowered to, so `size.medium` errored OS2001.
+    "size": frozenset({"tiny", "small", "normal", "medium", "large", "huge", "auto"}),
     "plot": frozenset(
         {
             "style_line",

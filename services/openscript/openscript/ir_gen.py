@@ -39,7 +39,13 @@ LOCATION_MAP = {
     "abovebar": "aboveBar", "belowbar": "belowBar", "top": "aboveBar",
     "bottom": "belowBar", "absolute": "atPrice",
 }
-SIZE_MAP = {"tiny": "tiny", "small": "small", "normal": "medium", "large": "big", "huge": "big", "auto": "medium"}
+# Identity, plus the one documented alias (label-size design §3.1). The map
+# used to collapse six source names into four buckets, so `large` and `huge`
+# were indistinguishable in the IR and no source name produced `medium`.
+SIZE_MAP = {
+    "tiny": "tiny", "small": "small", "normal": "normal", "medium": "medium",
+    "large": "large", "huge": "huge", "auto": "normal",
+}
 STYLE_MAP = {
     "style_line": "line", "style_stepline": "stepline", "style_histogram": "histogram",
     "style_cross": "cross", "style_area": "area", "style_columns": "columns", "style_circles": "circles",
@@ -720,6 +726,9 @@ class IRGenerator:
         label = self._draw_text(call, "label", {"price": out["priceNodeId"]})
         if label is not None:
             out["label"] = label
+        label_size = self._draw_size(call, "label_size")
+        if label_size is not None:
+            out["labelSize"] = label_size
         return out
 
     def _zone_output(self, call: ast.CallExpr) -> dict:
@@ -757,7 +766,19 @@ class IRGenerator:
         text = self._draw_text(call, "text", {"top": out["topNodeId"], "bottom": out["bottomNodeId"]})
         if text is not None:
             out["text"] = text
+        text_size = self._draw_size(call, "text_size")
+        if text_size is not None:
+            out["textSize"] = text_size
         return out
+
+    def _draw_size(self, call: ast.CallExpr, arg: str) -> str | None:
+        """A `label_size=` / `text_size=` argument, or None when unspecified.
+
+        Absent stays absent: keeping the field off the IR is what makes it
+        additive over already-stored IR (design §3.2).
+        """
+        v = self._const_arg(call, None, arg)
+        return v if isinstance(v, str) else None
 
     def _apply_extend_args(self, out: dict, call: ast.CallExpr, extend: str) -> None:
         """`terminate=` present iff extend=='until'; `bars=` present iff
