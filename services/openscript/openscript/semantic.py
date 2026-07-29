@@ -71,21 +71,21 @@ class Analyzer:
     def _error(self, code: str, span: Span, detail: str | None = None) -> None:
         self._diagnostics.append(make_diagnostic(code, "error", span, detail))
 
-    def _warn(self, code: str, span: Span, detail: str | None = None) -> None:
-        self._diagnostics.append(make_diagnostic(code, "warning", span, detail))
-
     def _check_named_args(self, fn_label: str, accepted, call) -> None:
         """Warn (OS2010) on a named argument this compiler does not read.
 
         Such an argument is silently dropped -- the mechanism that let
-        `label_size` sit advertised-and-inert. WARNING, not error, on purpose:
-        erroring is correct eventually but breaks scripts passing an ignored
-        argument today.
+        `label_size` sit advertised-and-inert. ERROR since 2026-07-29: it shipped
+        as a warning first so nothing broke mid-flight, and the flip is safe for
+        the known corpus because no fixture and no shipped indicator passes an
+        argument the compiler ignores. A saved script that does stops compiling,
+        and its stored IR keeps running because the P2 refresh declines to replace
+        a working artifact with a failed recompile.
         """
         for arg in call.args:
             if arg.name is not None and arg.name not in accepted:
                 span = getattr(arg.value, "span", None) or call.span
-                self._warn("OS2010", span, f"{arg.name} on {fn_label}")
+                self._error("OS2010", span, f"{arg.name} on {fn_label}")
 
     def _scope(self) -> set[str]:
         return self._scopes[-1]

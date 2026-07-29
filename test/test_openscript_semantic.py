@@ -1,9 +1,10 @@
 """Semantic-pass diagnostics that have no shared-fixture home.
 
 The cross-language identity of OS2010 is guarded by
-`fixtures/openscript/warn-unknown-named-arg.json` (replayed by the conformance
+`fixtures/openscript/sem-unknown-named-arg.json` (replayed by the conformance
 suite). What lives here is the property a diagnostic-code fixture cannot express:
-that a semantic WARNING still yields IR while a semantic ERROR still does not.
+that a semantic error suppresses IR, and that arguments the lowering DOES
+read are not reported.
 """
 
 from services.openscript import openscript
@@ -11,20 +12,18 @@ from services.openscript import openscript
 # --- OS2010: a named argument the compiler does not read ---------------------
 
 
-def test_unknown_named_arg_warns_but_still_produces_ir():
-    """The load-bearing non-breaking property of the FU-1 migration.
+def test_unknown_named_arg_is_an_error_and_stops_the_build():
+    """FU-1's second half.
 
-    `compile` used to return `ir=None` whenever the semantic pass produced ANY
-    diagnostic, which was indistinguishable from errors-only while semantic
-    emitted nothing but errors. OS2010 is the first semantic WARNING, so under
-    that gate this advisory would have produced no IR -- a hard break rather than
-    a migration warning.
+    It shipped as a warning first so nothing broke mid-flight. An argument the
+    compiler ignores is now refused outright: silently dropping it is what let
+    `label_size` sit advertised-and-inert.
     """
     result = openscript.compile('indicator("x")\nplotlevel(close > open, close, bogus_arg=5)')
     codes = [d.code for d in result.diagnostics]
     assert codes == ["OS2010"]
-    assert [d.severity for d in result.diagnostics] == ["warning"]
-    assert result.ir is not None
+    assert [d.severity for d in result.diagnostics] == ["error"]
+    assert result.ir is None
 
 
 def test_a_semantic_error_still_suppresses_ir():

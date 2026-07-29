@@ -590,3 +590,42 @@ def test_a_source_that_no_longer_compiles_keeps_its_working_ir(client):
         id=created["version_id"]
     ).first()
     assert (version.metadata_json or {}).get("compiler_fingerprint") == "0" * 64
+
+
+def test_a_script_saved_before_the_os2010_flip_keeps_working(client):
+    """P2 and FU-1 composing — the migration story, end to end.
+
+    `plotlevel(..., bogus_arg=5)` compiled cleanly for years (the argument was
+    silently dropped), then shipped as an OS2010 warning, and is now an error.
+    A user who saved such a script must not find their chart broken by a
+    compiler upgrade they did not ask for.
+
+    The recompile fails, so the refresh keeps the stored IR and does not stamp
+    the fingerprint. The indicator keeps rendering; re-saving is what forces the
+    author to fix the argument. Without the "never make it worse" branch this
+    would blank the artifact and the chart with it.
+    """
+    created = _create(client, "legacy-bogus-arg", RSI_SOURCE)
+    working_ir = created["compiled_ir"]
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(
+        id=created["version_id"]
+    ).first()
+    # Exactly what such a row looks like: source the CURRENT compiler refuses,
+    # alongside IR that a previous compiler built and the runtime still admits.
+    legacy_source = 'indicator("x")\nplotlevel(close > open, close, bogus_arg=5)'
+    version.source_code = legacy_source
+    meta = dict(version.metadata_json or {})
+    meta["compiler_fingerprint"] = "0" * 64
+    version.metadata_json = meta
+    indicator_db.db_session.commit()
+    indicator_db.db_session.remove()
+
+    fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
+    assert fetched["compiled_ir"] == working_ir, "an upgrade broke a saved indicator"
+
+    # Premise guard: the source really is refused now, so this is not vacuous.
+    from services.openscript.compiler_service import compile_source
+
+    recompiled = compile_source(legacy_source)
+    assert recompiled["ir"] is None
+    assert [d["code"] for d in recompiled["diagnostics"]] == ["OS2010"]
