@@ -234,11 +234,22 @@ def test_fetch_returns_the_stored_ir_rather_than_recompiling(client):
 def test_a_usable_stored_ir_is_never_recompiled(client):
     """The reopen contract's core rule, stated as the boundary of the repair.
 
-    Recompiling is reserved for IR the RUNTIME WOULD REFUSE. An artifact that
-    admits is returned untouched, whatever else it contains — otherwise the
-    "server IR, never a browser recompile" guarantee would quietly become
-    "whatever the current compiler emits", and a saved layout could drift under
-    the user without the version ever changing.
+    An artifact that admits is returned untouched, whatever else it contains —
+    otherwise the "server IR, never a browser recompile" guarantee would quietly
+    become "whatever the current compiler emits", and a saved layout could drift
+    under the user without the version ever changing.
+
+    **Scope narrowed by finding P2 (2026-07-29), deliberately.** "Never" now
+    means "never while the compiler stands still". Recompiling is triggered by
+    IR the runtime would refuse (P1) OR by a change of compiler BUILD, detected
+    with a fingerprint (P2) — because an admissible-but-stale IR previously had
+    no user-facing route to be refreshed at all, so a lowering fix never reached
+    anything already saved.
+
+    This test still passes unchanged, and that is the point: the version here was
+    created by the CURRENT compiler, so its fingerprint matches and the sentinel
+    survives. Drift under a standing compiler is still impossible; drift across a
+    compiler upgrade is now repaired instead of frozen.
     """
     created = _create(client, "rsi-usable", RSI_SOURCE)
     sentinel = _admissible_sentinel(created["compiled_ir"])
@@ -457,3 +468,125 @@ def test_client_supplied_ir_is_ignored(client):
     # affected — but a raw `==` against the in-process IR would fail on it.
     expected = json.loads(json.dumps(openscript.compile(RSI_SOURCE).ir))
     assert row["compiled_ir"] == expected
+
+
+# ── P2: stored IR that ADMITS but predates the current compiler ──────────────
+#
+# `_ensure_runnable_ir` repaired only IR the runtime would REFUSE. IR that still
+# admits but was built by an older compiler was frozen forever, and re-saving
+# unchanged source is a no-op, so there was NO user-facing route to refresh it.
+# A lowering fix therefore never reached anything already saved.
+#
+# The gate is a COMPILER FINGERPRINT, not a diff: `compiler_version` is frozen
+# per language revision ("openscript-1.0"), so it does not move when a lowering
+# changes. The fingerprint hashes the compiler's own sources, so it moves
+# whenever its output could.
+
+
+def _set_fingerprint(version_id: int, fingerprint) -> None:
+    """Force a version's recorded compiler fingerprint (None = pre-feature row)."""
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(id=version_id).first()
+    meta = dict(version.metadata_json or {})
+    if fingerprint is None:
+        meta.pop("compiler_fingerprint", None)
+    else:
+        meta["compiler_fingerprint"] = fingerprint
+    version.metadata_json = meta
+    indicator_db.db_session.commit()
+    indicator_db.db_session.remove()
+
+
+def _set_ir(version_id: int, ir: dict) -> None:
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(id=version_id).first()
+    version.compiled_ir = ir
+    indicator_db.db_session.commit()
+    indicator_db.db_session.remove()
+
+
+def test_the_compiler_fingerprint_is_a_stable_content_hash():
+    """The premise. A fingerprint that never moves would make the refresh dead
+    code; one that moves per process would recompile the whole corpus on boot."""
+    from services.openscript.compiler_service import COMPILER_FINGERPRINT, compile_source
+
+    assert isinstance(COMPILER_FINGERPRINT, str)
+    assert len(COMPILER_FINGERPRINT) == 64  # sha-256 hex
+    assert compile_source("indicator(\"x\")\nplot(close)")["compiler_fingerprint"] == COMPILER_FINGERPRINT
+
+
+def test_a_new_version_records_the_fingerprint_it_was_compiled_by(client):
+    created = _create(client, "rsi-fp-stamp", RSI_SOURCE)
+    from services.openscript.compiler_service import COMPILER_FINGERPRINT
+
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(
+        id=created["version_id"]
+    ).first()
+    assert (version.metadata_json or {}).get("compiler_fingerprint") == COMPILER_FINGERPRINT
+
+
+def test_stored_ir_from_an_older_compiler_is_refreshed_on_fetch(client):
+    """The P2 fix. The IR admits, so the old repair left it alone forever."""
+    created = _create(client, "rsi-stale-fp", RSI_SOURCE)
+    sentinel = _admissible_sentinel(created["compiled_ir"])
+    _set_ir(created["version_id"], sentinel)
+    _set_fingerprint(created["version_id"], "0" * 64)  # a different compiler
+
+    fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
+    assert fetched["compiled_ir"] != sentinel, "stale IR was not refreshed"
+    assert "marker" not in fetched["compiled_ir"]
+    # Identity is untouched: a layout pinned to this version still resolves.
+    assert fetched["version_id"] == created["version_id"]
+    assert fetched["source_hash"] == created["source_hash"]
+    assert fetched["source"] == RSI_SOURCE
+
+
+def test_a_refreshed_version_records_the_new_fingerprint(client):
+    """Otherwise every fetch would recompile forever."""
+    from services.openscript.compiler_service import COMPILER_FINGERPRINT
+
+    created = _create(client, "rsi-restamp", RSI_SOURCE)
+    _set_fingerprint(created["version_id"], "0" * 64)
+    client.get(f"/indicators/api/scripts/{created['id']}")
+
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(
+        id=created["version_id"]
+    ).first()
+    assert (version.metadata_json or {}).get("compiler_fingerprint") == COMPILER_FINGERPRINT
+
+
+def test_a_version_predating_the_fingerprint_is_treated_as_stale(client):
+    """The existing corpus carries no fingerprint at all."""
+    created = _create(client, "rsi-no-fp", RSI_SOURCE)
+    sentinel = _admissible_sentinel(created["compiled_ir"])
+    _set_ir(created["version_id"], sentinel)
+    _set_fingerprint(created["version_id"], None)
+
+    fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
+    assert "marker" not in fetched["compiled_ir"]
+
+
+def test_a_source_that_no_longer_compiles_keeps_its_working_ir(client):
+    """Never make a saved indicator worse than it was.
+
+    If the compiler tightened (an accepted construct became an error), the fresh
+    compile yields no IR. The stored artifact still runs, so it is kept -- and
+    the fingerprint is NOT stamped, so the refresh retries rather than recording
+    a lie about which compiler produced it.
+    """
+    created = _create(client, "rsi-uncompilable", RSI_SOURCE)
+    working_ir = created["compiled_ir"]
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(
+        id=created["version_id"]
+    ).first()
+    version.source_code = "indicator(\"x\")\nplot(this_is_not_defined)"  # errors now
+    meta = dict(version.metadata_json or {})
+    meta["compiler_fingerprint"] = "0" * 64
+    version.metadata_json = meta
+    indicator_db.db_session.commit()
+    indicator_db.db_session.remove()
+
+    fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
+    assert fetched["compiled_ir"] == working_ir, "a working artifact was destroyed"
+    version = indicator_db.IndicatorScriptVersion.query.filter_by(
+        id=created["version_id"]
+    ).first()
+    assert (version.metadata_json or {}).get("compiler_fingerprint") == "0" * 64

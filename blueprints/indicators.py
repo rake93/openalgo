@@ -26,7 +26,7 @@ from database.indicator_db import (
     IndicatorScriptVersion,
     db_session,
 )
-from services.openscript.compiler_service import compile_source
+from services.openscript.compiler_service import COMPILER_FINGERPRINT, compile_source
 from services.openscript.runtime.admit import admit_ir
 from utils.logging import get_logger
 from utils.session import check_session_validity
@@ -193,6 +193,45 @@ def _script_row(
     return row
 
 
+def _staleness_reason(version: IndicatorScriptVersion) -> str | None:
+    """Why this version's stored IR needs rebuilding, or None to leave it alone.
+
+    Two independent triggers, and the distinction matters:
+
+    - ``inadmissible`` — the RUNTIME WOULD REFUSE it (P1). IR compiled before the
+      negotiation header existed has no ``header`` key, so admission fails with
+      IR_MAJOR_MISMATCH and the indicator can be neither added nor restored.
+      ``compiled_ir`` NULL is the same problem in its extreme form.
+    - ``compiler-changed`` — it still admits, but a DIFFERENT compiler build
+      produced it (P2). This is the case the old repair could not see: a version
+      whose IR is merely stale had no user-facing route to be refreshed at all,
+      because re-saving unchanged source is a no-op. A lowering fix therefore
+      never reached anything already saved.
+
+    The P2 gate is a fingerprint EQUALITY check, not a diff against a fresh
+    compile: comparing IR would mean compiling on every fetch of every version.
+    `compiler_version` cannot serve — it is frozen per language revision
+    ("openscript-1.0") and does not move when a lowering changes.
+
+    A version carrying no fingerprint is the pre-feature corpus, and is stale by
+    definition: it was built by an unknown compiler.
+
+    **Contract note.** `test_a_usable_stored_ir_is_never_recompiled` still holds
+    in the form that matters — an admissible artifact from THE CURRENT COMPILER
+    is returned untouched, so hand-stored IR is not silently replaced and a
+    layout cannot drift under the user while the compiler stands still. What
+    changed is that "never" is now scoped to one compiler build instead of
+    forever.
+    """
+    # `admit_ir` returns the REASONS the runtime would refuse; empty = admitted.
+    if version.compiled_ir is None or admit_ir(version.compiled_ir):
+        return "inadmissible"
+    stored = (version.metadata_json or {}).get("compiler_fingerprint")
+    if stored != COMPILER_FINGERPRINT:
+        return "compiler-changed"
+    return None
+
+
 def _ensure_runnable_ir(version: IndicatorScriptVersion | None) -> None:
     """Repair a stored IR the runtime would refuse, from the version's OWN source.
 
@@ -213,10 +252,21 @@ def _ensure_runnable_ir(version: IndicatorScriptVersion | None) -> None:
     """
     if version is None:
         return
-    if version.compiled_ir is not None and not admit_ir(version.compiled_ir):
+    reason = _staleness_reason(version)
+    if reason is None:
         return
     compiled = compile_source(version.source_code)
     if compiled["ir"] is None or admit_ir(compiled["ir"]):
+        # The recompile is unusable. NEVER make a saved indicator worse than it
+        # was: whatever is stored stays, and the fingerprint is deliberately NOT
+        # stamped, so this retries on a later compiler rather than recording a
+        # lie about which build produced the artifact. Reachable in the ordinary
+        # course — a compiler that tightens (an accepted construct becoming an
+        # error) turns a previously-saved source into one that no longer builds.
+        logger.warning(
+            f"Stale IR for version {version.id} (script {version.script_id}, {reason}) "
+            f"could not be refreshed: its source no longer compiles. Keeping the stored IR."
+        )
         return
     logger.info(
         f"Recompiled stale IR for version {version.id} "
@@ -226,6 +276,8 @@ def _ensure_runnable_ir(version: IndicatorScriptVersion | None) -> None:
     version.compiler_version = compiled["compiler_version"]
     meta = dict(version.metadata_json or {})
     meta["diagnostics"] = compiled["diagnostics"]
+    # Without this the version would be refreshed on EVERY fetch forever.
+    meta["compiler_fingerprint"] = compiled["compiler_fingerprint"]
     version.metadata_json = meta
     db_session.commit()
 
@@ -241,7 +293,13 @@ def _new_version(script_id: int, source: str, version_number: int) -> IndicatorS
         source_hash=compiled["source_hash"],
         compiler_version=compiled["compiler_version"],
         compiled_ir=compiled["ir"],
-        metadata_json={"diagnostics": compiled["diagnostics"]},
+        metadata_json={
+            "diagnostics": compiled["diagnostics"],
+            # Which compiler BUILD produced this artifact (finding P2). Recorded
+            # in metadata rather than a column so the existing corpus needs no
+            # migration: a row without the key is simply treated as stale.
+            "compiler_fingerprint": compiled["compiler_fingerprint"],
+        },
     )
 
 
