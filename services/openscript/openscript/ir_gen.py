@@ -17,7 +17,7 @@ import re
 from ..limits import SCRIPT_LIMITS
 from ..runtime.plancost import estimate_plan_cost
 from . import ast_nodes as ast
-from .builtins_table import KERNELS_FUNCTIONS, TA_FUNCTIONS, ta_overload
+from .builtins_table import CONTEXT_MEMBERS, KERNELS_FUNCTIONS, TA_FUNCTIONS, ta_overload
 from .diagnostics import Diagnostic, Span, make_diagnostic
 
 IR_VERSION = 1
@@ -331,6 +331,13 @@ class IRGenerator:
             bound = self._resolve_var(e.name)
             return bound if bound is not None else self._na_node(e.span)
         if kind == "Member":
+            # An execution-resolved context property lowers to a `source` node,
+            # NOT a const: the chart interval must be read from the dataset every
+            # run, or stored IR would keep reporting the authoring interval.
+            if getattr(e.object, "type", None) == "Identifier":
+                context_id = CONTEXT_MEMBERS.get(e.object.name, {}).get(e.property)
+                if context_id is not None:
+                    return self._emit({"op": "source", "source": context_id}, e.span, 0)
             if getattr(e.object, "type", None) == "Identifier" and e.object.name == "color":
                 hex_color = COLOR_HEX.get(e.property)
                 return self._palette_const(hex_color, e.span) if hex_color else self._na_node(e.span)

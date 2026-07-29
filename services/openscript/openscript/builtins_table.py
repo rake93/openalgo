@@ -234,6 +234,20 @@ OUTPUT_FUNCTIONS = frozenset(
 # half of a warning-then-error migration (label-size design section 9, FU-1).
 #
 # KEEP IN SYNC with the TypeScript `NAMED_ARGS` in `builtins-table.ts`.
+# Namespaced CONTEXT properties: `namespace.property` -> ContextId (G2).
+#
+# Distinct from CONSTANT_NAMESPACES, whose members fold to compile-time
+# constants. These resolve at EXECUTION from the dataset, so they lower to a
+# `source` node -- baking the chart interval in as a constant would freeze it
+# into stored IR, and a saved indicator would keep reporting the interval it was
+# authored on after the user switched timeframe.
+#
+# One table, read by BOTH the semantic member check and the ir_gen lowering.
+# Mirrors the TypeScript CONTEXT_MEMBERS in builtins-table.ts.
+CONTEXT_MEMBERS: dict[str, dict[str, str]] = {
+    "timeframe": {"in_seconds": "timeframe_in_seconds"},
+}
+
 NAMED_ARGS: dict[str, frozenset[str]] = {
     "indicator": frozenset({"title", "shorttitle", "overlay"}),
     "plot": frozenset({"title", "color", "linewidth", "style"}),

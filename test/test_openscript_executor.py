@@ -1020,3 +1020,61 @@ def test_crossunder_and_cross_with_a_scalar(dataset):
 
     values = _line(_run(f'indicator("x")\nplot(ta.cross(close, {t}) ? 1 : 0)', dataset))
     assert np.array_equal(np.nan_to_num(np.asarray(values)), np.maximum(over, under))
+
+
+# --- G2: timeframe.in_seconds ------------------------------------------------
+#
+# The shared fixture pins IR shape across the two compilers; it cannot pin the
+# VALUE. These do, against the same intervals the TS suite uses, so a divergence
+# in the median-delta inference shows up as a value mismatch rather than as an
+# identical-looking IR that computes something else.
+
+
+def _spaced_dataset(step_seconds, n=20):
+    time = np.arange(n, dtype=float) * step_seconds + 1_700_000_000
+    close = np.full(n, 10.0)
+    return {
+        "time": time,
+        "open": close.copy(),
+        "high": close + 1,
+        "low": close - 1,
+        "close": close,
+        "volume": np.ones(n),
+    }
+
+
+@pytest.mark.parametrize("step", [30, 60, 180, 300, 86_400])
+def test_timeframe_in_seconds_reads_the_bar_interval(step):
+    outputs = _run('indicator("x")\nplot(timeframe.in_seconds)', _spaced_dataset(step))
+    values = np.asarray(_line(outputs))
+    assert np.all(values == float(step))
+
+
+def test_timeframe_in_seconds_ignores_overnight_gaps():
+    """The median must not be dragged by weekend/holiday jumps."""
+    times, t = [], 1_700_000_000
+    for i in range(30):
+        times.append(t)
+        t += 86_400 if i % 10 == 9 else 300
+    n = len(times)
+    dataset = {
+        "time": np.asarray(times, dtype=float),
+        "open": np.full(n, 10.0),
+        "high": np.full(n, 11.0),
+        "low": np.full(n, 9.0),
+        "close": np.full(n, 10.0),
+        "volume": np.ones(n),
+    }
+    values = np.asarray(_line(_run('indicator("x")\nplot(timeframe.in_seconds)', dataset)))
+    assert values[0] == 300.0
+
+
+def test_timeframe_in_seconds_is_na_without_an_inferable_interval():
+    values = np.asarray(_line(_run('indicator("x")\nplot(timeframe.in_seconds)', _spaced_dataset(60, n=1))))
+    assert np.isnan(values[0])
+
+
+def test_timeframe_in_seconds_converts_a_duration_to_a_bar_count():
+    """The recorded G2 use case: 'how many bars in 30 minutes on this chart'."""
+    values = np.asarray(_line(_run('indicator("x")\nplot(1800 / timeframe.in_seconds)', _spaced_dataset(300))))
+    assert values[0] == 6.0

@@ -60,8 +60,35 @@ def _resolve_source(dataset: dict, source_id: str) -> np.ndarray:
 # Pine time/context series (P-time) — Python port of
 # openalgo-openscript/src/registry/resolve-context.ts. Bit-identical integers.
 _CONTEXT_IDS = frozenset(
-    {"time", "bar_index", "last_bar_index", "dayofweek", "dayofmonth", "hour", "minute", "month", "year"}
+    {
+        "timeframe_in_seconds",
+        "time", "bar_index", "last_bar_index", "dayofweek", "dayofmonth",
+        "hour", "minute", "month", "year",
+    }
 )
+
+
+def _infer_base_interval_seconds(time) -> float | None:
+    """Median of the positive consecutive deltas of an (epoch-seconds) time array.
+
+    Literal transcription of the TypeScript `inferBaseIntervalSeconds`
+    (`src/runtime/timeframe.ts`), NOT `np.median`: the two must agree bit-for-bit
+    and writing the same algorithm is how that stays true. Robust to
+    gaps/holidays -- the median ignores the few large overnight/weekend deltas.
+    Returns None when fewer than two bars provide a positive delta.
+    """
+    t = np.asarray(time, dtype=float)
+    if t.size < 2:
+        return None
+    deltas = np.diff(t)
+    deltas = deltas[deltas > 0]
+    if deltas.size == 0:
+        return None
+    deltas = np.sort(deltas)
+    mid = deltas.size >> 1
+    if deltas.size % 2 == 1:
+        return float(deltas[mid])
+    return float((deltas[mid - 1] + deltas[mid]) / 2)
 
 
 def _resolve_context(dataset: dict, cid: str, calendar: SessionCalendar) -> np.ndarray:
@@ -86,6 +113,13 @@ def _resolve_context(dataset: dict, cid: str, calendar: SessionCalendar) -> np.n
         A float series of length `len(dataset["close"])`.
     """
     n = len(dataset["close"])
+    if cid == "timeframe_in_seconds":
+        # The chart's own bar interval (G2), derived from the `time` column.
+        # Constant across the dataset, filled per bar rather than returned as a
+        # scalar so it composes with every series operator without a special
+        # case. `na` when there is no delta to measure (a single bar).
+        secs = _infer_base_interval_seconds(dataset["time"])
+        return np.full(n, float("nan") if secs is None else secs)
     if cid == "bar_index":
         return np.arange(n, dtype=float)
     if cid == "last_bar_index":

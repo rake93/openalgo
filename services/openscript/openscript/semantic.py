@@ -11,6 +11,7 @@ from __future__ import annotations
 from . import ast_nodes as ast
 from .builtins_table import (
     CONSTANT_NAMESPACES,
+    CONTEXT_MEMBERS,
     INPUT_FUNCTIONS,
     INPUT_NAMED_ARGS,
     KERNELS_FUNCTIONS,
@@ -228,6 +229,14 @@ class Analyzer:
             return
 
     def _visit_member_value(self, ns: str, prop: str, span: Span) -> None:
+        # Execution-resolved context properties (`timeframe.in_seconds`) are
+        # checked against the SAME table ir_gen lowers from, so acceptance and
+        # lowering cannot drift apart.
+        context_members = CONTEXT_MEMBERS.get(ns)
+        if context_members is not None:
+            if prop not in context_members:
+                self._error("OS2001", span, f"{ns}.{prop}")
+            return
         members = CONSTANT_NAMESPACES.get(ns)
         if members is not None:
             if prop not in members:
