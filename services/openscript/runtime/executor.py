@@ -274,8 +274,34 @@ def _clamp_window_arg(a):
     return a
 
 
-def _call(node, values, ta_cache):
-    args = [values[i] for i in node["args"]]
+# Kernels every one of whose arguments is a SERIES, keyed `namespace.function`.
+#
+# A const IR node evaluates to a scalar, and these kernels index their arguments
+# positionally, so a scalar argued into one raises (`IndexError: too many indices
+# for array` / `TypeError: len() of unsized object`) instead of computing.
+# `ta.crossover(close, 450)` is Pine-legal and the idiomatic threshold-cross test,
+# so rejecting it would be wrong; the fix is to broadcast. Mirrors the TypeScript
+# `SERIES_ONLY_KERNELS` in `src/runtime/executor.ts` -- the two lists must agree.
+#
+# Deliberately an allowlist rather than "coerce every scalar": most `ta.*`
+# arguments are genuine scalars (`ta.ema(close, 9)`'s period) and broadcasting one
+# of those would corrupt a currently-correct call. Adding a kernel here is a claim
+# that it has NO scalar parameters.
+_SERIES_ONLY_KERNELS = frozenset({"ta.crossover", "ta.crossunder", "ta.cross"})
+
+
+def _broadcast_series_arg(namespace, fn, a, n):
+    """Broadcast a scalar argued into a series-only kernel slot to a full series."""
+    if _is_series(a) or f"{namespace}.{fn}" not in _SERIES_ONLY_KERNELS:
+        return a
+    return np.full(n, float(a), dtype=float)
+
+
+def _call(node, values, ta_cache, n):
+    args = [
+        _broadcast_series_arg(node["namespace"], node["function"], values[i], n)
+        for i in node["args"]
+    ]
     # math.sum is windowed — route it to the rolling_sum kernel; every other
     # math.* stays on the elementwise path.
     if node["namespace"] == "math" and node["function"] != "sum":
@@ -336,7 +362,7 @@ def _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar: Sess
         return _nz(values[node["arg"]], node.get("replacement", 0), n)
     if op == "scan":
         return _eval_scan(node, values, n)
-    return _call(node, values, ta_cache)
+    return _call(node, values, ta_cache, n)
 
 
 _SCAN_MATH_UNARY = {

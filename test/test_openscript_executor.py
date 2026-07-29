@@ -960,3 +960,63 @@ def test_stc_base_fixture_runs_end_to_end():
     lines = sorted(o["title"] for o in outputs if o["kind"] == "line")
     assert lines == ["Cluster Down Trend", "Cluster Up Trend"]
     assert len([o for o in outputs if o["kind"] == "alert"]) == 3
+
+
+# --- a scalar const argued where a `ta.*` kernel expects a series -------------
+#
+# Pine allows `ta.crossover(series, 450)` and it is the idiomatic threshold-cross
+# test, so it compiles clean by design. The executor passed the raw scalar to a
+# kernel that indexes its arguments positionally, which RAISED here (IndexError /
+# TypeError) while the TypeScript twin silently produced wrong values. Mirrors
+# `tests/executor.test.ts`'s "a scalar const argued where a series is expected".
+
+
+def _crossover_ref(a, b, n):
+    """Pine crossover, longhand: strictly above now, at-or-below on the prior bar."""
+    out = np.zeros(n)
+    for i in range(1, n):
+        if a[i] > b[i] and a[i - 1] <= b[i - 1]:
+            out[i] = 1.0
+    return out
+
+
+def _threshold(dataset):
+    """Derived from the data, not picked.
+
+    A constant outside the close range is never crossed, so the expectation would
+    be all-zeros == all-zeros -- passing while proving nothing. The median is
+    crossed many times in both directions; every test still asserts non-vacuity.
+    """
+    return round(float(np.median(dataset["close"])), 6)
+
+
+def test_crossover_with_a_scalar_second_argument(dataset):
+    n = len(dataset["close"])
+    t = _threshold(dataset)
+    expected = _crossover_ref(dataset["close"], np.full(n, t), n)
+    assert expected.sum() > 0, "vacuous: threshold is never crossed upward"
+    values = _line(_run(f'indicator("x")\nplot(ta.crossover(close, {t}) ? 1 : 0)', dataset))
+    assert np.array_equal(np.nan_to_num(np.asarray(values)), expected)
+
+
+def test_crossover_with_a_scalar_first_argument(dataset):
+    n = len(dataset["close"])
+    t = _threshold(dataset)
+    expected = _crossover_ref(np.full(n, t), dataset["close"], n)
+    assert expected.sum() > 0, "vacuous: threshold is never crossed downward"
+    values = _line(_run(f'indicator("x")\nplot(ta.crossover({t}, close) ? 1 : 0)', dataset))
+    assert np.array_equal(np.nan_to_num(np.asarray(values)), expected)
+
+
+def test_crossunder_and_cross_with_a_scalar(dataset):
+    n = len(dataset["close"])
+    t = _threshold(dataset)
+    over = _crossover_ref(dataset["close"], np.full(n, t), n)
+    under = _crossover_ref(np.full(n, t), dataset["close"], n)
+    assert over.sum() > 0 and under.sum() > 0
+
+    values = _line(_run(f'indicator("x")\nplot(ta.crossunder(close, {t}) ? 1 : 0)', dataset))
+    assert np.array_equal(np.nan_to_num(np.asarray(values)), under)
+
+    values = _line(_run(f'indicator("x")\nplot(ta.cross(close, {t}) ? 1 : 0)', dataset))
+    assert np.array_equal(np.nan_to_num(np.asarray(values)), np.maximum(over, under))
