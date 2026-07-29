@@ -1,0 +1,167 @@
+# OpenScript Python-service CI (engine register C1, step 2).
+#
+# WHY THIS IS A SEPARATE FILE, not a job added to ci.yml: this repo is a fork,
+# and ci.yml is upstream's. Keeping OpenScript in its own workflow means an
+# upstream merge never conflicts here.
+#
+# WHAT IT CLOSES. The 569 openscript pytest tests run in NO ci today: ci.yml's
+# `backend-test` job runs a named five-file subset that contains none of them.
+# Worse, the tests that replay the SHARED TS<->Python fixture corpora are guarded
+# by `pytest.mark.skipif(not GOLDENS)` at MODULE level — so without the engine
+# checked out beside this repo they do not fail, they vanish. Ten-plus files
+# silently report success while asserting nothing. That is the "0 tests, green"
+# hazard this workflow exists to make impossible.
+#
+# THE LAYOUT MATTERS AND IS NOT NEGOTIABLE. The tests resolve the corpus as:
+#
+#     Path(__file__).resolve().parents[1].parent / "openalgo-openscript" / "fixtures" / ...
+#
+# i.e. from `<x>/openalgo/test/foo.py` they look in `<x>/openalgo-openscript/`.
+# So the engine must be checked out as a SIBLING directory named EXACTLY
+# `openalgo-openscript`. The platform directory's own name is irrelevant.
+#
+# The Python side needs only a CHECKOUT of the engine — the corpora are committed
+# JSON (194 files, 25 IR goldens). No node, no npm, no wasm, no dist. That is why
+# this job is fast and needs no Node toolchain at all.
+#
+# BRANCH POLICY (see the engine's docs/openscript-pending-deliverables.md §5.1):
+# this platform repo is CONSUMED from `feat/indicator-engine` and is never merged
+# to main — it is the non-production reference integration. The engine is our own
+# library and is always on `main`.
+
+name: OpenScript (Python service)
+
+on:
+  push:
+    branches: [feat/indicator-engine]
+  pull_request:
+    branches: [feat/indicator-engine]
+  workflow_dispatch:
+
+concurrency:
+  group: openscript-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ENGINE_REPO: rake93/openalgo-openscript
+  ENGINE_REF: main
+
+jobs:
+  # `rake93/openalgo-openscript` is PRIVATE, so the automatic GITHUB_TOKEN cannot
+  # read it. It is read with a FINE-GRAINED PAT stored as the repository secret
+  # OPENSCRIPT_ENGINE_TOKEN, scoped to that one repository with **Contents:
+  # Read-only** — the least privilege `actions/checkout` needs. Deliberately NOT
+  # a classic `repo`-scope token, which would grant write access to every repo the
+  # owner has.
+  #
+  # Fine-grained tokens EXPIRE. When this job starts failing to check out the
+  # engine, that is the first thing to check — regenerate and re-set the secret.
+  #
+  # Rather than fail red on every push until that secret exists, this gate lets
+  # the real job skip cleanly with an explanation. The `secrets` context is not
+  # available in a job-level `if`, which is why the check is a step that writes an
+  # output. Delete this job once the secret is permanent, if you prefer a hard
+  # failure to a skip.
+  gate:
+    name: engine token present?
+    runs-on: ubuntu-latest
+    outputs:
+      has_token: ${{ steps.check.outputs.has_token }}
+    steps:
+      - id: check
+        env:
+          ENGINE_TOKEN: ${{ secrets.OPENSCRIPT_ENGINE_TOKEN }}
+        run: |
+          if [ -n "$ENGINE_TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::OPENSCRIPT_ENGINE_TOKEN is not set — the OpenScript suite is being SKIPPED, not passed. Add a PAT with 'repo' scope as that repository secret to activate it."
+          fi
+
+  openscript:
+    name: openscript pytest + ruff (with the shared TS corpora)
+    needs: gate
+    if: needs.gate.outputs.has_token == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the platform
+        uses: actions/checkout@v4
+        with:
+          path: openalgo
+
+      # MUST be named `openalgo-openscript` and MUST be a sibling — see the header.
+      - name: Check out the engine as a sibling
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ENGINE_REPO }}
+          ref: ${{ env.ENGINE_REF }}
+          token: ${{ secrets.OPENSCRIPT_ENGINE_TOKEN }}
+          path: openalgo-openscript
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: openalgo
+        run: uv sync
+
+      # DoD step 3. The corpora are the ONLY thing standing between a silent
+      # module-level skip and real cross-language enforcement, so prove they are
+      # there and non-empty BEFORE spending a suite run — and fail loudly, with
+      # counts, if they are not.
+      - name: Pre-flight — the shared corpora must exist and be non-empty
+        run: |
+          set -euo pipefail
+          fail=0
+          for d in openscript openscript/ir admission plancost materializer finality; do
+            path="openalgo-openscript/fixtures/$d"
+            if [ ! -d "$path" ]; then
+              echo "::error::missing shared corpus directory: $path"
+              fail=1
+              continue
+            fi
+            n=$(find "$path" -maxdepth 1 -name '*.json' | wc -l)
+            echo "  $path: $n json"
+            if [ "$n" -eq 0 ]; then
+              echo "::error::shared corpus is EMPTY: $path — the replay tests would skip silently"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || { echo "::error::refusing to report success on an absent corpus"; exit 1; }
+
+      - name: Ruff
+        working-directory: openalgo
+        run: uv run ruff check services/openscript
+
+      # `-rs` reports skip reasons, which the next step inspects. Without that,
+      # a corpus that resolves but yields zero goldens still reads as green.
+      - name: OpenScript suite
+        working-directory: openalgo
+        run: |
+          set -euo pipefail
+          uv run pytest test/test_openscript_*.py test/test_indicator_script_endpoints.py \
+            -q -rs --timeout=300 | tee ../pytest-openscript.log
+
+      # The skipif message is: "TS IR goldens not found (engine repo not a sibling,
+      # or not generated)". If that fires, the sibling layout is wrong and the
+      # drift guard is inert — which must be a hard failure, never a quiet skip.
+      - name: Assert the cross-language replays actually RAN
+        run: |
+          set -euo pipefail
+          if grep -qi "engine repo not a sibling" pytest-openscript.log; then
+            echo "::error::the TS<->Python replay tests SKIPPED — the engine is not resolving as a sibling. This is the exact silent-skip failure this workflow exists to catch."
+            grep -i "engine repo not a sibling" pytest-openscript.log || true
+            exit 1
+          fi
+          echo "cross-language replays ran (no sibling-missing skips)"
+
+      - name: Upload the pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-openscript-log
+          path: pytest-openscript.log
+          if-no-files-found: warn
