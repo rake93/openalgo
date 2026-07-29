@@ -222,6 +222,48 @@ OUTPUT_FUNCTIONS = frozenset(
     }
 )
 
+# Named arguments each builtin actually READS, keyed by function name.
+#
+# The allowlist is "what the lowering consumes", not "what Pine documents".
+# Anything outside it is an argument this compiler SILENTLY DROPS -- which is what
+# `label_size` did while being advertised, with zero diagnostics, until
+# 2026-07-29. A warning here is therefore never a false positive.
+#
+# Emitted as OS2010 at WARNING severity: erroring is the correct end state but
+# breaks any script currently passing an ignored argument, so this is the first
+# half of a warning-then-error migration (label-size design section 9, FU-1).
+#
+# KEEP IN SYNC with the TypeScript `NAMED_ARGS` in `builtins-table.ts`.
+NAMED_ARGS: dict[str, frozenset[str]] = {
+    "indicator": frozenset({"title", "shorttitle", "overlay"}),
+    "plot": frozenset({"title", "color", "linewidth", "style"}),
+    "hline": frozenset({"title", "color"}),
+    "fill": frozenset({"title", "color"}),
+    "plotshape": frozenset({"title", "color", "location", "shape", "size", "text"}),
+    "plotchar": frozenset({"title", "color", "location", "char", "text"}),
+    "plotcandle": frozenset({"title", "color"}),
+    "plotbar": frozenset({"title", "color"}),
+    "barcolor": frozenset({"title", "color"}),
+    "bgcolor": frozenset({"title", "color"}),
+    "alertcondition": frozenset({"title", "message", "on"}),
+    "plotlevel": frozenset({
+        "title", "color", "width", "style", "offset", "right_pad", "extend", "bars",
+        "terminate", "max_kept", "label", "label_size", "label_latest_only",
+        # `mitigated_color` IS dropped on a level, but OS2022 reports it precisely.
+        # Listing it keeps ONE diagnostic per mistake.
+        "mitigated_color",
+    }),
+    "plotzone": frozenset({
+        "title", "color", "border_color", "border_style", "offset", "right_pad",
+        "extend", "bars", "terminate", "mitigated_color", "max_kept", "text", "text_size",
+    }),
+}
+
+# Named arguments accepted by every `input.*` constructor.
+INPUT_NAMED_ARGS: frozenset[str] = frozenset({
+    "title", "defval", "group", "inline", "tooltip", "minval", "maxval", "step", "options",
+})
+
 CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
     "color": frozenset(
         {

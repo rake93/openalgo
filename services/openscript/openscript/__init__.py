@@ -29,13 +29,19 @@ def compile(source: str) -> CompileResult:
     if diagnostics:
         return CompileResult(ir=None, diagnostics=diagnostics)
     semantic = analyze_program(program)
-    if semantic:
+    # Halt on ERRORS only, riding warnings through with a built IR -- the same rule
+    # ir-gen already follows and `analyze_finality` relies on. This gate used to be
+    # `if semantic:`, indistinguishable from errors-only while semantic emitted
+    # nothing but errors. OS2010 is the first semantic WARNING, and under the old
+    # gate an advisory "you passed an argument I ignore" would have produced NO IR,
+    # turning a deliberately non-breaking migration warning into a hard break.
+    if any(d.severity == "error" for d in semantic):
         return CompileResult(ir=None, diagnostics=semantic)
     ir, ir_diagnostics = generate_ir(source, program)
     if ir is None:
-        return CompileResult(ir=None, diagnostics=ir_diagnostics)
+        return CompileResult(ir=None, diagnostics=[*semantic, *ir_diagnostics])
     fin_diagnostics = analyze_finality(ir)  # mutates ir["meta"]; returns repaint warnings
-    return CompileResult(ir=ir, diagnostics=[*ir_diagnostics, *fin_diagnostics])
+    return CompileResult(ir=ir, diagnostics=[*semantic, *ir_diagnostics, *fin_diagnostics])
 
 
 __all__ = ["CompileResult", "compile"]

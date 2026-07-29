@@ -12,8 +12,10 @@ from . import ast_nodes as ast
 from .builtins_table import (
     CONSTANT_NAMESPACES,
     INPUT_FUNCTIONS,
+    INPUT_NAMED_ARGS,
     KERNELS_FUNCTIONS,
     MATH_FUNCTIONS,
+    NAMED_ARGS,
     OUTPUT_FUNCTIONS,
     SPECIAL_FUNCTIONS,
     TA_FUNCTIONS,
@@ -67,6 +69,22 @@ class Analyzer:
 
     def _error(self, code: str, span: Span, detail: str | None = None) -> None:
         self._diagnostics.append(make_diagnostic(code, "error", span, detail))
+
+    def _warn(self, code: str, span: Span, detail: str | None = None) -> None:
+        self._diagnostics.append(make_diagnostic(code, "warning", span, detail))
+
+    def _check_named_args(self, fn_label: str, accepted, call) -> None:
+        """Warn (OS2010) on a named argument this compiler does not read.
+
+        Such an argument is silently dropped -- the mechanism that let
+        `label_size` sit advertised-and-inert. WARNING, not error, on purpose:
+        erroring is correct eventually but breaks scripts passing an ignored
+        argument today.
+        """
+        for arg in call.args:
+            if arg.name is not None and arg.name not in accepted:
+                span = getattr(arg.value, "span", None) or call.span
+                self._warn("OS2010", span, f"{arg.name} on {fn_label}")
 
     def _scope(self) -> set[str]:
         return self._scopes[-1]
@@ -282,6 +300,7 @@ class Analyzer:
             if not top_level:
                 self._error("OS2005", call.span)
             self._register_title(call, self._input_titles, "OS2014")
+            self._check_named_args(f"input.{fn}", INPUT_NAMED_ARGS, call)
             if fn == "string":
                 self._check_string_options(call)
         elif ns in ("color", "shape", "location", "size", "plot"):
@@ -309,6 +328,9 @@ class Analyzer:
         if name in OUTPUT_FUNCTIONS:
             if not top_level:
                 self._error("OS2011", call.span, name)
+            accepted = NAMED_ARGS.get(name)
+            if accepted is not None:
+                self._check_named_args(name, accepted, call)
             if name == "alertcondition":
                 self._register_title(call, self._alert_titles, "OS2015")
             if name in ("plotlevel", "plotzone"):
