@@ -136,13 +136,23 @@ jobs:
         working-directory: openalgo
         run: uv run ruff check services/openscript
 
+      # `python -m pytest`, NOT the bare `pytest` console script. The tests import
+      # `services.openscript` and `database`, which live at the repo ROOT, but
+      # there is no test/__init__.py, no root conftest.py and no `pythonpath`
+      # setting -- so pytest's prepend import mode puts `test/` on sys.path and
+      # the root never gets there. `python -m` inserts CWD, which is what makes
+      # the imports resolve. This is the recipe the engine's EXECUTION-PLAN §3
+      # prescribes ("cwd matters for uv"); the console-script form produced
+      # `collected 0 items / 23 errors — ModuleNotFoundError: No module named
+      # 'services'`.
+      #
       # `-rs` reports skip reasons, which the next step inspects. Without that,
       # a corpus that resolves but yields zero goldens still reads as green.
       - name: OpenScript suite
         working-directory: openalgo
         run: |
           set -euo pipefail
-          uv run pytest test/test_openscript_*.py test/test_indicator_script_endpoints.py \
+          uv run python -m pytest test/test_openscript_*.py test/test_indicator_script_endpoints.py \
             -q -rs --timeout=300 | tee ../pytest-openscript.log
 
       # The skipif message is: "TS IR goldens not found (engine repo not a sibling,
