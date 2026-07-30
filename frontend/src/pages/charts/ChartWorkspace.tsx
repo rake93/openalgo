@@ -25,6 +25,8 @@ import {
   updateLayout,
 } from '@/api/indicators'
 import { DataWindow } from '@/components/charts/DataWindow'
+import { InspectorPanel } from '@/components/charts/InspectorPanel'
+import { useInspectorPin } from '@/lib/charts/use-inspector-pin'
 import { DirectionPanel } from '@/components/charts/workspace/DirectionPanel'
 import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
 import { ChartTopBar } from '@/components/charts/workspace/ChartTopBar'
@@ -125,6 +127,16 @@ export default function ChartWorkspace() {
   const [libraryIndicators, setLibraryIndicators] = useState<LibraryIndicatorInstance[]>([])
   const [crosshair, setCrosshair] = useState<CrosshairData | null>(null)
   const [dataWindow, setDataWindow] = useState(false)
+  /**
+   * Bar pinned for the series inspector (M8); see `useInspectorPin`.
+   *
+   * `i` is free on this surface. Escape is not — the page's own key handler
+   * also clears the active drawing tool — so pressing it with the panel open
+   * both closes the panel and clears the tool. That is the meaning Escape
+   * already has here, and the panel carries its own close button, so the two
+   * are left independent rather than one intercepting the other.
+   */
+  const { pinned, setPinned } = useInspectorPin(crosshair)
 
   const [rail, setRail] = useState(true)
   const [drawState, setDrawState] = useState({
@@ -663,7 +675,20 @@ export default function ChartWorkspace() {
             />
           )}
 
-          {dataWindow && <DataWindow data={crosshair} />}
+          {dataWindow && <DataWindow data={crosshair} inspectHint />}
+
+          {pinned && (
+            <InspectorPanel
+              bar={pinned}
+              inspect={(instanceId, outputId, barIndex) =>
+                controllerRef.current
+                  ? controllerRef.current.indicators.inspect(instanceId, outputId, barIndex)
+                  : Promise.resolve(null)
+              }
+              lastEpoch={(instanceId) => controllerRef.current?.indicators.lastEpoch(instanceId)}
+              onClose={() => setPinned(null)}
+            />
+          )}
 
           {!ready && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-muted-foreground">

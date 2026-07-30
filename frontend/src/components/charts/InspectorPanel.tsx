@@ -12,15 +12,28 @@
  * See openalgo-openscript/docs/openscript-phase2-series-inspector-design.md.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { InspectNode, InspectResult, InspectRoot } from '@openalgo/openscript'
-import type { DataWindowRow } from '@/lib/charts/indicator-host'
+import type { PinnedBar } from '@/lib/charts/use-inspector-pin'
 
-export interface PinnedBar {
-  index: number
-  time: number | null
-  rows: DataWindowRow[]
+export type { PinnedBar }
+
+/** Which output of which indicator the panel is showing. */
+interface Selection {
+  instanceId: string
+  outputId: string
 }
+
+const firstOutputOf = (bar: PinnedBar): Selection | null => {
+  const row = bar.rows[0]
+  const value = row?.values[0]
+  return row && value ? { instanceId: row.instanceId, outputId: value.id } : null
+}
+
+const stillPresent = (bar: PinnedBar, sel: Selection): boolean =>
+  bar.rows.some(
+    (r) => r.instanceId === sel.instanceId && r.values.some((v) => v.id === sel.outputId)
+  )
 
 export type InspectFn = (
   instanceId: string,
@@ -169,9 +182,25 @@ export function InspectorPanel({
   /** Reveal a node's source span in the editor. */
   onPickSpan?: (span: { start: number; end: number; line: number }) => void
 }) {
-  const first = bar.rows[0]
-  const [selected, setSelected] = useState<{ instanceId: string; outputId: string } | null>(
-    first?.values[0] ? { instanceId: first.instanceId, outputId: first.values[0].id } : null
+  const [picked, setPicked] = useState<Selection | null>(null)
+  /**
+   * DERIVED, not stored, and that is load-bearing.
+   *
+   * An editor preview recompiles into a NEW engine session, so a stored
+   * selection would point at an instance that no longer exists; the host
+   * correctly refuses to answer for it and the panel used to sit on "Select an
+   * output above" — right after the edit that prompted the inspection.
+   *
+   * Re-deriving in an effect instead would be worse than the bug: the load
+   * effect would fire once with the stale selection and the NEW bar index
+   * before the correction committed, asking the engine about a dead session.
+   * Computing it during render means there is no such in-between state. The
+   * user's own pick survives as long as it still exists (`stillPresent`), so
+   * moving between bars does not snap the panel back to the first output.
+   */
+  const selected = useMemo(
+    () => (picked && stillPresent(bar, picked) ? picked : firstOutputOf(bar)),
+    [picked, bar]
   )
   const [state, setState] = useState<
     { kind: 'idle' } | { kind: 'loading' } | { kind: 'done'; epoch: number; result: InspectResult }
@@ -228,7 +257,7 @@ export function InspectorPanel({
               <button
                 key={`${row.instanceId}:${v.id}`}
                 type="button"
-                onClick={() => setSelected({ instanceId: row.instanceId, outputId: v.id })}
+                onClick={() => setPicked({ instanceId: row.instanceId, outputId: v.id })}
                 className={`flex items-center gap-1 rounded border px-1.5 py-0.5 ${
                   on ? 'border-primary bg-primary/10' : 'border-border hover:bg-accent'
                 }`}

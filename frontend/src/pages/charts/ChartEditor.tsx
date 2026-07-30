@@ -25,7 +25,8 @@ import {
 } from '@/api/indicators'
 import { type AlertCondition, CreateAlertDialog } from '@/components/charts/CreateAlertDialog'
 import { DataWindow } from '@/components/charts/DataWindow'
-import { InspectorPanel, type PinnedBar } from '@/components/charts/InspectorPanel'
+import { InspectorPanel } from '@/components/charts/InspectorPanel'
+import { useInspectorPin } from '@/lib/charts/use-inspector-pin'
 import { OpenScriptEditor } from '@/components/charts/OpenScriptEditor'
 import { ScriptMenu } from '@/components/charts/ScriptMenu'
 import { VersionHistoryDialog } from '@/components/charts/VersionHistoryDialog'
@@ -93,15 +94,8 @@ export default function ChartEditor() {
   const [alertConditions, setAlertConditions] = useState<AlertCondition[]>([])
   const [showAlerts, setShowAlerts] = useState(false)
   const [crosshair, setCrosshair] = useState<CrosshairData | null>(null)
-  /**
-   * Bar pinned for the series inspector (M8).
-   *
-   * Pinned, not crosshair-following: reaching a control on a hover-following
-   * panel drags the crosshair with it, so the panel would answer about a
-   * different bar than the one the user was looking at. `i` pins whatever is
-   * under the pointer at that instant.
-   */
-  const [pinned, setPinned] = useState<PinnedBar | null>(null)
+  /** Bar pinned for the series inspector (M8); see `useInspectorPin`. */
+  const { pinned, setPinned } = useInspectorPin(crosshair)
   /** Source range the inspector asked the editor to reveal (M8). */
   const [revealSpan, setRevealSpan] = useState<{
     start: number
@@ -109,29 +103,6 @@ export default function ChartEditor() {
     nonce: number
   } | null>(null)
   const splitRef = useRef<HTMLDivElement | null>(null)
-  // `i` pins the crosshair bar; Escape closes. Ignored while typing, so the key
-  // never steals a character from the script editor or the symbol search.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null
-      const typing =
-        el?.isContentEditable === true ||
-        /^(INPUT|TEXTAREA|SELECT)$/.test(el?.tagName ?? '') ||
-        el?.closest('.cm-editor') != null
-      if (typing || e.metaKey || e.ctrlKey || e.altKey) return
-      if (e.key === 'Escape') {
-        setPinned(null)
-        return
-      }
-      if (e.key !== 'i' && e.key !== 'I') return
-      setCrosshair((c) => {
-        if (c) setPinned({ index: c.index, time: c.time, rows: c.rows })
-        return c
-      })
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
   const [editorPct, setEditorPct] = useState(42)
   const onDividerDown = useCallback((e: ReactMouseEvent) => {
     e.preventDefault()
