@@ -84,9 +84,9 @@ function TreeRow({
           {node.sharedCount > 1 && (
             <span
               className="shrink-0 text-[10px] text-muted-foreground"
-              title={`This subexpression occurs ${node.sharedCount}× in the source; the compiler collapsed them into one node, so the highlighted span is the first occurrence.`}
+              title={`Read in ${node.sharedCount} places in this script. The line shown is where the compiler recorded this node — and if the same expression is written more than once, the compiler collapses them into one node, so that line is the first occurrence.`}
             >
-              ×{node.sharedCount}
+              {node.sharedCount} refs
             </span>
           )}
           {node.htf && (
