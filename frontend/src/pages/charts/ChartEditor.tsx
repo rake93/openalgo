@@ -26,6 +26,7 @@ import {
 import { type AlertCondition, CreateAlertDialog } from '@/components/charts/CreateAlertDialog'
 import { DataWindow } from '@/components/charts/DataWindow'
 import { InspectorPanel } from '@/components/charts/InspectorPanel'
+import { ProfilePanel } from '@/components/charts/ProfilePanel'
 import { useInspectorPin } from '@/lib/charts/use-inspector-pin'
 import { OpenScriptEditor } from '@/components/charts/OpenScriptEditor'
 import { ScriptMenu } from '@/components/charts/ScriptMenu'
@@ -93,6 +94,7 @@ export default function ChartEditor() {
   const [currentVersionId, setCurrentVersionId] = useState<number | null>(null)
   const [alertConditions, setAlertConditions] = useState<AlertCondition[]>([])
   const [showAlerts, setShowAlerts] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
   const [crosshair, setCrosshair] = useState<CrosshairData | null>(null)
   /** Bar pinned for the series inspector (M8); see `useInspectorPin`. */
   const { pinned, setPinned } = useInspectorPin(crosshair)
@@ -483,6 +485,16 @@ export default function ChartEditor() {
         >
           🔔 Alerts{alertConditions.length ? ` (${alertConditions.length})` : ''}
         </button>
+        <button
+          type="button"
+          onClick={() => setProfileOpen((v) => !v)}
+          title="Last-run telemetry: is this indicator recomputing incrementally?"
+          className={`h-8 rounded px-3 text-sm font-medium hover:bg-accent ${
+            profileOpen ? 'bg-accent text-primary' : 'bg-card'
+          }`}
+        >
+          Profile
+        </button>
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <div className="relative">
@@ -581,6 +593,17 @@ export default function ChartEditor() {
         <div className="relative min-h-0 flex-1">
           <div ref={containerRef} className="absolute inset-0" />
           {ready && <DataWindow data={crosshair} inspectHint />}
+          {ready && profileOpen && (
+            <ProfilePanel
+              // The editor previews a single indicator and keeps no indicator
+              // state of its own, so the list is read from the controller at
+              // render. Crosshair movement already re-renders this component, so
+              // the panel stays current without a new subscription.
+              indicators={controllerRef.current?.indicators.list() ?? []}
+              profileOf={(id) => controllerRef.current?.indicators.lastProfile(id)}
+              onClose={() => setProfileOpen(false)}
+            />
+          )}
           {ready && pinned && (
             <InspectorPanel
               bar={pinned}

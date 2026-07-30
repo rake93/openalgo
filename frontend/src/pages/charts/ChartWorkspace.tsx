@@ -26,6 +26,7 @@ import {
 } from '@/api/indicators'
 import { DataWindow } from '@/components/charts/DataWindow'
 import { InspectorPanel } from '@/components/charts/InspectorPanel'
+import { ProfilePanel } from '@/components/charts/ProfilePanel'
 import { useInspectorPin } from '@/lib/charts/use-inspector-pin'
 import { DirectionPanel } from '@/components/charts/workspace/DirectionPanel'
 import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
@@ -127,6 +128,7 @@ export default function ChartWorkspace() {
   const [libraryIndicators, setLibraryIndicators] = useState<LibraryIndicatorInstance[]>([])
   const [crosshair, setCrosshair] = useState<CrosshairData | null>(null)
   const [dataWindow, setDataWindow] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
   /**
    * Bar pinned for the series inspector (M8); see `useInspectorPin`.
    *
@@ -677,6 +679,14 @@ export default function ChartWorkspace() {
 
           {dataWindow && <DataWindow data={crosshair} inspectHint />}
 
+          {profileOpen && (
+            <ProfilePanel
+              indicators={indicators}
+              profileOf={(id) => controllerRef.current?.indicators.lastProfile(id)}
+              onClose={() => setProfileOpen(false)}
+            />
+          )}
+
           {pinned && (
             <InspectorPanel
               bar={pinned}
@@ -815,6 +825,13 @@ export default function ChartWorkspace() {
             className={cn('hover:text-foreground', dataWindow && 'text-primary')}
           >
             Data window
+          </button>
+          <button
+            type="button"
+            onClick={() => setProfileOpen((v) => !v)}
+            className={cn('hover:text-foreground', profileOpen && 'text-primary')}
+          >
+            Profile
           </button>
           <Link to="/charts/editor" className="hover:text-foreground">
             ƒx Editor

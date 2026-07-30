@@ -60,6 +60,7 @@ import {
 import { type DirectionVerdict, readDirection } from './direction'
 import { DrawingManager, type DrawingSnapshot } from './drawing'
 import { EventMarkerLayer, expiryEvent, type TradeRow, tradeMarkers } from './event-markers'
+import { isSilentFallback } from './indicator-profile'
 import {
   type DataWindowRow,
   IndicatorHost,
@@ -806,7 +807,15 @@ export class ChartWorkspaceController {
       live.add(inst.instanceId)
       const pane = inst.pane ?? 0
       let legend = this.indicatorLegends.get(inst.instanceId)
-      const params = summariseInputs(inst.inputs)
+      // §13.3: mark an indicator whose last LIVE TICK lost the incremental path.
+      // `PaneLegend` (openalgo-charts) has no badge or tooltip API, so the marker
+      // rides the params line and CARRIES ITS OWN SHORT REASON rather than
+      // relying on a hover the legend cannot show. The profile panel has detail.
+      const profile = this.indicators.lastProfile(inst.instanceId)
+      const flagged = profile !== undefined && isSilentFallback(profile)
+      const params = flagged
+        ? `${summariseInputs(inst.inputs)}  ⚠ full recompute`
+        : summariseInputs(inst.inputs)
       if (!legend) {
         legend = new PaneLegend({
           id: `os:${inst.instanceId}`,

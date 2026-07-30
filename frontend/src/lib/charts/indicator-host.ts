@@ -13,6 +13,7 @@ import type {
   IndicatorManifestEntry,
   IndicatorOutput,
   InspectResult,
+  PerfStats,
   IRProgram,
   OHLCVBar,
 } from '@openalgo/openscript'
@@ -29,6 +30,7 @@ import { OpenAlgoChartsRenderer } from '@openalgo/openscript/render/openalgo-cha
 import type { EngineWorkerClient } from '@openalgo/openscript/worker-client'
 import type { Bar, Chart, SeriesApi } from 'openalgo-charts'
 import { getEngine } from './engine'
+import { isSilentFallback, type IndicatorProfile } from './indicator-profile'
 
 /** Per-output style override, applied on the main thread before rendering. */
 export interface OutputStyleOverride {
@@ -236,6 +238,15 @@ export class IndicatorHost {
   private readonly lastOutputs = new Map<string, IndicatorOutput[]>()
   /** Latest session run counter per instance (M8). */
   private readonly epochs = new Map<string, number>()
+  /**
+   * Last run telemetry per instance (M8 §13.3).
+   *
+   * The engine has always sent this on every run and the host discarded it, so a
+   * session that silently reverted from the incremental path to full recompute
+   * was invisible. Kept, not aggregated: the last run answers "is incremental
+   * working" completely.
+   */
+  private readonly profiles = new Map<string, IndicatorProfile>()
   /** Per-instance save queue. Await-before-commit is only sound if calls do not
    *  overlap: two in flight can commit out of order, letting an older rejection
    *  clobber a newer success. Both call sites are user-driven saves, so a rapid
@@ -285,6 +296,42 @@ export class IndicatorHost {
    * out of range) comes back inside `result` as a named reason instead, because
    * that is a fact about the session worth showing the user.
    */
+  /**
+   * Record one run's epoch and telemetry, however the event reached us.
+   *
+   * BOTH arrival paths must land here. The worker client routes a
+   * `session-outputs` to `onOutputs` listeners only when `requestId === null`;
+   * a seed, a settings change and a history reload arrive instead as the RESOLVED
+   * VALUE of createSession/setInputs. Recording in the listener alone left a
+   * freshly loaded chart with no epoch and no profile until its first tick —
+   * exactly the moment someone opens a panel to look.
+   */
+  private noteRun(
+    sessionId: string,
+    event: { epoch: number; perf: PerfStats },
+    scope: 'full' | 'update'
+  ): void {
+    this.epochs.set(sessionId, event.epoch)
+    const next: IndicatorProfile = { scope, perf: event.perf }
+    const before = this.profiles.get(sessionId)
+    this.profiles.set(sessionId, next)
+
+    // EDGE-TRIGGERED, on purpose. Consumers redraw the legend on `onIndicators`,
+    // and a run happens on every tick — emitting each time would repaint the
+    // whole legend stack continuously for a value that almost never changes.
+    // Emitting only when the flagged state FLIPS keeps the badge live at no
+    // per-tick cost.
+    const was = before !== undefined && isSilentFallback(before)
+    if (was !== isSilentFallback(next)) this.emit()
+  }
+
+  /** This instance's last run telemetry (M8 §13.3), or undefined before its
+   *  first run. Pair with `isSilentFallback` to decide whether it is worth
+   *  drawing attention to. */
+  lastProfile(instanceId: string): IndicatorProfile | undefined {
+    return this.profiles.get(instanceId)
+  }
+
   /** The run counter of the values currently drawn for this instance (M8).
    *  Compare with an inspect answer's epoch to know whether it still holds. */
   lastEpoch(instanceId: string): number | undefined {
@@ -392,7 +439,7 @@ export class IndicatorHost {
       this.offOutputs = this.engine.onOutputs((e) => {
         // M8: remember the run counter each session's values came from, so the
         // inspector can say when an answer no longer describes what is drawn.
-        this.epochs.set(e.sessionId, e.epoch)
+        this.noteRun(e.sessionId, e, e.scope)
         this.applyOutputs(e.sessionId, e.outputs, e.scope)
       })
       this.offErrors = this.engine.onError((e) => {
@@ -609,6 +656,7 @@ export class IndicatorHost {
       const result = await this.engine.setInputs(instanceId, next)
       instance.inputs = next
       delete instance.error
+      this.noteRun(instanceId, result, 'full')
       this.applyOutputs(instanceId, result.outputs, 'full')
       this.emit()
     } catch (err) {
@@ -715,6 +763,7 @@ export class IndicatorHost {
     this.instances.delete(instanceId)
     this.lastOutputs.delete(instanceId)
     this.epochs.delete(instanceId)
+    this.profiles.delete(instanceId)
     await this.engine?.disposeSession(instanceId).catch(() => undefined)
     const renderer = this.renderers.get(instanceId)
     this.renderers.delete(instanceId)
@@ -751,6 +800,7 @@ export class IndicatorHost {
     this.instances.clear()
     this.lastOutputs.clear()
     this.epochs.clear()
+    this.profiles.clear()
     // Any save still in flight resolves to a no-op (its instance is gone), so
     // dropping the chain here just releases the retained promises.
     this.saveQueue.clear()
@@ -796,6 +846,7 @@ export class IndicatorHost {
           )
         }
       }
+      this.noteRun(instance.instanceId, result, 'full')
       this.applyOutputs(instance.instanceId, result.outputs, 'full')
     } catch (err) {
       instance.error = err instanceof Error ? err.message : String(err)
