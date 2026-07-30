@@ -25,6 +25,7 @@ import {
 } from '@/api/indicators'
 import { type AlertCondition, CreateAlertDialog } from '@/components/charts/CreateAlertDialog'
 import { DataWindow } from '@/components/charts/DataWindow'
+import { InspectorPanel, type PinnedBar } from '@/components/charts/InspectorPanel'
 import { OpenScriptEditor } from '@/components/charts/OpenScriptEditor'
 import { ScriptMenu } from '@/components/charts/ScriptMenu'
 import { VersionHistoryDialog } from '@/components/charts/VersionHistoryDialog'
@@ -92,7 +93,39 @@ export default function ChartEditor() {
   const [alertConditions, setAlertConditions] = useState<AlertCondition[]>([])
   const [showAlerts, setShowAlerts] = useState(false)
   const [crosshair, setCrosshair] = useState<CrosshairData | null>(null)
+  /**
+   * Bar pinned for the series inspector (M8).
+   *
+   * Pinned, not crosshair-following: reaching a control on a hover-following
+   * panel drags the crosshair with it, so the panel would answer about a
+   * different bar than the one the user was looking at. `i` pins whatever is
+   * under the pointer at that instant.
+   */
+  const [pinned, setPinned] = useState<PinnedBar | null>(null)
   const splitRef = useRef<HTMLDivElement | null>(null)
+  // `i` pins the crosshair bar; Escape closes. Ignored while typing, so the key
+  // never steals a character from the script editor or the symbol search.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      const typing =
+        el?.isContentEditable === true ||
+        /^(INPUT|TEXTAREA|SELECT)$/.test(el?.tagName ?? '') ||
+        el?.closest('.cm-editor') != null
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === 'Escape') {
+        setPinned(null)
+        return
+      }
+      if (e.key !== 'i' && e.key !== 'I') return
+      setCrosshair((c) => {
+        if (c) setPinned({ index: c.index, time: c.time, rows: c.rows })
+        return c
+      })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   const [editorPct, setEditorPct] = useState(42)
   const onDividerDown = useCallback((e: ReactMouseEvent) => {
     e.preventDefault()
@@ -570,7 +603,19 @@ export default function ChartEditor() {
 
         <div className="relative min-h-0 flex-1">
           <div ref={containerRef} className="absolute inset-0" />
-          {ready && <DataWindow data={crosshair} />}
+          {ready && <DataWindow data={crosshair} inspectHint />}
+          {ready && pinned && (
+            <InspectorPanel
+              bar={pinned}
+              inspect={(instanceId, outputId, barIndex) =>
+                controllerRef.current
+                  ? controllerRef.current.indicators.inspect(instanceId, outputId, barIndex)
+                  : Promise.resolve(null)
+              }
+              lastEpoch={(instanceId) => controllerRef.current?.indicators.lastEpoch(instanceId)}
+              onClose={() => setPinned(null)}
+            />
+          )}
           {noApiKey && (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
               Generate an API key at /apikey to use the editor preview.

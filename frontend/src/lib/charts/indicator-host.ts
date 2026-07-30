@@ -12,6 +12,7 @@ import type {
   CalendarResolution,
   IndicatorManifestEntry,
   IndicatorOutput,
+  InspectResult,
   IRProgram,
   OHLCVBar,
 } from '@openalgo/openscript'
@@ -19,6 +20,7 @@ import {
   datasetFromBars,
   datasetKey,
   descriptorFromIR,
+  outputIndexFromId,
   reconcileInputs,
   toDatasetBuffers,
 } from '@openalgo/openscript'
@@ -46,7 +48,16 @@ export type StyleOverrides = Record<string, OutputStyleOverride>
 export interface DataWindowValue {
   id: string
   title: string
-  value: number
+  /**
+   * `null` = the output is `na` at this bar.
+   *
+   * These rows used to be DROPPED. That was exactly backwards for diagnosis: an
+   * indicator that plots nothing at the crosshair bar is the case the series
+   * inspector (M8) exists to explain, and hiding the row left the user with
+   * nothing to point at precisely when they needed it. The row is kept and
+   * rendered as a dash.
+   */
+  value: number | null
   color: string
 }
 
@@ -223,6 +234,8 @@ export class IndicatorHost {
   private readonly renderers = new Map<string, OpenAlgoChartsRenderer>()
   /** Last full outputs per session — lets a style change re-render with no worker recompute. */
   private readonly lastOutputs = new Map<string, IndicatorOutput[]>()
+  /** Latest session run counter per instance (M8). */
+  private readonly epochs = new Map<string, number>()
   /** Per-instance save queue. Await-before-commit is only sound if calls do not
    *  overlap: two in flight can commit out of order, letting an older rejection
    *  clobber a newer success. Both call sites are user-driven saves, so a rapid
@@ -259,6 +272,38 @@ export class IndicatorHost {
     return this.calendar
   }
 
+  /**
+   * Series inspector (M8): what is this output worth at `barIndex`, and if it is
+   * `na`, where did the `na` come from.
+   *
+   * `outputId` is the id the chart and data window already carry; the engine's
+   * own `outputIndexFromId` maps it back to the IR output index, so the
+   * `out_${idx}` format stays in one repo.
+   *
+   * Returns `null` — never a fabricated answer — when the instance is unknown or
+   * the id does not name an output. A refusal the ENGINE makes (a builtin, a bar
+   * out of range) comes back inside `result` as a named reason instead, because
+   * that is a fact about the session worth showing the user.
+   */
+  /** The run counter of the values currently drawn for this instance (M8).
+   *  Compare with an inspect answer's epoch to know whether it still holds. */
+  lastEpoch(instanceId: string): number | undefined {
+    return this.epochs.get(instanceId)
+  }
+
+  async inspect(
+    instanceId: string,
+    outputId: string,
+    barIndex: number
+  ): Promise<{ epoch: number; result: InspectResult } | null> {
+    if (!this.instances.has(instanceId)) return null
+    const outputIndex = outputIndexFromId(outputId)
+    if (outputIndex === null) return null
+
+    const engine = await this.ensureEngine()
+    return engine.inspect({ sessionId: instanceId, outputIndex, barIndex })
+  }
+
   /** Per-indicator output values at a bar index — feeds the crosshair data window. */
   valuesAtIndex(index: number): DataWindowRow[] {
     const rows: DataWindowRow[] = []
@@ -280,8 +325,15 @@ export class IndicatorHost {
         } else {
           continue
         }
-        if (value === undefined || Number.isNaN(value)) continue
-        values.push({ id: o.id, title: o.title, value, color })
+        // A bar outside the series is genuinely nothing to show; `na` INSIDE it
+        // is a fact worth showing, and the one the inspector explains.
+        if (value === undefined) continue
+        values.push({
+          id: o.id,
+          title: o.title,
+          value: Number.isNaN(value) ? null : value,
+          color,
+        })
       }
       if (values.length > 0) rows.push({ instanceId: inst.instanceId, name: inst.name, values })
     }
@@ -337,9 +389,12 @@ export class IndicatorHost {
   private async ensureEngine(): Promise<EngineWorkerClient> {
     if (!this.engine) {
       this.engine = await getEngine()
-      this.offOutputs = this.engine.onOutputs((e) =>
+      this.offOutputs = this.engine.onOutputs((e) => {
+        // M8: remember the run counter each session's values came from, so the
+        // inspector can say when an answer no longer describes what is drawn.
+        this.epochs.set(e.sessionId, e.epoch)
         this.applyOutputs(e.sessionId, e.outputs, e.scope)
-      )
+      })
       this.offErrors = this.engine.onError((e) => {
         if (e.sessionId) {
           const inst = this.instances.get(e.sessionId)
@@ -659,6 +714,7 @@ export class IndicatorHost {
     if (!instance) return false
     this.instances.delete(instanceId)
     this.lastOutputs.delete(instanceId)
+    this.epochs.delete(instanceId)
     await this.engine?.disposeSession(instanceId).catch(() => undefined)
     const renderer = this.renderers.get(instanceId)
     this.renderers.delete(instanceId)
@@ -694,6 +750,7 @@ export class IndicatorHost {
     this.renderers.clear()
     this.instances.clear()
     this.lastOutputs.clear()
+    this.epochs.clear()
     // Any save still in flight resolves to a no-op (its instance is gone), so
     // dropping the chain here just releases the retained promises.
     this.saveQueue.clear()
@@ -751,11 +808,19 @@ export class IndicatorHost {
     outputs: IndicatorOutput[],
     scope: 'full' | 'update'
   ): void {
+    // Cache the full snapshot FIRST — before the renderer guard.
+    //
+    // This is data, not rendering: it backs the crosshair data window and the
+    // series inspector, and a style change re-renders from it without a worker
+    // recompute. Caching it below the guard tied that cache to a chart binding,
+    // so a session whose renderer did not exist yet had no data-window values at
+    // all. Lifecycle is unchanged — `remove` deletes the entry and `clear` drops
+    // them all, both keyed by the same sessionId.
+    if (scope === 'full') this.lastOutputs.set(sessionId, outputs)
+
     const renderer = this.renderers.get(sessionId)
     if (!renderer) return
     const instance = this.instances.get(sessionId)
-    // Cache the full snapshot so a later style change can re-render without a worker recompute.
-    if (scope === 'full') this.lastOutputs.set(sessionId, outputs)
     // Hidden by the legend's eye, or off-timeframe (Visibility tab): drop every
     // series. The cached outputs stay, so unhiding needs no recompute.
     if (instance && (instance.hidden || !this.instanceVisibleAtInterval(instance))) {

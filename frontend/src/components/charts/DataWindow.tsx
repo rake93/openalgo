@@ -7,8 +7,8 @@
 
 import type { CrosshairData } from '@/lib/charts/workspace'
 
-function fmt(n: number): string {
-  if (!Number.isFinite(n)) return '—'
+function fmt(n: number | null): string {
+  if (n === null || !Number.isFinite(n)) return '—'
   return n.toLocaleString(undefined, { maximumFractionDigits: 4 })
 }
 
@@ -18,7 +18,15 @@ function whenLabel(time: number | null): string {
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
 }
 
-export function DataWindow({ data }: { data: CrosshairData | null }) {
+export function DataWindow({
+  data,
+  inspectHint = false,
+}: {
+  data: CrosshairData | null
+  /** Show the "press i to inspect" affordance (M8). Off unless the surface
+   *  actually wires the inspector up. */
+  inspectHint?: boolean
+}) {
   if (!data?.bar) return null
   const { bar, rows } = data
   const up = bar.close >= bar.open
@@ -59,11 +67,20 @@ export function DataWindow({ data }: { data: CrosshairData | null }) {
                     />
                     <span className="truncate text-muted-foreground">{v.title}</span>
                   </span>
-                  <span>{fmt(v.value)}</span>
+                  <span className={v.value === null ? 'text-muted-foreground' : undefined}>
+                    {fmt(v.value)}
+                  </span>
                 </div>
               ))}
             </div>
           ))}
+        </div>
+      )}
+
+      {inspectHint && rows.length > 0 && (
+        <div className="mt-2 border-t border-border/60 pt-1.5 text-[10px] text-muted-foreground">
+          press <kbd className="rounded border border-border px-1 font-sans">i</kbd> to inspect this
+          bar
         </div>
       )}
     </div>

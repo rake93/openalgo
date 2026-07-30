@@ -120,6 +120,9 @@ function errorText(err: unknown): string {
 /** Crosshair snapshot: the hovered bar plus each indicator's reading there. */
 export interface CrosshairData {
   time: number | null
+  /** Dataset bar index under the crosshair — what the series inspector (M8)
+   *  needs to ask the engine about this bar. */
+  index: number
   bar: Bar
   rows: DataWindowRow[]
 }
@@ -667,7 +670,7 @@ export class ChartWorkspaceController {
         cb(null)
         return
       }
-      cb({ time: e.time, bar: e.bar, rows: this.indicators.valuesAtIndex(e.index) })
+      cb({ time: e.time, index: e.index, bar: e.bar, rows: this.indicators.valuesAtIndex(e.index) })
     })
 
     // One click channel: the trading layer claims its own ids, the pane legends
@@ -889,7 +892,15 @@ export class ChartWorkspaceController {
     for (const [instanceId, legend] of this.indicatorLegends) {
       const row = byInstance.get(instanceId)
       legend.setValues(
-        row ? row.values.map((v) => ({ text: this.fmt(v.value), color: v.color })) : []
+        row
+          ? row.values.map((v) => ({
+              // `null` = the output is `na` at this bar. The data window keeps
+              // these rows now (they are what the series inspector explains), so
+              // the legend has to render them rather than format `null` as a price.
+              text: v.value === null ? '—' : this.fmt(v.value),
+              color: v.color,
+            }))
+          : []
       )
     }
   }
