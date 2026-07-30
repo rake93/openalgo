@@ -55,6 +55,15 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS2021": "extend.bars requires a bars= count",
     "OS2022": "mitigated_color= applies only to a zone terminated by terminate.touch",
     "OS2023": "invalid drawing-output argument",
+    # Semantic — request.security, same-symbol HTF (Phase 3 / register C4).
+    # Byte-identical to the TS table and pinned by fixtures/htf/surface.json: the
+    # shared conformance corpora assert diagnostic CODES only, so the message TEXT
+    # needs its own guard or "identical messages" stays a hand-maintained claim.
+    "OS2024": "request.security symbol must be syminfo.tickerid (same-symbol only)",
+    "OS2025": "request.security timeframe must be a compile-time constant string",
+    "OS2026": "request.security timeframe string is not a valid timeframe",
+    "OS2027": "request.security expression must be a source series (optionally with a [n] offset)",
+    "OS2028": "request.security lookahead must be barmerge.lookahead_off",
     # Limits
     "OS3001": "Source exceeds maximum size",
     "OS3002": "Program exceeds maximum AST nodes",

@@ -319,11 +319,38 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
     "terminate": frozenset(
         {"close_above", "close_below", "cross_above", "cross_below", "touch", "new_session"}
     ),
+    # request.security, same-symbol HTF (Phase 3): `syminfo.tickerid` is the
+    # same-symbol marker; `barmerge.lookahead_*` selects the merge policy.
+    #
+    # `lookahead_on` and `gaps_on` are listed DELIBERATELY even though only
+    # `lookahead_off` is supported. Both sides must KNOW the identifier so
+    # `barmerge.lookahead_on` resolves and then fails the semantic check with
+    # OS2028 ("must be barmerge.lookahead_off"). Omitting it would produce OS2001
+    # "unknown identifier" instead, which says nothing about lookahead being
+    # unsupported on purpose.
+    "syminfo": frozenset({"tickerid"}),
+    "barmerge": frozenset({"lookahead_off", "lookahead_on", "gaps_off", "gaps_on"}),
 }
+
+#: Value-returning namespaced calls that are neither ta/math/kernels kernels nor
+#: constant-namespace members. `request.security` lowers to `htf` IR nodes.
+REQUEST_FUNCTIONS = frozenset({"security"})
+
+#: Source series a same-symbol HTF `request.security` may sample (design §1). A
+#: kind missing here means a script that compiles in the browser is rejected on the
+#: server — the G3 failure mode this port exists to close.
+HTF_SOURCE_KINDS = frozenset(
+    {"open", "high", "low", "close", "volume", "hl2", "hlc3", "ohlc4", "time"}
+)
 
 KNOWN_NAMESPACES = frozenset(
     {
         "ta", "math", "kernels", "input", "color", "shape", "location", "size", "plot", "alert",
         "line", "extend", "terminate",
+        # Phase 3 / C4. NOTE: the TS set is a SUPERSET — it also carries
+        # editor-only namespaces (`timeframe`) that drive completion and hover but
+        # never reach compilation. The shared fixture therefore checks membership of
+        # the namespaces THIS feature adds, not set equality.
+        "request", "syminfo", "barmerge",
     }
 )
