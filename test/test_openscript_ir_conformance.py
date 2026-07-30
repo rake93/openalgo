@@ -127,15 +127,19 @@ def test_a_reordered_output_is_a_difference():
     assert canonical_outputs(swapped) != canonical_outputs(golden["ir"])
 
 
-def test_request_security_is_a_recorded_compiler_asymmetry():
-    """`request.security` compiles on the TS side and does NOT on the server.
+def test_request_security_compiles_on_the_server_too():
+    """The INVERSION of a recorded asymmetry (register C4).
 
-    This is the one divergence that changes what a user can do, so it is pinned
-    here rather than left to be discovered on a live chart: an HTF script
-    previews in the editor, then saves with a null `compiled_ir`, and is
-    therefore not reopenable. No shared fixture exercises HTF for exactly this
-    reason. If the Python port gains `request.security`, this test fails and the
-    limitation should be lifted everywhere it is documented.
+    This test used to assert that `request.security` compiled on the TS side and
+    NOT here, and its own docstring carried the instruction: "If the Python port
+    gains request.security, this test fails and the limitation should be lifted
+    everywhere it is documented." The port landed, this test failed, and the
+    limitation was lifted -- so the assertion is now the parity it replaced.
+
+    Why it mattered: an HTF script used to preview correctly in the editor, save
+    with `compiled_ir: None`, and then be permanently unaddable to a chart and
+    unrestorable into a layout (layouts pin a versionId). It also never fired a
+    server-side alert, because the headless sweep runs on this compiler.
     """
     source = (
         'indicator("HTF", overlay=true)\n'
@@ -143,5 +147,9 @@ def test_request_security_is_a_recorded_compiler_asymmetry():
         'plot(htfClose, "H")\n'
     )
     result = openscript.compile(source)
-    assert result.ir is None
-    assert "OS2002" in {d.code for d in result.diagnostics}
+    assert result.ir is not None, "the Python request.security port has regressed"
+    assert [d.code for d in result.diagnostics if d.severity == "error"] == []
+    htf = [n for n in result.ir["nodes"] if n["op"] == "htf"]
+    assert len(htf) == 1, f"expected one htf node, got {len(htf)}"
+    assert htf[0]["timeframe"] == {"unit": "min", "multiple": 60}
+    assert "request-security" in result.ir["header"]["requiredFeatures"]

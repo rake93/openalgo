@@ -56,6 +56,12 @@ COST_MODEL_VERSION = 1
 _SERIES_BYTES_PER_BAR = 8
 # Fixed footprint charged for a scalar node (const / non-source input).
 _SCALAR_BYTES = 8
+#: Per-bar cost charged to an `htf` (request.security) node: bucketing +
+#: per-bucket aggregation + alignment are a small constant number of passes over
+#: the base bars. Upper-bounds real work so `real <= charged <= estimate`
+#: (Phase 3 design §7). NO COST_MODEL_VERSION bump: purely additive, every
+#: existing cost is unchanged.
+_HTF_COST_PER_BAR = 4
 # Conservative window length when the arg is neither a const nor an input: a
 # window is a lookback, and lookbacks beyond maximumLookback are rejected by
 # the runtime — so this is a true upper bound.
@@ -331,6 +337,16 @@ def cost_of(node: dict, ir: dict) -> dict:
         if decl is None:
             raise ValueError(f"unknown input id: {input_id}")
         return _series_element() if decl["type"] == "source" else _scalar()
+    if op == "htf":
+        # Resample (bucketing) + per-bucket aggregation + alignment: a few O(n)
+        # passes per node. The per-timeframe resample is SHARED across nodes, so a
+        # barCount-per-node charge upper-bounds real work (Phase 3 design §7).
+        per_bar = _lit(_HTF_COST_PER_BAR)
+        return {
+            "perBarCost": per_bar,
+            "totalCost": _mul(per_bar, _bar_count()),
+            "bytesCost": _mul(_lit(_SERIES_BYTES_PER_BAR), _bar_count()),
+        }
     if op in ("binop", "unop", "select", "hist", "nz"):
         return _series_element()
     if op == "call":

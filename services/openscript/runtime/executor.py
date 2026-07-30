@@ -18,6 +18,22 @@ from services.openscript.limits import SCRIPT_LIMITS
 
 from .admit import IRAdmissionError, admit_ir, resolve_plan_cost
 from .calendar import DAY_SECONDS, IST_CALENDAR, SessionCalendar, local_day_key
+from .htf_resample import aggregate_buckets, align_htf_range, build_buckets
+from .timeframe import (
+    Timeframe,
+    infer_base_interval_seconds,
+    parse_timeframe,
+    timeframe_rank_seconds,
+)
+
+
+class IRHtfBelowBase(Exception):
+    """`IR_HTF_BELOW_BASE` — an HTF request finer than the base bar interval.
+
+    A runtime admission error, not a source diagnostic: admission sees only the IR
+    and has no dataset, so the base interval cannot be known until execution.
+    """
+
 from .operator_cost import cost_family_of
 from .plancost import (
     DRAW_BASE_OPS,
@@ -371,7 +387,69 @@ def _math_call(fn, args):
     return f(a, b) if _is_series(a) or _is_series(b) else float(f(a, b))
 
 
-def _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar: SessionCalendar):
+def _resolve_htf_timeframe(node, inputs, decls):
+    """The EFFECTIVE timeframe of an htf node at run time.
+
+    A node carrying `timeframeInputId` prefers the live input value, then that
+    input's declared default, then the node's own baked timeframe. That order is
+    what lets a settings change re-resample without a recompile.
+    """
+    input_id = node.get("timeframeInputId")
+    baked = Timeframe(node["timeframe"]["unit"], node["timeframe"]["multiple"])
+    if input_id is None:
+        return baked
+    raw = inputs.get(input_id)
+    if raw is None:
+        decl = decls.get(input_id)
+        raw = decl.get("defaultValue") if decl else None
+    parsed = parse_timeframe(raw) if isinstance(raw, str) else None
+    return parsed or baked
+
+
+def _assert_htf_above_base(tf, dataset) -> None:
+    """Reject a timeframe FINER than the base data (Phase-3 design §2).
+
+    The base interval is a runtime property -- admission sees only the IR, with no
+    dataset -- which is why this guard lives here and not there.
+    """
+    time = dataset.get("time")
+    base_interval = infer_base_interval_seconds(time) if time is not None else None
+    if base_interval is not None and timeframe_rank_seconds(tf) < base_interval:
+        raise IRHtfBelowBase(
+            f"IR_HTF_BELOW_BASE: request.security timeframe {tf.unit}:{tf.multiple} "
+            "is below the base bar interval"
+        )
+
+
+def _eval_htf(node, dataset, htf_cache, inputs, decls, calendar):
+    """`request.security` (same-symbol HTF).
+
+    Resamples the base dataset into the node's timeframe -- cached per (timeframe,
+    calendar) so N nodes on one timeframe resample ONCE -- then aligns through the
+    shared `align_htf_range`, the same function a bounded recompute would call, so
+    the two cannot drift.
+    """
+    if htf_cache is None:
+        htf_cache = {}
+    tf = _resolve_htf_timeframe(node, inputs, decls)
+    key = f"{tf.unit}:{tf.multiple}|calendar={calendar.semantic_key}"
+    entry = htf_cache.get(key)
+    if entry is None:
+        _assert_htf_above_base(tf, dataset)
+        bucket_index, count = build_buckets(dataset["time"], tf, calendar)
+        agg = aggregate_buckets(dataset, bucket_index, count)
+        entry = (bucket_index, agg)
+        htf_cache[key] = entry
+    bucket_index, agg = entry
+    out = np.zeros(len(bucket_index), dtype=float)
+    if len(bucket_index):
+        align_htf_range(
+            node["source"], node["offset"], dataset, bucket_index, agg, out, 0, len(out) - 1
+        )
+    return out
+
+
+def _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar: SessionCalendar, htf_cache=None):
     # `calendar` is REQUIRED, mirroring the TS `evalNode`: a default here is how a
     # wrong calendar would silently reach production.
     op = node["op"]
@@ -396,6 +474,8 @@ def _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar: Sess
         return _nz(values[node["arg"]], node.get("replacement", 0), n)
     if op == "scan":
         return _eval_scan(node, values, n)
+    if op == "htf":
+        return _eval_htf(node, dataset, htf_cache, inputs, decls, calendar)
     return _call(node, values, ta_cache, n)
 
 
@@ -976,10 +1056,15 @@ def execute_ir(
     nodes = ir["nodes"]
     values: list = [None] * len(nodes)
     ta_cache: dict = {}
+    # Per-RUN resample cache, keyed by (timeframe, calendar). Built fresh here, like
+    # the TS `createExecCaches()`: two htf nodes on the same timeframe resample once.
+    htf_cache: dict = {}
     for node in nodes:
         if budget is not None:
             budget.step(node)
-        value = _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar)
+        value = _eval_node(
+            node, values, dataset, inputs, decls, n, ta_cache, calendar, htf_cache
+        )
         values[node["id"]] = value
         # Deterministic series-buffer accounting + wall-clock checkpoint after
         # each expensive kernel/scan node (design §7 cancellation granularity).

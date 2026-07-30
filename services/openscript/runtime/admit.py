@@ -270,7 +270,7 @@ _MB = 1024 * 1024
 
 # Keep in sync with the executor's _eval_node dispatch (executor.py).
 _KNOWN_NODE_OPS = frozenset(
-    {"source", "const", "input", "binop", "unop", "select", "hist", "nz", "call", "scan"}
+    {"source", "const", "input", "binop", "unop", "select", "hist", "nz", "call", "scan", "htf"}
 )
 # Keep in sync with _collect_outputs (executor.py).
 _KNOWN_OUTPUT_KINDS = frozenset(
@@ -292,7 +292,7 @@ _KNOWN_OUTPUT_KINDS = frozenset(
 # (Pri 4) — the level/zone materializer (executor._materialize_drawing) now
 # executes, so a well-formed drawing IR ADMITS + materializes. Mirror of the TS
 # SUPPORTED_FEATURES.
-SUPPORTED_FEATURES: frozenset[str] = frozenset({"drawing-streams"})
+SUPPORTED_FEATURES: frozenset[str] = frozenset({"drawing-streams", "request-security"})
 
 # Output kinds gated behind an IR feature — mirror of the TS GATED_OUTPUT_FEATURE.
 _GATED_OUTPUT_FEATURE = {"level": "drawing-streams", "zone": "drawing-streams"}

@@ -211,6 +211,27 @@ def analyze_finality(ir: dict) -> list[Diagnostic]:
                             "span": ir["meta"]["spans"].get(node["id"], dict(_ZERO_SPAN)),
                         }
                     ]
+        elif op == "htf":
+            # Same-symbol HTF (request.security): the FORMING bucket (offset 0)
+            # repaints until it closes -> provisional; a CLOSED bucket (offset >= 1)
+            # is settled market data -> confirmed (Phase 3 design §4).
+            #
+            # confirmationDelay is 0 because the delay is VARIABLE: it resolves at
+            # the HTF bucket boundary, not after a fixed number of base bars, so
+            # there is no constant to report. This is the first genuinely variable
+            # delay in the corpus -- a pivot's delay is a constant `rightbars`.
+            if node["offset"] == 0:
+                f = "provisional"
+                sources = sources + [
+                    {
+                        "operator": "request.security",
+                        "confirmationDelay": 0,
+                        "nodeId": node["id"],
+                        "span": ir["meta"]["spans"].get(node["id"], dict(_ZERO_SPAN)),
+                    }
+                ]
+            else:
+                f = "confirmed"
         else:
             for a in _input_ids_of(node):
                 f = lub(f, node_fin[a])

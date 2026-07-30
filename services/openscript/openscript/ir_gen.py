@@ -16,6 +16,10 @@ import re
 
 from ..limits import SCRIPT_LIMITS
 from ..runtime.plancost import estimate_plan_cost
+
+# The compiler resolves a timeframe with the SAME parser the runtime resampler uses,
+# so lowering can never produce a timeframe the executor cannot bucket (register C4).
+from ..runtime.timeframe import parse_timeframe
 from . import ast_nodes as ast
 from .builtins_table import CONTEXT_MEMBERS, KERNELS_FUNCTIONS, TA_FUNCTIONS, ta_overload
 from .diagnostics import Diagnostic, Span, make_diagnostic
@@ -200,6 +204,22 @@ def _is_plot_binding(e: ast.Expr) -> bool:
     )
 
 
+def _tf_dict(tf) -> dict:
+    """A parsed Timeframe -> the IR's plain-dict shape."""
+    return {"unit": tf.unit, "multiple": tf.multiple}
+
+
+def _required_features(gen) -> list[str]:
+    """Header features, in the SAME order the TS compiler pushes them, because the
+    shared fixtures compare the serialized header byte for byte."""
+    features: list[str] = []
+    if gen._uses_drawings:
+        features.append("drawing-streams")
+    if gen._uses_request_security:
+        features.append("request-security")
+    return features
+
+
 class IRGenerator:
     def __init__(self, source: str) -> None:
         self._source = source
@@ -224,6 +244,7 @@ class IRGenerator:
         # Set when a `plotlevel`/`plotzone` output is lowered — drives the
         # `drawing-streams` requiredFeatures flag (design 0.5 §8).
         self._uses_drawings = False
+        self._uses_request_security = False
 
     # ── node emission (CSE) ─────────────────────────────────────────────────────
 
@@ -281,6 +302,26 @@ class IRGenerator:
             self._bind(stmt.name, self._lower_scan(stmt))
         elif kind == "TupleDecl":
             call = stmt.value
+            callee = call.callee
+            # `[a, b] = request.security(sym, tf, [S1, S2])` -> one htf node per
+            # element, all sharing the resolved timeframe (=> ONE resample).
+            if (
+                getattr(callee, "type", None) == "Member"
+                and getattr(callee.object, "type", None) == "Identifier"
+                and callee.object.name == "request"
+                and callee.property == "security"
+            ):
+                self._uses_request_security = True
+                positional = [a for a in call.args if getattr(a, "name", None) is None]
+                tf = self._resolve_htf_timeframe(
+                    positional[1].value if len(positional) > 1 else None
+                )
+                arr = positional[2].value if len(positional) > 2 else None
+                elements = arr.elements if arr is not None and arr.type == "ArrayLiteral" else []
+                for i, n in enumerate(stmt.names):
+                    el = elements[i] if i < len(elements) else None
+                    self._bind(n.name, self._htf_node_for(el, tf, call.span))
+                return
             fn = call.callee.property
             spec = TA_FUNCTIONS.get(fn, {"outputMap": []})
             for i, n in enumerate(stmt.names):
@@ -399,6 +440,8 @@ class IRGenerator:
                 return self._lower_input(call, None)
             if ns == "color" and fn == "from_gradient":
                 return self._lower_from_gradient(call)
+            if ns == "request" and fn == "security":
+                return self._lower_request_security(call)
             # constant-namespace call (e.g. color.new) — fold to a palette color
             folded = _resolve_const(call)
             if isinstance(folded, str) and folded.startswith("#"):
@@ -1001,6 +1044,75 @@ class IRGenerator:
         ci = self._color_input_id_of(expr)
         return ci[1] if ci is not None else None
 
+    def _lower_request_security(self, call: ast.CallExpr) -> int:
+        """`request.security(syminfo.tickerid, tf, source[n])` -> one `htf` IR node.
+
+        Single-series form; the tuple/array form is lowered in the TupleDecl branch
+        so its elements can share one resolved timeframe (and therefore one
+        resample).
+        """
+        self._uses_request_security = True
+        positional = [a for a in call.args if getattr(a, "name", None) is None]
+        tf = self._resolve_htf_timeframe(positional[1].value if len(positional) > 1 else None)
+        return self._htf_node_for(
+            positional[2].value if len(positional) > 2 else None, tf, call.span
+        )
+
+    def _resolve_htf_timeframe(self, tf_expr) -> dict:
+        """Resolve the timeframe argument to `{timeframe, timeframeInputId?}`.
+
+        A const string parses directly. An identifier bound to an
+        input.timeframe/input.string declaration carries `timeframeInputId`, and the
+        node's own `timeframe` becomes that input's parsed DEFAULT -- the executor
+        prefers the runtime input value and falls back to this, so a settings change
+        re-resamples without a recompile.
+
+        The `D/1` fallback matches TS exactly. It is unreachable through a compiling
+        script (semantic emits OS2025/OS2026 first), but both sides must agree on it
+        or a hand-authored IR would differ.
+        """
+        fallback = {"unit": "D", "multiple": 1}
+        if tf_expr is not None and tf_expr.type == "String":
+            parsed = parse_timeframe(tf_expr.value)
+            return {"timeframe": _tf_dict(parsed) if parsed else fallback}
+        if tf_expr is not None and tf_expr.type == "Identifier":
+            for decl in self._inputs:
+                if decl.get("id") == tf_expr.name and decl.get("type") in ("timeframe", "string"):
+                    default = decl.get("defaultValue")
+                    parsed = parse_timeframe(default) if isinstance(default, str) else None
+                    return {
+                        "timeframe": _tf_dict(parsed) if parsed else fallback,
+                        "timeframeInputId": tf_expr.name,
+                    }
+        return {"timeframe": fallback}
+
+    def _htf_node_for(self, source_expr, tf: dict, span) -> int:
+        """Emit one `htf` node for `source` or `source[n]`.
+
+        The `close` / offset-0 defaults are unreachable from a compiling script
+        (OS2027 fires first) but are kept identical to TS so hand-authored IR cannot
+        diverge between the runtimes.
+        """
+        src = source_expr
+        offset = 0
+        if src is not None and src.type == "Index":
+            idx = getattr(src, "index", None)
+            offset = int(idx.value) if idx is not None and idx.type == "Number" else 0
+            src = src.object
+        source = src.name if src is not None and src.type == "Identifier" else "close"
+        node = {"op": "htf", "timeframe": tf["timeframe"], "source": source, "offset": offset}
+        if "timeframeInputId" in tf:
+            # Key order matches the TS object literal so the serialized IR is
+            # byte-identical: timeframe, timeframeInputId, source, offset.
+            node = {
+                "op": "htf",
+                "timeframe": tf["timeframe"],
+                "timeframeInputId": tf["timeframeInputId"],
+                "source": source,
+                "offset": offset,
+            }
+        return self._emit(node, span, 0)
+
     def _lower_from_gradient(self, call) -> int:
         """color.from_gradient(value, bottom_value, top_value, bottom_color, top_color)."""
         lo_expr = self._arg_expr(call, 1, "bottom_value")
@@ -1136,7 +1248,7 @@ def generate_ir(source: str, program: ast.Program) -> tuple[dict | None, list[Di
             "major": 1,
             "minor": 0,
             "compilerVersion": COMPILER_VERSION,
-            "requiredFeatures": ["drawing-streams"] if gen._uses_drawings else [],
+            "requiredFeatures": _required_features(gen),
             "numericMode": "f64-strict",
         },
         "declaration": gen._declaration,

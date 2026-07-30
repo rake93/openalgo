@@ -8,16 +8,22 @@ destructuring, and duplicate input/alert ids. Identical rules to the TS.
 
 from __future__ import annotations
 
+# request.security validates its timeframe string with the SAME parser the runtime
+# resampler uses, so the compiler can never accept a timeframe the executor cannot
+# bucket (register C4).
+from ..runtime.timeframe import parse_timeframe
 from . import ast_nodes as ast
 from .builtins_table import (
     CONSTANT_NAMESPACES,
     CONTEXT_MEMBERS,
+    HTF_SOURCE_KINDS,
     INPUT_FUNCTIONS,
     INPUT_NAMED_ARGS,
     KERNELS_FUNCTIONS,
     MATH_FUNCTIONS,
     NAMED_ARGS,
     OUTPUT_FUNCTIONS,
+    REQUEST_FUNCTIONS,
     SPECIAL_FUNCTIONS,
     TA_FUNCTIONS,
     ta_arities,
@@ -47,6 +53,10 @@ class Analyzer:
         self._plot_handles: set[str] = set()
         # Names bound to `input.color(...)` — usable only as a `color=` argument (OS2017).
         self._color_inputs: set[str] = set()
+        # Names bound to `input.timeframe(...)` / `input.string(...)` — accepted as the
+        # timeframe argument of request.security in place of a const string, because
+        # the value resolves at RUNTIME (a settings change re-resamples, no recompile).
+        self._timeframe_inputs: set[str] = set()
         # True while visiting the direct value of a `color=` named argument.
         self._in_color_arg_position = False
         # Scan state per `:=` target: decl seen (const-init) / reassign visited.
@@ -110,6 +120,8 @@ class Analyzer:
                 self._plot_handles.add(stmt.name)
             if _is_input_color_call(stmt.value):
                 self._color_inputs.add(stmt.name)
+            if _is_input_timeframe_call(stmt.value):
+                self._timeframe_inputs.add(stmt.name)
             scan = self._scan_vars.get(stmt.name)
             if scan is not None:
                 if not top_level:
@@ -312,10 +324,78 @@ class Analyzer:
             self._check_named_args(f"input.{fn}", INPUT_NAMED_ARGS, call)
             if fn == "string":
                 self._check_string_options(call)
+        elif ns == "request":
+            if fn not in REQUEST_FUNCTIONS:
+                self._error("OS2002", call.span, f"request.{fn}")
+                return
+            self._visit_request_security(call)
         elif ns in ("color", "shape", "location", "size", "plot"):
             return  # calling a constant-namespace member (e.g. color.new) — allowed
         else:
             self._error("OS2002", call.span, f"{ns}.{fn}")
+
+    def _visit_request_security(self, call: ast.CallExpr) -> None:
+        """The five `request.security` checks (design §2). Mirrors the TS
+        `visitRequestSecurity` argument for argument, including which span each
+        diagnostic attaches to -- a mismatch there changes where the editor
+        underlines even when the code is right.
+        """
+        positional = [a for a in call.args if getattr(a, "name", None) is None]
+        symbol = positional[0].value if len(positional) > 0 else None
+        tf = positional[1].value if len(positional) > 1 else None
+        source = positional[2].value if len(positional) > 2 else None
+
+        # arg 0 — the symbol must be `syminfo.tickerid`. Same-symbol HTF only:
+        # cross-symbol requests need a second dataset and are out of scope for v1.
+        is_ticker_id = (
+            symbol is not None
+            and symbol.type == "Member"
+            and getattr(symbol.object, "type", None) == "Identifier"
+            and symbol.object.name == "syminfo"
+            and symbol.property == "tickerid"
+        )
+        if not is_ticker_id:
+            self._error("OS2024", (symbol or call).span)
+
+        # arg 1 — a const string that parses, or an input.timeframe/string variable.
+        if tf is not None and tf.type == "String":
+            if parse_timeframe(tf.value) is None:
+                self._error("OS2026", tf.span, tf.value)
+        elif not (
+            tf is not None and tf.type == "Identifier" and tf.name in self._timeframe_inputs
+        ):
+            self._error("OS2025", (tf or call).span)
+
+        # arg 2 — a source series (optionally `[n]`), or a `[S1, S2, ...]` array of
+        # such for the tuple form. An inner `ta.*` on an HTF series is out of scope,
+        # so it must be REJECTED here rather than silently resampled.
+        if source is not None and source.type == "ArrayLiteral":
+            if len(source.elements) == 0:
+                self._error("OS2027", source.span)
+            for el in source.elements:
+                if not _is_htf_source_expr(el):
+                    self._error("OS2027", el.span)
+        elif not _is_htf_source_expr(source):
+            self._error("OS2027", (source or call).span)
+
+        # optional lookahead — named `lookahead=` or a 4th positional. Only
+        # `lookahead_off` is supported; anything else that IS a barmerge member is
+        # rejected, which is why the table lists lookahead_on (it must resolve first).
+        lookahead = None
+        for a in call.args:
+            if getattr(a, "name", None) == "lookahead":
+                lookahead = a.value
+                break
+        if lookahead is None and len(positional) > 3:
+            lookahead = positional[3].value
+        if (
+            lookahead is not None
+            and lookahead.type == "Member"
+            and getattr(lookahead.object, "type", None) == "Identifier"
+            and lookahead.object.name == "barmerge"
+            and lookahead.property != "lookahead_off"
+        ):
+            self._error("OS2028", lookahead.span)
 
     def _resolve_fn(self, spec: dict | None, name: str, call: ast.CallExpr) -> None:
         if spec is None:
@@ -437,6 +517,21 @@ class Analyzer:
             self._error("OS2004", span, "right side is not a multi-output call")
             return
         callee = value.callee
+        # `[a, b] = request.security(sym, tf, [S1, S2])` — the arity comes from the
+        # ARRAY LENGTH, not from a builtin's outputMap, so it is checked before the
+        # ta.*-only rule below. A non-array third argument is the single-series form,
+        # which destructures to exactly one name.
+        if (
+            getattr(callee.object, "type", None) == "Identifier"
+            and callee.object.name == "request"
+            and callee.property == "security"
+        ):
+            positional = [a for a in value.args if getattr(a, "name", None) is None]
+            arr = positional[2].value if len(positional) > 2 else None
+            length = len(arr.elements) if arr is not None and arr.type == "ArrayLiteral" else 1
+            if length != count:
+                self._error("OS2004", span, f"expected {length} names, got {count}")
+            return
         if getattr(callee.object, "type", None) != "Identifier" or callee.object.name != "ta":
             self._error("OS2004", span, "only ta.* functions return tuples")
             return
@@ -492,6 +587,35 @@ def _is_plot_call(e: ast.Expr) -> bool:
         and getattr(e.callee, "type", None) == "Identifier"
         and e.callee.name == "plot"
     )
+
+
+def _is_input_timeframe_call(e: ast.Expr) -> bool:
+    """`input.timeframe(...)` or `input.string(...)`.
+
+    `input.string` is included because a Pine author commonly builds a timeframe
+    dropdown with `input.string(options=[...])` rather than `input.timeframe`; the
+    TS side accepts both and the two must agree or a script compiles in one place
+    only.
+    """
+    return (
+        e.type == "Call"
+        and e.callee.type == "Member"
+        and getattr(e.callee.object, "type", None) == "Identifier"
+        and e.callee.object.name == "input"
+        and e.callee.property in ("timeframe", "string")
+    )
+
+
+def _is_htf_source_expr(e) -> bool:
+    """A bare source identifier, optionally with a history offset (`close[1]`).
+
+    Deliberately narrow: only the nine HTF_SOURCE_KINDS qualify, so an inner `ta.*`
+    call or any arithmetic is OS2027 rather than being silently resampled.
+    """
+    if e is None:
+        return False
+    base = e.object if e.type == "Index" else e
+    return getattr(base, "type", None) == "Identifier" and base.name in HTF_SOURCE_KINDS
 
 
 def _is_input_color_call(e: ast.Expr) -> bool:

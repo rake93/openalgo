@@ -45,6 +45,23 @@ def _is_input_string_callee(e: ast.Expr) -> bool:
     )
 
 
+def _is_request_security_callee(e: ast.Expr) -> bool:
+    """True for the callee expression `request.security` — the one grammar position
+    that permits an array literal as a POSITIONAL argument (the tuple form,
+    `request.security(sym, tf, [high, low])`).
+
+    Both array gates are callee-specific on purpose: arrays are not a general v1
+    expression form, so opening `[` everywhere would let a script parse on the
+    server that the browser rejects.
+    """
+    return (
+        e.type == "Member"
+        and getattr(e.object, "type", None) == "Identifier"
+        and e.object.name == "request"
+        and e.property == "security"
+    )
+
+
 class Parser:
     def __init__(self, tokens: list[Token], diagnostics: list[Diagnostic]):
         self._tokens = tokens
@@ -363,7 +380,9 @@ class Parser:
                 )
             elif self._check("lparen"):
                 self._advance()
-                args = self._parse_args(_is_input_string_callee(e))
+                args = self._parse_args(
+                    _is_input_string_callee(e), _is_request_security_callee(e)
+                )
                 self._expect("rparen", "OS1003")
                 e = ast.CallExpr(callee=e, args=args, span=self._span_from(start, self._prev()))
             elif self._check("lbracket"):
@@ -375,12 +394,21 @@ class Parser:
                 break
         return e
 
-    def _parse_args(self, allow_array_options: bool = False) -> list[ast.Argument]:
+    def _parse_args(
+        self, allow_array_options: bool = False, allow_array_positional: bool = False
+    ) -> list[ast.Argument]:
         """`allow_array_options` is true only when the callee is exactly
         `input.string` (P4.4) — it permits an array literal, but ONLY as the
         value of the `options=` named argument. Every other position still
         rejects `[` via `_parse_primary` (OS1011), including `options=` on
-        any other function."""
+        any other function.
+
+        `allow_array_positional` is true only for `request.security`, whose tuple
+        form takes a POSITIONAL array of source series:
+        `request.security(sym, tf, [high, low])`. Both gates are deliberately
+        callee-specific: arrays are not a general v1 expression form, so opening
+        `[` everywhere would let a script parse here that fails in the browser.
+        """
         args: list[ast.Argument] = []
         if self._check("rparen"):
             return args
@@ -394,6 +422,8 @@ class Parser:
                 self._advance()  # name
                 self._advance()  # '='
             if allow_array_options and name == "options" and self._check("lbracket"):
+                value = self._parse_array_literal()
+            elif allow_array_positional and name is None and self._check("lbracket"):
                 value = self._parse_array_literal()
             else:
                 value = self.parse_expression()

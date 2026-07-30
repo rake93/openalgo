@@ -55,9 +55,10 @@ RSI_SOURCE = (
 
 BROKEN_SOURCE = 'indicator("Broken", overlay=false)\nplot(nonexistent_thing, "X")\n'
 
-# Compiles in the browser (TS) but NOT on the server: the Python port has no
-# `request.security`. Kept here to pin what the endpoint does with a version
-# whose server compile produced no IR.
+# Compiles in BOTH front ends since the Python `request.security` port
+# (register C4). It used to compile only in the browser, which is why several
+# tests below reference it -- an HTF script now saves WITH server IR, and the
+# "no server IR" case needs a genuinely uncompilable source instead.
 HTF_SOURCE = (
     'indicator("HTF", overlay=true)\n'
     'h = request.security(syminfo.tickerid, "60", close)\n'
@@ -372,8 +373,14 @@ def test_a_version_with_no_ir_at_all_is_repaired(client):
 def test_an_unrepairable_version_still_reports_null(client):
     """A source the server cannot compile has nothing to repair from. It must
     keep reading back as null so the client says so, rather than being papered
-    over."""
-    created = _create(client, "htf-unrepairable", HTF_SOURCE)
+    over.
+
+    Uses BROKEN_SOURCE (an unresolvable identifier). It used to use HTF_SOURCE,
+    which was uncompilable on the server only because `request.security` was
+    unported -- a coincidence, not the property under test. Now that HTF compiles,
+    the case needs a source that is genuinely and permanently invalid.
+    """
+    created = _create(client, "broken-unrepairable", BROKEN_SOURCE)
 
     fetched = client.get(f"/indicators/api/scripts/{created['id']}").get_json()["data"]
 
@@ -397,13 +404,33 @@ def test_a_source_error_yields_diagnostics_and_no_ir(client):
     assert all("code" in d for d in row["diagnostics"])
 
 
-def test_an_htf_script_saves_with_no_server_ir(client):
-    """Pins the recorded compiler asymmetry at the API boundary: a script that
-    compiles in the editor can still arrive here with no IR, so every consumer
-    of `compiled_ir` must handle null."""
+def test_an_htf_script_now_saves_WITH_server_ir(client):
+    """The inversion of a recorded asymmetry (register C4).
+
+    This test used to assert the opposite: an HTF script saved with
+    `compiled_ir: None` and an OS2002, because the browser compiled
+    `request.security` and the server did not. The consequence was concrete -- such
+    a script previewed fine in the editor and could then never be added to a chart
+    or restored into a layout, since a layout pins a versionId whose IR is null.
+
+    The Python port closes that. Consumers of `compiled_ir` must STILL handle null
+    (a genuinely broken source produces it -- see the test below), but an HTF script
+    is no longer one of the sources that produce it.
+    """
     row = _create(client, "htf", HTF_SOURCE)
-    assert row["compiled_ir"] is None
-    assert "OS2002" in {d["code"] for d in row["diagnostics"]}
+    assert row["compiled_ir"] is not None, "the Python request.security port has regressed"
+
+    # No ERRORS -- but OS5002 IS expected here and must not be asserted away.
+    # HTF_SOURCE reads the FORMING bucket (offset 0), which repaints until it
+    # closes, so the finality pass correctly marks the output provisional and warns.
+    # A stricter `diagnostics == []` would be asserting the repaint machinery broken.
+    codes = {d["code"] for d in row["diagnostics"]}
+    assert not [d for d in row["diagnostics"] if d["severity"] == "error"], codes
+    assert codes == {"OS5002"}, f"expected only the provisional-output warning, got {codes}"
+
+    htf = [n for n in row["compiled_ir"]["nodes"] if n["op"] == "htf"]
+    assert len(htf) == 1
+    assert "request-security" in row["compiled_ir"]["header"]["requiredFeatures"]
 
 
 # ── the list endpoint stays light ────────────────────────────────────────────
