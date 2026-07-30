@@ -809,10 +809,19 @@ def test_new_week_idiom_across_holiday_skipped_monday():
 
 # ── SuperTrend Cluster migration (P1 Pri2) ─────────────────────────────────
 #
-# Python mirror of the TS `executor: SuperTrend Cluster migration` block. Reads
-# the SAME shared conformance fixture, appends the SAME diagnostic plots, runs it
-# over the SAME deterministic dataset, and pins the SAME sampled numbers — so
-# both suites agreeing on these literals is the cross-language TS == Python proof.
+# Python mirror of the TS `executor: SuperTrend Cluster migration` block.
+#
+# It used to carry a 24-entry [title, bar, expected] table duplicated verbatim in
+# tests/executor.test.ts, and "both suites agreeing on these literals" WAS the
+# cross-language proof. That duplication is retired (engine register C3): the
+# proof now lives in fixtures/values/pos-supertrend-cluster.json, replayed by
+# test_openscript_value_parity.py here and tests/value-parity.test.ts there,
+# pinning 7 series at 9 bars each PLUS a full-series digest over every bar.
+#
+# What remains below is NOT duplication: these check the port against INDEPENDENT
+# references (a hand-carried SuperTrend from openalgo.ta, and the expected
+# direction of travel), which is a different question from "do the two runtimes
+# agree" and worth keeping on both sides.
 
 _STC_FIXTURE = (
     Path(__file__).resolve().parents[1].parent
@@ -820,6 +829,13 @@ _STC_FIXTURE = (
     / "fixtures"
     / "openscript"
     / "positive-supertrend-cluster.json"
+)
+_STC_DATASET_FILE = (
+    Path(__file__).resolve().parents[1].parent
+    / "openalgo-openscript"
+    / "fixtures"
+    / "datasets"
+    / "stc160.json"
 )
 _STC_DIAG_PLOTS = [
     'plot(dLast, "dLast")',
@@ -829,61 +845,25 @@ _STC_DIAG_PLOTS = [
     'plot(scBe, "scBe")',
 ]
 
-# [title, barIndex, expected] — pinned IDENTICALLY in tests/executor.test.ts.
-_STC_SAMPLES = [
-    ("Cluster Up Trend", 45, 129.6569647584731),
-    ("Cluster Up Trend", 60, 144.78293382617522),
-    ("Cluster Up Trend", 79, 163.98128373946182),
-    ("Cluster Up Trend", 90, 164.3919125830897),
-    ("Cluster Down Trend", 100, 170.6285456899888),
-    ("Cluster Down Trend", 120, 153.63667524601811),
-    ("Cluster Down Trend", 140, 134.12277181214623),
-    ("Cluster Down Trend", 155, 119.33904528892262),
-    ("dLast", 60, 1),
-    ("dLast", 100, -1),
-    ("dLast", 155, -1),
-    ("d3", 60, 1),
-    ("d3", 155, -1),
-    ("st3", 45, 132.1622455351587),
-    ("st3", 60, 147.26052937214482),
-    ("st3", 100, 171.43253219043487),
-    ("st3", 155, 116.77278030936407),
-    ("scBu", 60, 1),
-    ("scBu", 90, 0.6774193548387096),
-    ("scBu", 100, 0.2580645161290323),
-    ("scBe", 90, 0.32258064516129037),
-    ("scBe", 100, 0.7419354838709677),
-    ("scBe", 155, 1),
-]
-_STC_NAN_SAMPLES = [
-    ("Cluster Up Trend", 30),  # member-5 ATR(34) still in warmup
-    ("Cluster Up Trend", 100),  # dLast == -1 -> up line gated off
-    ("Cluster Down Trend", 60),  # dLast == 1 -> down line gated off
-]
-
-
 def _stc_dataset():
-    """160-bar triangle wave (up 100->179, down 179->100) with 0.25-step noise —
-    the IDENTICAL integer formula the TS mirror uses, so both runtimes see
-    bit-identical input."""
-    n = 160
-    o = np.empty(n)
-    h = np.empty(n)
-    lo = np.empty(n)
-    c = np.empty(n)
-    v = np.empty(n)
-    for i in range(n):
-        mid = 100 + i if i < 80 else 180 - (i - 79)
-        close = mid + (((i * 37) % 15) - 7) * 0.25
-        open_ = mid + (((i * 53) % 11) - 5) * 0.25
-        hi = max(open_, close)
-        low = min(open_, close)
-        o[i] = open_
-        c[i] = close
-        h[i] = hi + 1.0
-        lo[i] = low - 1.0
-        v[i] = 1000 + (i % 50)
-    return {"open": o, "high": h, "low": lo, "close": c, "volume": v}
+    """The 160-bar triangle wave, loaded from the SHARED dataset file.
+
+    This used to be generated here from an integer formula duplicated verbatim in
+    the TS mirror -- two implementations of the same input, either of which could
+    drift. `fixtures/datasets/stc160.json` is that formula's output, committed
+    once, so both runtimes now read the same bytes. The materialization was
+    verified by reproducing all 16 entries of the retired hand-written sample
+    table exactly.
+    """
+    raw = json.loads((_STC_DATASET_FILE).read_text(encoding="utf-8"))
+    return {
+        "time": np.asarray(raw["time"], dtype=float),
+        "open": np.asarray(raw["open"], dtype=float),
+        "high": np.asarray(raw["high"], dtype=float),
+        "low": np.asarray(raw["low"], dtype=float),
+        "close": np.asarray(raw["close"], dtype=float),
+        "volume": np.asarray(raw["volume"], dtype=float),
+    }
 
 
 def _stc_source(with_diag=True):
@@ -897,16 +877,6 @@ def _stc_lines(source, ds):
     assert errors == [], errors
     outputs = execute_ir(result.ir, ds, {})
     return {o["title"]: o["values"] for o in outputs if o["kind"] == "line"}
-
-
-@pytest.mark.skipif(not _STC_FIXTURE.is_file(), reason="engine fixture not a sibling")
-def test_stc_sampled_values_match_typescript():
-    lines = _stc_lines(_stc_source(), _stc_dataset())
-    for title, bar, expected in _STC_SAMPLES:
-        got = lines[title][bar]
-        assert abs(got - expected) < 1e-9 * max(1, abs(expected)), f"{title}[{bar}]: {got} != {expected}"
-    for title, bar in _STC_NAN_SAMPLES:
-        assert math.isnan(lines[title][bar]), f"{title}[{bar}] expected na"
 
 
 @pytest.mark.skipif(not _STC_FIXTURE.is_file(), reason="engine fixture not a sibling")
