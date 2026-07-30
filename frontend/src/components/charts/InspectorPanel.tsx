@@ -68,7 +68,15 @@ function TreeRow({
         } ${onPickSpan ? 'cursor-pointer hover:bg-accent' : ''}`}
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
         onClick={onPickSpan ? () => onPickSpan(node.span) : undefined}
-        onKeyDown={undefined}
+        onKeyDown={
+          onPickSpan
+            ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') onPickSpan(node.span)
+              }
+            : undefined
+        }
+        role={onPickSpan ? 'button' : undefined}
+        tabIndex={onPickSpan ? 0 : undefined}
       >
         <span className="flex min-w-0 items-baseline gap-1.5">
           <span className="truncate font-mono">{node.label}</span>

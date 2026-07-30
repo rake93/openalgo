@@ -25,7 +25,7 @@ import {
 } from '@openalgo/openscript/codemirror'
 import { createTheme } from '@uiw/codemirror-themes'
 import CodeMirror from '@uiw/react-codemirror'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useThemeStore } from '@/stores/themeStore'
 
 /** Escape text before injecting into hover-tooltip innerHTML. */
@@ -112,6 +112,14 @@ interface OpenScriptEditorProps {
   value: string
   onChange?: (value: string) => void
   readOnly?: boolean
+  /**
+   * Select and scroll to a source range (series inspector, M8).
+   *
+   * `nonce` exists so picking the SAME node twice re-scrolls: without it the
+   * prop would be referentially equal and the effect would not re-run, which
+   * reads as a dead control.
+   */
+  revealSpan?: { start: number; end: number; nonce: number } | null
 }
 
 const openScriptLanguage = StreamLanguage.define(openScriptStreamParser)
@@ -219,9 +227,31 @@ const createBaseTheme = (isDark: boolean): Extension => {
   })
 }
 
-export function OpenScriptEditor({ value, onChange, readOnly = false }: OpenScriptEditorProps) {
+export function OpenScriptEditor({
+  value,
+  onChange,
+  readOnly = false,
+  revealSpan = null,
+}: OpenScriptEditorProps) {
   const mode = useThemeStore((s) => s.mode)
   const isDark = mode === 'dark'
+  const viewRef = useRef<EditorView | null>(null)
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view || !revealSpan) return
+    // Clamp: the inspected IR may predate an edit that shortened the document.
+    const max = view.state.doc.length
+    const anchor = Math.min(revealSpan.start, max)
+    const head = Math.min(revealSpan.end, max)
+    view.dispatch({
+      selection: { anchor, head },
+      effects: EditorView.scrollIntoView(anchor, { y: 'center' }),
+    })
+    // Deliberately NOT focused: focus would move off the inspector panel, and
+    // the next `i` keystroke would be typed into the script instead of pinning
+    // another bar.
+  }, [revealSpan])
 
   const extensions = useMemo(
     () => [
@@ -245,6 +275,9 @@ export function OpenScriptEditor({ value, onChange, readOnly = false }: OpenScri
         value={value}
         onChange={onChange}
         extensions={extensions}
+        onCreateEditor={(view) => {
+          viewRef.current = view
+        }}
         readOnly={readOnly}
         height="100%"
         theme={isDark ? 'dark' : 'light'}

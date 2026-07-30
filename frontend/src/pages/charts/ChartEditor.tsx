@@ -102,6 +102,12 @@ export default function ChartEditor() {
    * under the pointer at that instant.
    */
   const [pinned, setPinned] = useState<PinnedBar | null>(null)
+  /** Source range the inspector asked the editor to reveal (M8). */
+  const [revealSpan, setRevealSpan] = useState<{
+    start: number
+    end: number
+    nonce: number
+  } | null>(null)
   const splitRef = useRef<HTMLDivElement | null>(null)
   // `i` pins the crosshair bar; Escape closes. Ignored while typing, so the key
   // never steals a character from the script editor or the symbol search.
@@ -566,7 +572,7 @@ export default function ChartEditor() {
           style={{ width: `${editorPct}%` }}
         >
           <div className="min-h-0 flex-1 overflow-hidden">
-            <OpenScriptEditor value={source} onChange={onSourceChange} />
+            <OpenScriptEditor value={source} onChange={onSourceChange} revealSpan={revealSpan} />
           </div>
           <div className="max-h-40 shrink-0 overflow-auto border-t border-border bg-card/40 text-xs">
             {diagnostics.length === 0 ? (
@@ -614,6 +620,13 @@ export default function ChartEditor() {
               }
               lastEpoch={(instanceId) => controllerRef.current?.indicators.lastEpoch(instanceId)}
               onClose={() => setPinned(null)}
+              onPickSpan={(span) =>
+                setRevealSpan((prev) => ({
+                  start: span.start,
+                  end: span.end,
+                  nonce: (prev?.nonce ?? 0) + 1,
+                }))
+              }
             />
           )}
           {noApiKey && (
