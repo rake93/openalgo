@@ -10,7 +10,7 @@ import {
 describe('Navigation Config', () => {
   describe('navItems', () => {
     it('contains the expected main navigation items', () => {
-      expect(navItems).toHaveLength(9)
+      expect(navItems).toHaveLength(10)
 
       const labels = navItems.map((item) => item.label)
       expect(labels).toContain('Dashboard')
@@ -19,6 +19,10 @@ describe('Navigation Config', () => {
       expect(labels).toContain('Positions')
       expect(labels).toContain('Strategy')
       expect(labels).toContain('Trading')
+      // Added by this branch — the chart workspace the indicator engine renders
+      // into. Asserted by name, not just by the count, so a future reordering or
+      // removal fails with something readable instead of an off-by-one.
+      expect(labels).toContain('Charts')
     })
 
     it('all items have required properties', () => {
