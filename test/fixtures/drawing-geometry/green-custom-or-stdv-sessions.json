@@ -1,12 +1,12 @@
 {
   "name": "green-custom-or-stdv-sessions",
-  "note": "Three sessions, one spawn each, asserted as the WHOLE ascending item list. This is the assertion a single-session fixture cannot make: a spawn condition that fires once instead of three times fails here on length, and max_kept / label_latest_only stop being trivially true. TWO THINGS ARE LOAD-BEARING AND MUST NOT BE 'SIMPLIFIED'. (1) The ORB timeframe (15m) is deliberately COARSER than the bar interval (5m), so the isORBar plateau is 2 bars and the edge-trigger in the .os file is actually exercised - a 1:1 ratio passes with or without it. (2) Per-day OR highs and lows differ (110/90, 220/180, 330/270) so a port that reuses the first session's captured values fails on price rather than passing by coincidence. The label column IS the label_latest_only assertion: only the newest item carries a label. All prices derived from the per-day high/low by the documented formulas, not copied from engine output.",
+  "note": "Three sessions, one spawn each, asserted as the WHOLE ascending item list. This is the assertion a single-session fixture cannot make: a spawn condition that fires once instead of three times fails here on length, and max_kept / label_latest_only stop being trivially true. TWO THINGS ARE LOAD-BEARING AND MUST NOT BE 'SIMPLIFIED'. (1) The ORB timeframe (15m) is deliberately COARSER than the bar interval (5m), so the isORBar plateau is 2 bars and the edge-trigger in the .os file is actually exercised - a 1:1 ratio passes with or without it. (2) Per-day OR highs and lows differ (110/90, 220/180, 330/270) so a port that reuses the first session's captured values fails on price rather than passing by coincidence. Past sessions now CLOSE at their own session end (terminate.new_session) while the live session rides the edge, so the x2bar/open columns differ per item - that is the fix for the overlapping-history problem the first chart review found. The label column IS the label_latest_only assertion: only the newest item carries a label. All prices derived from the per-day high/low by the documented formulas, not copied from engine output.",
   "instrument": {
     "exchange": "NSE",
     "symbol": "SBIN"
   },
   "inputs": {},
-  "source": "// Custom Opening Range + STDV — OpenScript port of \"Custom_Opening_Range_STDV.pine\" (©GRCtrader)\n//\n// CONVERSION NOTES — every place this differs from the Pine, and why.\n// Full reasoning: docs/openscript-custom-or-stdv-migration-design.md\n//\n// 1. TIME UNITS. `time` (context series) is epoch MILLISECONDS; the value returned by\n//    request.security(..., time) is epoch SECONDS, because the HTF resampler aggregates\n//    the dataset's own time column. Mixing them is a silent 1000x error with no\n//    diagnostic. The conversion happens ONCE, below, in `orbSec`.\n// 2. LEFT EDGE. Levels start where the ORB candle CLOSES, not at its open. `offset` must\n//    be a compile-time constant and the value needed here (orbMinutes / chartMinutes) is\n//    runtime-dependent. Prices match TradingView; the left edge is one ORB candle later.\n// 3. SESSION COUNT is a constant (max_kept), not the Pine's 1-20 input: declarative\n//    retention cannot vary at runtime the way imperative line.delete can.\n// 4. LINE STYLE is fixed dotted for the STDV levels — `style=` needs a line.style_* enum\n//    resolved at compile time, so the Pine's solid/dotted/dashed dropdown cannot drive it.\n// 5. LABELS have no \"09:30 \" prefix — that needs str.tostring, which v1 does not ship.\n// 6. ORB TIMEFRAME IS REQUIRED. The Pine falls back to timeframe.period (a STRING) when\n//    empty; v1 has no string-valued timeframe expression.\n// 7. NO \"Futures Timezone Offset\" INPUT and no COMEX auto-detect. Both are DEAD in the\n//    Pine: `effectiveOffset` is assigned and never read, and the clock uses a hardcoded\n//    \"Asia/Kolkata\" regardless. Porting them would ship controls that do nothing.\n// 8. NO label-visibility toggles. The Pine's showLabels/showSTDVLabels gate only the\n//    label; `label=` is const so no input can gate it, and gating the spawn condition\n//    would hide the lines too. Labels are always on for the latest session.\n//\n// The IST offset below is hardcoded to match the Pine's \"Asia/Kolkata\". Correct for\n// NSE/MCX; WRONG for any instrument on another calendar.\n\nindicator(\"Custom OR + STDV\", shorttitle=\"Custom OR + STDV\", overlay=true)\n\nstartHour   = input.int(9, \"Opening Range Hour (0-23)\", minval=0, maxval=23, group=\"Opening Range Start Time\")\nstartMinute = input.int(15, \"Opening Range Minute (0-59)\", minval=0, maxval=59, group=\"Opening Range Start Time\")\norbTf       = input.timeframe(\"15\", \"ORB Timeframe\", group=\"Settings\", tooltip=\"Timeframe of the opening-range candle. Required — see conversion note 6.\")\n\nshowOR  = input.bool(true, \"Show Opening Range\", group=\"Opening Range\")\norColor = input.color(#606470, \"OR Color\", group=\"Opening Range\")\norWidth = input.int(2, \"OR Line Width\", group=\"Styling\")\nshowCE  = input.bool(true, \"Show Center Encroachment (C.E.)\", group=\"Opening Range\")\nceColor = input.color(#606470, \"C.E. Color\", group=\"Opening Range\")\nceWidth = input.int(1, \"C.E. Line Width\", group=\"Styling\")\n\nshowSTDV  = input.bool(true, \"Show STDV Lines\", group=\"Standard Deviations\")\nstdvColor = input.color(#606470, \"STDV Color\", group=\"Standard Deviations\")\nstdvWidth = input.int(1, \"STDV Line Width\", group=\"Standard Deviations\")\nshowExtSTDV = input.bool(false, \"Show Extended 3.0 – 4.5 STDV\", group=\"Standard Deviations\")\n\n[orbHigh, orbLow, orbTime] = request.security(syminfo.tickerid, orbTf, [high[1], low[1], time[1]])\n\n// SECONDS (conversion note 1). 19800 = +05:30 IST, matching the Pine's \"Asia/Kolkata\".\norbSec   = orbTime + 19800\nsecOfDay = orbSec % 86400\nsrcHour  = math.floor(secOfDay / 3600)\nsrcMin   = math.floor((secOfDay % 3600) / 60)\n\n// EDGE-TRIGGERED, and the clause is load-bearing. The last-closed bucket STAYS the\n// 09:15 bucket for every chart bar until the next one closes, so the hour/minute test\n// alone is a LEVEL condition that spawns orbTf/chartTf duplicate objects per session\n// (measured: 3 at bars 6,7,8 for a 15m ORB over 5m bars). `orbTime` changes exactly\n// once per bucket, so comparing it with its own previous chart bar is the natural edge.\nisORBar = srcHour == startHour and srcMin == startMinute and orbTime != orbTime[1]\n\nce = (orbHigh + orbLow) / 2\norRange = orbHigh - orbLow\n\nplotlevel(isORBar and showOR, orbHigh, \"OR High\", color=orColor, width=orWidth, style=line.style_solid, extend=extend.lastbar, max_kept=5, label=\"OR High {price}\", label_latest_only=true)\nplotlevel(isORBar and showOR, orbLow, \"OR Low\", color=orColor, width=orWidth, style=line.style_solid, extend=extend.lastbar, max_kept=5, label=\"OR Low {price}\", label_latest_only=true)\nplotlevel(isORBar and showCE, ce, \"OR C.E.\", color=ceColor, width=ceWidth, style=line.style_dashed, extend=extend.lastbar, max_kept=5, label=\"OR C.E. {price}\", label_latest_only=true)\n\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 0.5, \"+0.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"+0.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 0.5, \"-0.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"-0.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 1.0, \"+1.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"+1.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 1.0, \"-1.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"-1.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 1.5, \"+1.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"+1.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 1.5, \"-1.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"-1.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 2.0, \"+2.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"+2.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 2.0, \"-2.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"-2.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 2.5, \"+2.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"+2.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 2.5, \"-2.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"-2.5 STDV {price}\", label_latest_only=true)\n\nplotlevel(isORBar and showSTDV and showExtSTDV, orbHigh + orRange * 3.0, \"+3.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"+3.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbLow - orRange * 3.0, \"-3.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"-3.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbHigh + orRange * 3.5, \"+3.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"+3.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbLow - orRange * 3.5, \"-3.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"-3.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbHigh + orRange * 4.0, \"+4.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"+4.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbLow - orRange * 4.0, \"-4.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"-4.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbHigh + orRange * 4.5, \"+4.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"+4.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbLow - orRange * 4.5, \"-4.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.lastbar, max_kept=5, label=\"-4.5 STDV {price}\", label_latest_only=true)\n",
+  "source": "// Custom Opening Range + STDV — OpenScript port of \"Custom_Opening_Range_STDV.pine\" (©GRCtrader)\n//\n// CONVERSION NOTES — every place this differs from the Pine, and why.\n// Full reasoning: docs/openscript-custom-or-stdv-migration-design.md\n//\n// 1. TIME UNITS. `time` (context series) is epoch MILLISECONDS; the value returned by\n//    request.security(..., time) is epoch SECONDS, because the HTF resampler aggregates\n//    the dataset's own time column. Mixing them is a silent 1000x error with no\n//    diagnostic. The conversion happens ONCE, below, in `orbSec`.\n// 2. LEFT EDGE. Levels start where the ORB candle CLOSES, not at its open. `offset` must\n//    be a compile-time constant and the value needed here (orbMinutes / chartMinutes) is\n//    runtime-dependent. Prices match TradingView; the left edge is one ORB candle later.\n// 3. SESSION COUNT is a constant (max_kept), not the Pine's 1-20 input: declarative\n//    retention cannot vary at runtime the way imperative line.delete can.\n// 4. LINE STYLE is fixed dotted for the STDV levels — `style=` needs a line.style_* enum\n//    resolved at compile time, so the Pine's solid/dotted/dashed dropdown cannot drive it.\n// 5. LABELS have no \"09:30 \" prefix — that needs str.tostring, which v1 does not ship.\n// 6. ORB TIMEFRAME IS REQUIRED. The Pine falls back to timeframe.period (a STRING) when\n//    empty; v1 has no string-valued timeframe expression.\n// 7. NO \"Futures Timezone Offset\" INPUT and no COMEX auto-detect. Both are DEAD in the\n//    Pine: `effectiveOffset` is assigned and never read, and the clock uses a hardcoded\n//    \"Asia/Kolkata\" regardless. Porting them would ship controls that do nothing.\n// 8. SESSION-BOUNDED LINES, and this one is a DELIBERATE improvement on the Pine.\n//    The Pine draws every retained session's lines to last_bar_time, so showing more\n//    than one session stacks them into an overlapping band (its own sessionLimit\n//    defaults to 1, which hides the problem). Using extend.until +\n//    terminate.new_session instead, a PAST session's lines close at the end of the\n//    session that spawned them while the LIVE session, having no successor, still\n//    rides the live edge. That is one output giving both behaviours, and it is what\n//    makes max_kept=5 readable rather than clumsy.\n// 9. NO label-visibility toggles. The Pine's showLabels/showSTDVLabels gate only the\n//    label; `label=` is const so no input can gate it, and gating the spawn condition\n//    would hide the lines too. Labels are always on for the latest session.\n//\n// The IST offset below is hardcoded to match the Pine's \"Asia/Kolkata\". Correct for\n// NSE/MCX; WRONG for any instrument on another calendar.\n\nindicator(\"Custom OR + STDV\", shorttitle=\"Custom OR + STDV\", overlay=true)\n\nstartHour   = input.int(9, \"Opening Range Hour (0-23)\", minval=0, maxval=23, group=\"Opening Range Start Time\")\nstartMinute = input.int(15, \"Opening Range Minute (0-59)\", minval=0, maxval=59, group=\"Opening Range Start Time\")\norbTf       = input.timeframe(\"15\", \"ORB Timeframe\", group=\"Settings\", tooltip=\"Timeframe of the opening-range candle. Required — see conversion note 6.\")\n\nshowOR  = input.bool(true, \"Show Opening Range\", group=\"Opening Range\")\norColor = input.color(#606470, \"OR Color\", group=\"Opening Range\")\norWidth = input.int(2, \"OR Line Width\", group=\"Styling\")\nshowCE  = input.bool(true, \"Show Center Encroachment (C.E.)\", group=\"Opening Range\")\nceColor = input.color(#606470, \"C.E. Color\", group=\"Opening Range\")\nceWidth = input.int(1, \"C.E. Line Width\", group=\"Styling\")\n\nshowSTDV  = input.bool(true, \"Show STDV Lines\", group=\"Standard Deviations\")\nstdvColor = input.color(#606470, \"STDV Color\", group=\"Standard Deviations\")\nstdvWidth = input.int(1, \"STDV Line Width\", group=\"Standard Deviations\")\nshowExtSTDV = input.bool(false, \"Show Extended 3.0 – 4.5 STDV\", group=\"Standard Deviations\")\n\n[orbHigh, orbLow, orbTime] = request.security(syminfo.tickerid, orbTf, [high[1], low[1], time[1]])\n\n// SECONDS (conversion note 1). 19800 = +05:30 IST, matching the Pine's \"Asia/Kolkata\".\norbSec   = orbTime + 19800\nsecOfDay = orbSec % 86400\nsrcHour  = math.floor(secOfDay / 3600)\nsrcMin   = math.floor((secOfDay % 3600) / 60)\n\n// EDGE-TRIGGERED, and the clause is load-bearing. The last-closed bucket STAYS the\n// 09:15 bucket for every chart bar until the next one closes, so the hour/minute test\n// alone is a LEVEL condition that spawns orbTf/chartTf duplicate objects per session\n// (measured: 3 at bars 6,7,8 for a 15m ORB over 5m bars). `orbTime` changes exactly\n// once per bucket, so comparing it with its own previous chart bar is the natural edge.\nisORBar = srcHour == startHour and srcMin == startMinute and orbTime != orbTime[1]\n\nce = (orbHigh + orbLow) / 2\norRange = orbHigh - orbLow\n\nplotlevel(isORBar and showOR, orbHigh, \"OR High\", color=orColor, width=orWidth, style=line.style_solid, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"OR High {price}\", label_latest_only=true)\nplotlevel(isORBar and showOR, orbLow, \"OR Low\", color=orColor, width=orWidth, style=line.style_solid, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"OR Low {price}\", label_latest_only=true)\nplotlevel(isORBar and showCE, ce, \"OR C.E.\", color=ceColor, width=ceWidth, style=line.style_dashed, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"OR C.E. {price}\", label_latest_only=true)\n\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 0.5, \"+0.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"+0.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 0.5, \"-0.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"-0.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 1.0, \"+1.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"+1.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 1.0, \"-1.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"-1.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 1.5, \"+1.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"+1.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 1.5, \"-1.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"-1.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 2.0, \"+2.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"+2.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 2.0, \"-2.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"-2.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbHigh + orRange * 2.5, \"+2.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"+2.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV, orbLow - orRange * 2.5, \"-2.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"-2.5 STDV {price}\", label_latest_only=true)\n\nplotlevel(isORBar and showSTDV and showExtSTDV, orbHigh + orRange * 3.0, \"+3.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"+3.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbLow - orRange * 3.0, \"-3.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"-3.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbHigh + orRange * 3.5, \"+3.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"+3.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbLow - orRange * 3.5, \"-3.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"-3.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbHigh + orRange * 4.0, \"+4.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"+4.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbLow - orRange * 4.0, \"-4.0 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"-4.0 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbHigh + orRange * 4.5, \"+4.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"+4.5 STDV {price}\", label_latest_only=true)\nplotlevel(isORBar and showSTDV and showExtSTDV, orbLow - orRange * 4.5, \"-4.5 STDV\", color=stdvColor, width=stdvWidth, style=line.style_dotted, extend=extend.until, terminate=terminate.new_session, max_kept=5, label=\"-4.5 STDV {price}\", label_latest_only=true)\n",
   "ir": null,
   "bars": {
     "time": [
@@ -138,16 +138,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 110,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 220,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -165,16 +165,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 90,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 180,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -192,16 +192,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 100,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 200,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -219,16 +219,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 120,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 240,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -246,16 +246,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 80,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 160,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -273,16 +273,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 130,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 260,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -300,16 +300,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 70,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 140,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -327,16 +327,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 140,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 280,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -354,16 +354,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 60,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 120,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -381,16 +381,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 150,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 300,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -408,16 +408,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 50,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 100,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -435,16 +435,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 160,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 320,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
@@ -462,16 +462,16 @@
         "items": [
           {
             "x1bar": 4,
-            "x2bar": 17,
+            "x2bar": 5,
             "price": 40,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
             "x1bar": 10,
-            "x2bar": 17,
+            "x2bar": 11,
             "price": 80,
-            "open": true,
+            "open": false,
             "label": null
           },
           {
