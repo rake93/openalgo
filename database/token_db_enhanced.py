@@ -3,6 +3,7 @@ Enhanced Token DB with Full Memory Caching for 100,000+ symbols
 Optimized for zero-config deployment with configurable session reset time (SESSION_EXPIRY_TIME)
 """
 
+import heapq
 import re
 import time
 from collections import defaultdict
@@ -133,6 +134,28 @@ class SymbolData:
     tick_size: float | None = None
     underlying: str | None = None  # Extracted from OpenAlgo symbol format for F&O
     contract_value: float | None = None  # Contract multiplier (e.g. 0.001 for BTCUSD.P)
+
+
+def _relevance_tier(symbol_data: "SymbolData", query_upper: str) -> int:
+    """How well this symbol matches the query — higher is more relevant.
+
+    Purely structural, with no hand-maintained list of favoured instruments:
+    such a list drifts out of date and would only fix the query someone
+    complained about, whereas tiers put exact matches first for every query.
+
+      4  symbol equals the query exactly
+      3  symbol starts with the query
+      2  symbol contains the query
+      1  matched only via name / brsymbol / token / strike
+    """
+    sym = symbol_data.symbol.upper()
+    if sym == query_upper:
+        return 4
+    if sym.startswith(query_upper):
+        return 3
+    if query_upper in sym:
+        return 2
+    return 1
 
 
 class BrokerSymbolCache:
@@ -467,7 +490,14 @@ class BrokerSymbolCache:
         if not terms:
             return []
 
-        matches = []
+        # `limit` best matches, kept in a bounded heap so a broad query does not
+        # materialise every match (a `NIFTY` search matches 11k+ symbols).
+        heap: list[tuple[tuple[int, int, int], SymbolData]] = []
+        counter = 0
+        # The normalised full query, for relevance scoring. Term matching below
+        # stays per-term AND; the TIER is judged against the whole query, which
+        # is what makes an exact symbol match recognisable.
+        query_upper = " ".join(terms)
 
         # Parse numeric terms for strike matching
         num_terms = []
@@ -506,12 +536,45 @@ class BrokerSymbolCache:
                     break
 
             if all_match:
-                matches.append(symbol_data)
+                # Rank BEFORE truncating. The previous loop appended in master
+                # contract load order and broke at `limit`, so the cap was
+                # applied to an arbitrarily-ordered stream and later candidates
+                # were never EXAMINED — which is why NIFTY (NSE_INDEX), at
+                # position 11,224 of 11,334 matches, could not be found at all.
+                # Sorting afterwards could not have fixed that.
+                #
+                # A min-heap evicts the smallest, so every component here means
+                # "smaller = worse": lower tier, then longer symbol, then
+                # LATER-encountered (`-counter`) so ties at the cap boundary
+                # resolve first-encountered-wins, deterministically.
+                #
+                # Exchange and symbol are deliberately NOT in this key — a string
+                # cannot be negated, so "alphabetical" cannot be expressed as an
+                # eviction order. They break ties among the survivors instead
+                # (see the final sort below).
+                counter += 1
+                key = (_relevance_tier(symbol_data, query_upper), -len(symbol_data.symbol), -counter)
+                if len(heap) < limit:
+                    heapq.heappush(heap, (key, symbol_data))
+                elif key > heap[0][0]:
+                    heapq.heapreplace(heap, (key, symbol_data))
 
-                if len(matches) >= limit:
-                    break
-
-        return matches
+        # Best-first over the survivors, with the full key. `exchange` ascending
+        # is a DETERMINISTIC tie-break, not a preference ranking: claiming
+        # NSE_INDEX outranks NFO would put a product judgement in a data-layer
+        # sort that public API consumers may not share.
+        return [
+            sd
+            for _, sd in sorted(
+                heap,
+                key=lambda item: (
+                    -item[0][0],
+                    len(item[1].symbol),
+                    item[1].exchange,
+                    item[1].symbol,
+                ),
+            )
+        ]
 
     def fno_search_symbols(
         self,
