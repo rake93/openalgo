@@ -361,5 +361,10 @@ KNOWN_NAMESPACES = frozenset(
         # never reach compilation. The shared fixture therefore checks membership of
         # the namespaces THIS feature adds, not set equality.
         "request", "syminfo", "barmerge",
+        # Bundled standard-library namespaces (openscript-stdlib-design.md §4).
+        # They resolve exactly like `ta.`/`math.` -- a table entry, no parser
+        # change. Authoritative membership is the registry in `stdlib.py`; this
+        # list is pinned against it by test_openscript_stdlib.py.
+        "candle", "fvg", "ob", "rjb", "pivot", "bos",
     }
 )

@@ -29,6 +29,7 @@ from .builtins_table import (
     ta_arities,
 )
 from .diagnostics import Diagnostic, Span, make_diagnostic
+from .stdlib import STDLIB_NAMESPACES, stdlib_arity, stdlib_is_windowed
 
 SOURCE_IDS = frozenset(
     {"open", "high", "low", "close", "volume", "hl2", "hlc3", "ohlc4", "hlcc4"}
@@ -263,8 +264,14 @@ class Analyzer:
             self._visit_namespace_call(callee.object.name, callee.property, call, top_level)
             # ta.*/kernels.* calls are windowed; math.sum is the one math.*
             # exception (it's the rolling-sum kernel, not elementwise).
-            windowed = callee.object.name in ("ta", "kernels") or (
-                callee.object.name == "math" and callee.property == "sum"
+            # A stdlib call counts when its body reaches such a kernel: after
+            # inlining the argument really is inside one, so
+            # `x := bos.up_from(x, 2, 2)` must be caught here rather than becoming
+            # a silently wrong recurrence.
+            windowed = (
+                callee.object.name in ("ta", "kernels")
+                or (callee.object.name == "math" and callee.property == "sum")
+                or stdlib_is_windowed(callee.object.name, callee.property)
             )
         elif callee.type == "Identifier":
             self._visit_bare_call(callee.name, call, top_level)
@@ -331,6 +338,19 @@ class Analyzer:
             self._visit_request_security(call)
         elif ns in ("color", "shape", "location", "size", "plot"):
             return  # calling a constant-namespace member (e.g. color.new) — allowed
+        elif ns in STDLIB_NAMESPACES:
+            # Bundled standard library (openscript-stdlib-design.md §4). Resolved
+            # from the registry, NOT a hand-maintained table, so the surface the
+            # analyzer accepts and the surface ir-gen can inline are the same set
+            # by construction. Deliberately reuses OS2002/OS2003 rather than
+            # minting stdlib-specific codes: "no such function" and "wrong arity"
+            # are the only failures a caller can reach.
+            arity = stdlib_arity(ns, fn)
+            if arity is None:
+                self._error("OS2002", call.span, f"{ns}.{fn}")
+                return
+            if len(call.args) != arity:
+                self._error("OS2003", call.span, f"got {len(call.args)}, expected {arity}")
         else:
             self._error("OS2002", call.span, f"{ns}.{fn}")
 

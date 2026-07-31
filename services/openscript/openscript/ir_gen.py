@@ -23,6 +23,7 @@ from ..runtime.timeframe import parse_timeframe
 from . import ast_nodes as ast
 from .builtins_table import CONTEXT_MEMBERS, KERNELS_FUNCTIONS, TA_FUNCTIONS, ta_overload
 from .diagnostics import Diagnostic, Span, make_diagnostic
+from .stdlib import stdlib_function
 
 IR_VERSION = 1
 COMPILER_VERSION = "openscript-1.0"
@@ -87,6 +88,28 @@ def _normalize_hex(hex_color: str) -> str:
     if len(h) in (3, 4):
         h = "".join(ch * 2 for ch in h)
     return f"#{h}"
+
+
+def _as_bar_count(v):
+    """Integral drawing counts (`offset`, `right_pad`, `bars`, `max_kept`) as INTs.
+
+    The Python lexer produces a float for every numeric literal, so `offset=-2`
+    lowered to `-2.0` while the TS compiler emitted `-2`. Two consequences, and
+    the second is why this is a correctness fix rather than a cosmetic one:
+
+      1. The serialized IR differed between the runtimes -- `"offset": -2.0` vs
+         `"offset": -2` -- despite "byte-identical IR" being the contract.
+      2. `x1 = spawn + offset` became a FLOAT, and indexing the numpy time column
+         with it raises IndexError. So any drawing with a non-zero offset crashed
+         the server-side executor while working fine in the browser.
+
+    Invisible to the IR-conformance guard because Python compares `-2 == -2.0` as
+    equal; it took the first drawing-geometry fixture to EXECUTE a negative offset
+    to surface it.
+    """
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return v
 
 
 def _slug(s: str) -> str:
@@ -231,6 +254,13 @@ class IRGenerator:
         self._inputs: list[dict] = []
         self._outputs: list[dict] = []
         self._scopes: list[dict[str, int]] = [{}]
+        # Lowest scope index visible to a variable lookup -- raised while inlining
+        # a stdlib body so it cannot see the caller's scope chain.
+        self._scope_floor = 0
+        # While inlining a stdlib body, the USER call site every emitted node and
+        # diagnostic is attributed to. A stdlib span would point into source the
+        # author cannot open, and `meta.spans` is what maps a value back to text.
+        self._span_override: Span | None = None
         self._functions: dict[str, ast.FunctionDecl] = {}
         # `p = plot(...)` bindings: name → index into _outputs (fill targets).
         self._plot_handles: dict[str, int] = {}
@@ -255,7 +285,7 @@ class IRGenerator:
             return found
         node_id = len(self._nodes)
         self._nodes.append({**node, "id": node_id})
-        self._spans[node_id] = span.to_dict()
+        self._spans[node_id] = (self._span_override or span).to_dict()
         self._warmups.append(warmup)
         self._statics.append(static_val)
         self._cse[key] = node_id
@@ -265,16 +295,20 @@ class IRGenerator:
         return self._emit({"op": "const", "value": None}, span, 0)
 
     def _warn(self, code: str, span: Span, detail: str | None = None) -> None:
-        self._diagnostics.append(make_diagnostic(code, "warning", span, detail))
+        self._diagnostics.append(make_diagnostic(code, "warning", self._span_override or span, detail))
 
     def _error(self, code: str, span: Span, detail: str | None = None) -> None:
-        self._diagnostics.append(make_diagnostic(code, "error", span, detail))
+        self._diagnostics.append(make_diagnostic(code, "error", self._span_override or span, detail))
 
     def _bind(self, name: str, node_id: int) -> None:
         self._scopes[-1][name] = node_id
 
     def _resolve_var(self, name: str):
-        for scope in reversed(self._scopes):
+        # `_scope_floor` seals a stdlib body off from the caller's variables.
+        # Without it a body's `close` could resolve to a user variable that
+        # shadowed the series -- the library would then mean different things in
+        # different scripts, the one property it exists to prevent.
+        for scope in reversed(self._scopes[self._scope_floor:]):
             if name in scope:
                 return scope[name]
         return None
@@ -442,6 +476,14 @@ class IRGenerator:
                 return self._lower_from_gradient(call)
             if ns == "request" and fn == "security":
                 return self._lower_request_security(call)
+            # Bundled standard library. MUST come before the const-fold
+            # fallthrough below: that path answers an unrecognised `ns.fn(...)`
+            # with `const null`, so a missing branch here would not fail -- it
+            # would silently produce an all-`na` series, the exact
+            # silent-degradation shape the request.security port nearly shipped.
+            std_fn = stdlib_function(ns, fn)
+            if std_fn is not None:
+                return self._inline_stdlib_function(std_fn, call)
             # constant-namespace call (e.g. color.new) — fold to a palette color
             folded = _resolve_const(call)
             if isinstance(folded, str) and folded.startswith("#"):
@@ -497,6 +539,29 @@ class IRGenerator:
             if isinstance(replacement, (int, float)) and not isinstance(replacement, bool):
                 node["replacement"] = replacement
         return self._emit(node, call.span, self._warmups[arg])
+
+    def _inline_stdlib_function(self, fn: ast.FunctionDecl, call: ast.CallExpr) -> int:
+        """Inline a stdlib primitive. Same mechanism as a user function -- the body
+        lowers into the caller's DAG and no IR node records a library was involved
+        -- with two seals the user-function path does not need: arguments are
+        lowered BEFORE the span override so they keep the caller's spans, and the
+        scope floor hides the caller's variables from the body."""
+        arg_ids = [self._lower_expr(a.value) for a in call.args]
+        scope = {}
+        for i, p in enumerate(fn.params):
+            scope[p.name] = arg_ids[i] if i < len(arg_ids) else self._na_node(call.span)
+        # A nested stdlib call keeps the OUTERMOST user call site: an inner one
+        # would still be a span the author cannot open, just a different one.
+        outer_span = self._span_override
+        outer_floor = self._scope_floor
+        self._span_override = outer_span or call.span
+        self._scopes.append(scope)
+        self._scope_floor = len(self._scopes) - 1
+        result = self._lower_expr(fn.body)
+        self._scopes.pop()
+        self._scope_floor = outer_floor
+        self._span_override = outer_span
+        return result
 
     def _inline_function(self, fn: ast.FunctionDecl, call: ast.CallExpr) -> int:
         arg_ids = [self._lower_expr(a.value) for a in call.args]
@@ -864,7 +929,8 @@ class IRGenerator:
 
     def _draw_num(self, call: ast.CallExpr, name: str, fallback: float):
         v = self._const_arg(call, None, name)
-        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else fallback
+        raw = v if isinstance(v, (int, float)) and not isinstance(v, bool) else fallback
+        return _as_bar_count(raw)
 
     def _draw_max_kept(self, call: ast.CallExpr, default: int):
         """`max_kept` -> clamped <= maximumObjectsPerOutput; a source value over
@@ -876,7 +942,7 @@ class IRGenerator:
             arg = self._arg_expr(call, None, "max_kept")
             self._warn("OS5001", arg.span if arg is not None else call.span)
             return cap
-        return raw
+        return _as_bar_count(raw)
 
     def _draw_text(
         self, call: ast.CallExpr, name: str, slots: dict[str, int] | None = None

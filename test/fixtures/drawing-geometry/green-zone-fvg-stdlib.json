@@ -1,0 +1,37 @@
+{
+  "name": "green-zone-fvg-stdlib",
+  "note": "A zone whose CONDITION and BOTH PRICES come from stdlib primitives, replayed byte-identically by both runtimes. Bar 2 opens the only gap (low 12 > high[2] = 11), so the zone is x1 = s-2 = 0, top 12, bottom 11. THE BARS ARE CHOSEN SO EACH STRICT COMPARISON IS PINNED SEPARATELY, because `fvg.up(0)`'s two conjuncts are redundant at min_size 0 and a fixture that only exercised that case would survive a mutation of either one. (1) The gap at bar 2 is EXACTLY 1, so the `fvg.up(1)` output must stay EMPTY — relaxing the size test to >= spawns a zone there and fails. (2) Bar 3's low is EXACTLY the bottom edge (11) and its high is exactly the top edge (12), so terminate.touch would mitigate it there while the strict terminate.straddle must not — relaxing the straddle test moves x2 from 4 to 3 and fails. Bar 4 crosses the top for real (13 > 12, 10 < 12) and closes the zone mitigated. The bearish output is pinned EMPTY: with the whole item list of every output compared, a primitive firing on the wrong side fails here rather than hiding.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"SG\", shorttitle=\"SG\", overlay=true)\nplotzone(fvg.up(0), fvg.up_top(), fvg.up_bottom(), \"FVG+\", offset=-2, extend=extend.until, terminate=terminate.straddle, max_kept=10)\nplotzone(fvg.up(1), fvg.up_top(), fvg.up_bottom(), \"FVG+ filtered\", offset=-2, extend=extend.until, terminate=terminate.straddle, max_kept=10)\nplotzone(fvg.down(0), fvg.down_top(), fvg.down_bottom(), \"FVG-\", offset=-2, extend=extend.until, terminate=terminate.straddle, max_kept=10)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040, 1784783100],
+    "open":   [9, 10, 12.5, 11.5, 11.5, 11.5],
+    "high":   [11, 11, 13, 12, 13, 12],
+    "low":    [8, 9, 12, 11, 10, 11],
+    "close":  [10, 10, 12.5, 11.5, 12, 11.5],
+    "volume": [100, 100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "FVG+",
+        "items": [
+          { "x1bar": 0, "x2bar": 4, "top": 12, "bottom": 11, "open": false, "mitigated": true, "text": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "FVG+ filtered",
+        "items": []
+      },
+      {
+        "kind": "zones",
+        "title": "FVG-",
+        "items": []
+      }
+    ]
+  }
+}
