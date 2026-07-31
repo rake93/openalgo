@@ -459,7 +459,9 @@ class Analyzer:
             # mitigated_color= is a zone-only styling of a terminate.touch close.
             term_arg = self._named_arg_value(call, "terminate")
             term_mode = self._enum_member(term_arg) if term_arg is not None else None
-            if fn == "plotlevel" or term_mode != "touch":
+            # `straddle` closes a zone the same way `touch` does -- strictly rather
+            # than inclusively -- so it carries the same mitigated styling.
+            if fn == "plotlevel" or term_mode not in ("touch", "straddle"):
                 self._error("OS2022", call.span)
         offset = self._numeric_arg_value(call, "offset")
         if offset is not None and offset > 0:

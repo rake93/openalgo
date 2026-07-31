@@ -1,0 +1,34 @@
+{
+  "name": "green-zone-straddle-top-cross",
+  "note": "TRUTH TABLE ROW — a genuine crossing of the TOP edge (high=111 > 110, low=100 < 110). Both predicates terminate at bar 2 and both mark the zone mitigated, so `mitigated_color` applies identically. A CONTROL row for the mutation proof: relaxing straddle's `>` to `>=` must leave this row untouched, which is what makes 'fails exactly the equality rows' a real claim rather than 'fails something'.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"SB\", shorttitle=\"SB\", overlay=true)\nspawn = bar_index == 0\nplotzone(spawn, high, low, \"T\", extend=extend.until, terminate=terminate.touch, mitigated_color=color.gray)\nplotzone(spawn, high, low, \"S\", extend=extend.until, terminate=terminate.straddle, mitigated_color=color.gray)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980],
+    "open":   [100, 100, 100, 100],
+    "high":   [110, 101, 111, 101],
+    "low":    [90, 99, 100, 99],
+    "close":  [100, 100, 100, 100],
+    "volume": [100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "T",
+        "items": [
+          { "x1bar": 0, "x2bar": 2, "top": 110, "bottom": 90, "open": false, "mitigated": true, "text": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "S",
+        "items": [
+          { "x1bar": 0, "x2bar": 2, "top": 110, "bottom": 90, "open": false, "mitigated": true, "text": null }
+        ]
+      }
+    ]
+  }
+}

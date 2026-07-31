@@ -1,0 +1,34 @@
+{
+  "name": "green-zone-straddle-bottom-cross",
+  "note": "TRUTH TABLE ROW — a genuine crossing of the BOTTOM edge (low=89 < 90, high=100 > 90). Both predicates terminate at bar 2 and mitigate. The bottom-edge CONTROL row for the mutation proof, and the proof that straddle's mitigated flag is not accidentally tied to the top edge alone.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"SB\", shorttitle=\"SB\", overlay=true)\nspawn = bar_index == 0\nplotzone(spawn, high, low, \"T\", extend=extend.until, terminate=terminate.touch, mitigated_color=color.gray)\nplotzone(spawn, high, low, \"S\", extend=extend.until, terminate=terminate.straddle, mitigated_color=color.gray)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980],
+    "open":   [100, 100, 100, 100],
+    "high":   [110, 101, 100, 101],
+    "low":    [90, 99, 89, 99],
+    "close":  [100, 100, 100, 100],
+    "volume": [100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "T",
+        "items": [
+          { "x1bar": 0, "x2bar": 2, "top": 110, "bottom": 90, "open": false, "mitigated": true, "text": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "S",
+        "items": [
+          { "x1bar": 0, "x2bar": 2, "top": 110, "bottom": 90, "open": false, "mitigated": true, "text": null }
+        ]
+      }
+    ]
+  }
+}

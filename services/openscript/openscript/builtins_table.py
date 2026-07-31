@@ -313,11 +313,20 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
     # Drawing-object enums (design 0.5 §2/§4). `line.style_*` styles level lines
     # and zone borders (solid/dashed/dotted); `extend` is the right-edge growth
     # mode; `terminate` is the termination predicate for extend.until -- the first
-    # five are directional PRICE predicates, `new_session` (G1) is the calendar one.
+    # six are directional PRICE predicates, `new_session` (G1) is the calendar one.
+    # `touch` is INCLUSIVE and `straddle` is its STRICT counterpart (register P4).
     "line": frozenset({"style_solid", "style_dashed", "style_dotted"}),
     "extend": frozenset({"lastbar", "until", "bars"}),
     "terminate": frozenset(
-        {"close_above", "close_below", "cross_above", "cross_below", "touch", "new_session"}
+        {
+            "close_above",
+            "close_below",
+            "cross_above",
+            "cross_below",
+            "touch",
+            "straddle",
+            "new_session",
+        }
     ),
     # request.security, same-symbol HTF (Phase 3): `syminfo.tickerid` is the
     # same-symbol marker; `barmerge.lookahead_*` selects the merge policy.

@@ -730,9 +730,10 @@ def _terminate_holds(
     term, b: int, top: float, bottom: float, dataset: dict, n: int, calendar: SessionCalendar
 ) -> bool:
     """Whether the terminate predicate holds at scanned bar b (design §4, G1 §2).
-    close_* are STRICT (>/<); cross_*/touch are INCLUSIVE (>=/<=). A zone tests
-    the NEAR edge in the named direction; touch is non-directional. For a level,
-    top == bottom == the single value L.
+    close_* are STRICT (>/<); cross_*/touch are INCLUSIVE (>=/<=); straddle is the
+    STRICT counterpart of touch. A zone tests the NEAR edge in the named direction;
+    touch and straddle are non-directional. For a level, top == bottom == the single
+    value L.
 
     `calendar` is read by new_session ONLY. The five price predicates must stay
     calendar-independent by construction (the engine's tests/calendar-isolation.test.ts
@@ -753,6 +754,12 @@ def _terminate_holds(
         entered_top = high >= top and low <= top
         entered_bottom = high >= bottom and low <= bottom
         return entered_top or entered_bottom
+    if term == "straddle":
+        # STRICT, and the strictness is the entire point: an exact retest of an
+        # edge must NOT mitigate. Comparisons are > / <, never >= / <=.
+        crossed_top = high > top and low < top
+        crossed_bottom = high > bottom and low < bottom
+        return crossed_top or crossed_bottom
     # G1 §2 -- BOUNDARY-AFTER-BAR: "is b the last bar of its session?", NEVER "did
     # the day change at b?". §3's geometry is inclusive (x2 = b is part of the
     # object), so a day-change-AT-bar test would fire on the NEXT session's OPENING
@@ -814,7 +821,12 @@ def _resolve_right_edge(
     for b in range(_scan_start_for(term, s), last_bar_index + 1):
         obj_bars += 1
         if _terminate_holds(term, b, top, bottom, dataset, n, calendar):
-            return {"x2bar": b, "open": False, "mitigated": term == "touch", "objBars": obj_bars}
+            return {
+                "x2bar": b,
+                "open": False,
+                "mitigated": term in ("touch", "straddle"),
+                "objBars": obj_bars,
+            }
     return {"x2bar": last_bar_index, "open": True, "mitigated": False, "objBars": obj_bars}
 
 

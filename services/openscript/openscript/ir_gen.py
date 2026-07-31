@@ -64,7 +64,7 @@ EXTEND_MAP = {"lastbar": "lastbar", "until": "until", "bars": "bars"}
 TERMINATE_MAP = {
     "close_above": "close_above", "close_below": "close_below",
     "cross_above": "cross_above", "cross_below": "cross_below", "touch": "touch",
-    "new_session": "new_session",
+    "straddle": "straddle", "new_session": "new_session",
 }
 INPUT_TYPE = {
     "int": "integer", "float": "float", "bool": "bool", "string": "string", "source": "source",
@@ -807,9 +807,10 @@ class IRGenerator:
             "maxKept": self._draw_max_kept(call, 10),
         }
         self._apply_extend_args(out, call, extend)
-        # mitigated_color styles a zone closed via terminate.touch (design §4);
-        # semantic OS2022 already rejects it on a level or non-touch terminate.
-        if out.get("terminate") == "touch":
+        # mitigated_color styles a zone closed via terminate.touch or the strict
+        # terminate.straddle (design §4); semantic OS2022 already rejects it on a
+        # level or on any other terminate.
+        if out.get("terminate") in ("touch", "straddle"):
             mc = self._draw_color_opt(call, "mitigated_color")
             if mc is not None:
                 out["mitigatedColor"] = mc

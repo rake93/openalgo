@@ -53,7 +53,10 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS2019": "extend.until requires a terminate= mode",
     "OS2020": "bars= requires extend.bars",
     "OS2021": "extend.bars requires a bars= count",
-    "OS2022": "mitigated_color= applies only to a zone terminated by terminate.touch",
+    "OS2022": (
+        "mitigated_color= applies only to a zone terminated by terminate.touch "
+        "or terminate.straddle"
+    ),
     "OS2023": "invalid drawing-output argument",
     # Semantic — request.security, same-symbol HTF (Phase 3 / register C4).
     # Byte-identical to the TS table and pinned by fixtures/htf/surface.json: the

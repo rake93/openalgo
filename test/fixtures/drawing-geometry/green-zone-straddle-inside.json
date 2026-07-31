@@ -1,0 +1,34 @@
+{
+  "name": "green-zone-straddle-inside",
+  "note": "TRUTH TABLE ROW — a bar entirely INSIDE the zone (high=105, low=95) reaches neither edge, so neither predicate fires and both zones ride to the live edge at bar 3, open and unmitigated. The row that proves straddle is not simply 'terminates more often': it is a different predicate, not a looser one. Also the only row where both outputs are identical AND open, so a materializer that defaulted `mitigated` to true would fail here.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"SB\", shorttitle=\"SB\", overlay=true)\nspawn = bar_index == 0\nplotzone(spawn, high, low, \"T\", extend=extend.until, terminate=terminate.touch, mitigated_color=color.gray)\nplotzone(spawn, high, low, \"S\", extend=extend.until, terminate=terminate.straddle, mitigated_color=color.gray)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980],
+    "open":   [100, 100, 100, 100],
+    "high":   [110, 101, 105, 101],
+    "low":    [90, 99, 95, 99],
+    "close":  [100, 100, 100, 100],
+    "volume": [100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "T",
+        "items": [
+          { "x1bar": 0, "x2bar": 3, "top": 110, "bottom": 90, "open": true, "mitigated": false, "text": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "S",
+        "items": [
+          { "x1bar": 0, "x2bar": 3, "top": 110, "bottom": 90, "open": true, "mitigated": false, "text": null }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "green-zone-straddle-bottom-equality",
+  "note": "TRUTH TABLE ROW — exact retest of the BOTTOM edge, the mirror of green-zone-straddle-top-equality. Bar 2 probes low=90 (EXACTLY the bottom edge), high=100. `touch` terminates at bar 2 and mitigates; `straddle` does not, because low < bottom is false at equality. The second of the two rows that separate the predicates, and the second row a <= mutation of the straddle branch must fail. Both edges are tested and OR'd, exactly as touch does, so covering only the top edge would leave half the predicate unguarded.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"SB\", shorttitle=\"SB\", overlay=true)\nspawn = bar_index == 0\nplotzone(spawn, high, low, \"T\", extend=extend.until, terminate=terminate.touch, mitigated_color=color.gray)\nplotzone(spawn, high, low, \"S\", extend=extend.until, terminate=terminate.straddle, mitigated_color=color.gray)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980],
+    "open":   [100, 100, 100, 100],
+    "high":   [110, 101, 100, 101],
+    "low":    [90, 99, 90, 99],
+    "close":  [100, 100, 100, 100],
+    "volume": [100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "T",
+        "items": [
+          { "x1bar": 0, "x2bar": 2, "top": 110, "bottom": 90, "open": false, "mitigated": true, "text": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "S",
+        "items": [
+          { "x1bar": 0, "x2bar": 3, "top": 110, "bottom": 90, "open": true, "mitigated": false, "text": null }
+        ]
+      }
+    ]
+  }
+}
