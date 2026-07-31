@@ -1,0 +1,44 @@
+{
+  "name": "green-zone-rjb-offset-split",
+  "note": "Super OrderBlock's rejection blocks split into four outputs because the trapped-wick and signal-wick variants have DIFFERENT LEFT EDGES — offset -2 vs -1 — and offset must be a literal. This pins that split and each variant's own geometry. THE TWO VARIANTS ARE MUTUALLY EXCLUSIVE and cannot be shown co-firing, which corrects conversion note 8: with H=high[1] and C=close[1], the wick test is `high < C + 0.2*(H-C)` and the signal test is `high > H`; both would require H < C + 0.2*(H-C), i.e. 0.8*(H-C) < 0, i.e. H < C, and a bar's high is never below its close. The Pine has the same structure (isDownRjb1/isDownRjb2) so it cannot push both either. So the variants are pinned on DIFFERENT bars. ob.down() is true at bars 1, 3 and 5 and ob.up() is true nowhere, so both RJB+ outputs are pinned EMPTY — a primitive firing on the wrong side fails here rather than hiding. Bar 1: threshold 110+0.2*(120-110)=112 and high[1]=111 < 112, so the TRAPPED variant spawns at s=2 with x1=s-2=0, top=high[0]=120, bottom=close[0]=110. Bar 3: high[3]=105 > high[2]=100, so the SIGNAL variant spawns at s=4 with x1=s-1=3, top=high[3]=105, bottom=open[3]=103. Swapping the two offsets moves those x1 values to 1 and 2 and fails. BAR 5 IS THE 0.2 DISCRIMINATOR and the reason it exists: threshold 100+0.2*(110-100)=102 against high[5]=104, so the wick test is FALSE and nothing spawns at bar 6 — but under the 0.5 the Pine's own adjacent comment describes, the threshold would be 105 and a zone would wrongly appear. Bar 1 pins the constant from the other side: at 0.0 its threshold falls to 110, 111 < 110 fails, and the trapped zone vanishes. Bar 4's high of exactly 110 against the trapped zone's 110 bottom edge does NOT terminate it, because straddle is strict. The signal zone is straddled at its bottom by bar 5 (high 104 > 103 > low 85) and closes mitigated.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"RJBX\", shorttitle=\"RJBX\", overlay=true)\nplotzone(rjb.down_wick()[1], rjb.down_wick_top()[1], rjb.down_wick_bottom()[1], \"RJB- trapped\", offset=-2, extend=extend.until, terminate=terminate.straddle, max_kept=10)\nplotzone(rjb.down_signal()[1], rjb.down_signal_top()[1], rjb.down_signal_bottom()[1], \"RJB- signal\", offset=-1, extend=extend.until, terminate=terminate.straddle, max_kept=10)\nplotzone(rjb.up_wick()[1], rjb.up_wick_top()[1], rjb.up_wick_bottom()[1], \"RJB+ trapped\", offset=-2, extend=extend.until, terminate=terminate.straddle, max_kept=10)\nplotzone(rjb.up_signal()[1], rjb.up_signal_top()[1], rjb.up_signal_bottom()[1], \"RJB+ signal\", offset=-1, extend=extend.until, terminate=terminate.straddle, max_kept=10)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040, 1784783100, 1784783160],
+    "open":   [100, 109, 96,  103, 91,  103, 87],
+    "high":   [120, 111, 100, 105, 110, 104, 92],
+    "low":    [99,  94,  95,  88,  90,  85,  85],
+    "close":  [110, 95,  99,  90,  100, 86,  90],
+    "volume": [100, 100, 100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "RJB- trapped",
+        "items": [
+          { "x1bar": 0, "x2bar": 6, "top": 120, "bottom": 110, "open": true, "mitigated": false, "text": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "RJB- signal",
+        "items": [
+          { "x1bar": 3, "x2bar": 5, "top": 105, "bottom": 103, "open": false, "mitigated": true, "text": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "RJB+ trapped",
+        "items": []
+      },
+      {
+        "kind": "zones",
+        "title": "RJB+ signal",
+        "items": []
+      }
+    ]
+  }
+}

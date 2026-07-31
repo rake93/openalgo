@@ -1,0 +1,36 @@
+{
+  "name": "green-zone-ob-edge-selection",
+  "note": "Super OrderBlock's OB edge selection: `ob.up_bottom()` is math.min(low[1], low) and `ob.down_top()` is math.max(high[1], high), while the OPPOSITE edge of each is a single bar (high[1] / low[1]). That asymmetry is deliberate — see stdlib/ob.os — and it is the term most likely to be mistyped. TWO SPAWNS PER SIDE ARE MANDATORY, and this is the whole design of the fixture: min(a,b) always EQUALS one of its operands, so a single spawn cannot tell math.min(low[1], low) apart from whichever operand happened to win, and half the mutation space would survive. The pairs have OPPOSITE orderings. OB+ spawns at s=2 (x1=0) where low[s-2]=90 < low[s-1]=100 so bottom=90 — a mutation to bare `low` yields 100 and fails; and at s=4 (x1=2) where low[s-1]=107 < low[s-2]=108 so bottom=107 — a mutation to bare `low[1]` yields 108 and fails. OB- spawns at s=7 (x1=5) where high[s-2]=123 > high[s-1]=122 so top=123 — a mutation to bare `high` yields 122 and fails; and at s=9 (x1=7) where high[s-1]=125 > high[s-2]=121 so top=125 — a mutation to bare `high[1]` yields 121 and fails. Swapping the bullish and bearish asymmetry also fails: OB+ at s=2 would take max(106,111)=111 instead of high[s-2]=106. x1 = s-2 on every item pins offset=-2. The OB- zone at s=7 is straddled by bar 8 (high 125 > top 123 > low 114) and closes mitigated, which exercises the lifecycle; bar 4's high of exactly 110 against the 110 bottom edge of no zone here is incidental, but bar 4's low of 114 staying above the 113 top of the s=4 zone is what keeps that zone open.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"OBE\", shorttitle=\"OBE\", overlay=true)\nplotzone(ob.up()[1], ob.up_top()[1], ob.up_bottom()[1], \"OB+\", offset=-2, extend=extend.until, terminate=terminate.straddle, max_kept=10)\nplotzone(ob.down()[1], ob.down_top()[1], ob.down_bottom()[1], \"OB-\", offset=-2, extend=extend.until, terminate=terminate.straddle, max_kept=10)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040, 1784783100, 1784783160, 1784783220, 1784783280, 1784783340, 1784783400],
+    "open":   [105, 101, 112, 110, 115, 119, 121, 117, 124, 116, 120],
+    "high":   [106, 111, 113, 115, 119, 123, 122, 121, 125, 120, 122],
+    "low":    [90,  100, 108, 107, 114, 118, 115, 116, 114, 115, 119],
+    "close":  [100, 110, 109, 114, 118, 122, 116, 120, 115, 119, 121],
+    "volume": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "OB+",
+        "items": [
+          { "x1bar": 0, "x2bar": 10, "top": 106, "bottom": 90,  "open": true, "mitigated": false, "text": null },
+          { "x1bar": 2, "x2bar": 10, "top": 113, "bottom": 107, "open": true, "mitigated": false, "text": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "OB-",
+        "items": [
+          { "x1bar": 5, "x2bar": 8,  "top": 123, "bottom": 118, "open": false, "mitigated": true,  "text": null },
+          { "x1bar": 7, "x2bar": 10, "top": 125, "bottom": 116, "open": true,  "mitigated": false, "text": null }
+        ]
+      }
+    ]
+  }
+}

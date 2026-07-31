@@ -1,0 +1,33 @@
+{
+  "name": "green-zone-fvg-sb-disabled",
+  "note": "HALF TWO OF A PAIR — identical bars and identical source to green-zone-fvg-sb-exclusive, differing ONLY in inputs.plotSB. `sbFvgUp` is `plotSB and ...`, so disabling it makes the whole conjunction false on every bar and the structure-breaking output must go EMPTY while its zone falls through to the plain output. That fall-through is the Pine's else-if, and it is the half of conversion note 7 that the enabled fixture cannot show. Expect `FVG+ SB` empty and `FVG+` carrying BOTH zones in ascending spawn order: the SB-qualifying one from bar 5 (x1=3, 114/110) followed by the plain one from bar 8 (x1=6, 127/122). The geometry of each zone is byte-identical to its counterpart in the other half — only its OUTPUT changes — which is what makes the pair's multiset guard meaningful rather than a restatement. A regression that made the two outputs overlap rather than partition would show up as a duplicated item here, and one that dropped the SB case entirely would show up as a missing item; neither is visible from either half alone. Mutation-proven: deleting the fallen-through zone from this file fails this fixture AND both cross-fixture guards.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": { "plotSB": false },
+  "source": "indicator(\"SBX\", shorttitle=\"SBX\", overlay=true)\np = input.int(1, \"Pivot Lookup\", minval=1, maxval=5)\nplotSB = input.bool(true, \"Plot Structure Breaking FVG\")\npivotTop = pivot.last_high(p, p)\nsbFvgUp = plotSB and close[1] > pivotTop and low[1] < pivotTop and high[2] < pivotTop and low > pivotTop\nplotzone(fvg.up(0) and sbFvgUp, fvg.up_top(), fvg.up_bottom(), \"FVG+ SB\", offset=-2, extend=extend.until, terminate=terminate.straddle, max_kept=10)\nplotzone(fvg.up(0) and not sbFvgUp, fvg.up_top(), fvg.up_bottom(), \"FVG+\", offset=-2, extend=extend.until, terminate=terminate.straddle, max_kept=10)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040, 1784783100, 1784783160, 1784783220, 1784783280, 1784783340],
+    "open":   [100, 104, 106, 101, 109, 116, 119, 121, 126, 129],
+    "high":   [105, 112, 108, 110, 118, 120, 122, 128, 130, 132],
+    "low":    [99,  103, 100, 100, 108, 114, 118, 120, 127, 128],
+    "close":  [104, 106, 101, 109, 115, 119, 121, 125, 129, 131],
+    "volume": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "FVG+ SB",
+        "items": []
+      },
+      {
+        "kind": "zones",
+        "title": "FVG+",
+        "items": [
+          { "x1bar": 3, "x2bar": 9, "top": 114, "bottom": 110, "open": true, "mitigated": false, "text": null },
+          { "x1bar": 6, "x2bar": 9, "top": 127, "bottom": 122, "open": true, "mitigated": false, "text": null }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "green-zone-bos-pivot-top",
+  "note": "This is the fixture that proves the `pivothigh` + `valuewhen` equivalence END TO END, which is the workaround the whole `pivot` stdlib namespace exists to package. Pine samples `ta.valuewhen(hih, high[pivotLookup], 0)` at a RUNTIME offset, which OpenScript cannot express; the substitute claims that `ta.pivothigh(high, l, r)` returns, at the confirming bar, exactly `high[r]` — so sampling the kernel's own output where it is non-na gives what Pine sampled. A BoS zone's top IS that value, so the zone's top must equal the high at the PIVOT bar. BoS zones take no offset= argument, so offset defaults to 0 and x1 = s. `ta.pivothigh(high,1,1)` is non-na at bar 2 (value high[1]=110) and bar 5 (value high[4]=104); `ta.pivotlow(low,1,1)` at bar 3 (low[2]=95) and bar 7 (low[6]=96). crossover(close, pivotTop) fires only at bar 7 (close 105 > 104, close[6]=97 <= 104), so BoS+ spawns at s=7 with x1=7, top=104, bottom=96, and bars 8-9 keep low >= 105 so nothing straddles either edge and it rides to the live edge. TOP=104 IS THE ASSERTION, AND EVERY PLAUSIBLE WRONG ANSWER IS A DIFFERENT NUMBER: the FIRST pivot high is 110, so a valuewhen that latched the earliest match fails; the running maximum high is also 110, so a `ta.highest` substitute fails; the high at the spawn bar is 106; the CLOSE at the pivot bar is 103; and — the one that matters most — the high at the CONFIRMING bar 5 is 103, so reading `high[0]` instead of `high[right]` at the confirming bar fails. The bottom is pinned the same way: 96 is the most recent pivot low, against a first/minimum of 95 and a spawn-bar low of 97. BoS- is pinned EMPTY because close never crosses under pivotBottom, so a crossunder that fired on the wrong side or on the wrong series fails here.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"BOSX\", shorttitle=\"BOSX\", overlay=true)\np = input.int(1, \"Pivot Lookup\", minval=1, maxval=5)\npivotTop = pivot.last_high(p, p)\npivotBottom = pivot.last_low(p, p)\nplotzone(bos.up_from(close, p, p) and not na(pivotBottom), pivotTop, pivotBottom, \"BoS+\", extend=extend.until, terminate=terminate.straddle, max_kept=10)\nplotzone(bos.down_from(close, p, p) and not na(pivotTop), pivotTop, pivotBottom, \"BoS-\", extend=extend.until, terminate=terminate.straddle, max_kept=10)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040, 1784783100, 1784783160, 1784783220, 1784783280, 1784783340],
+    "open":   [100, 101, 105, 97,  99,  103, 100, 97,  106, 107],
+    "high":   [102, 110, 106, 100, 104, 103, 101, 106, 108, 109],
+    "low":    [98,  100, 95,  96,  98,  99,  96,  97,  105, 106],
+    "close":  [101, 105, 96,  99,  103, 100, 97,  105, 107, 108],
+    "volume": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "BoS+",
+        "items": [
+          { "x1bar": 7, "x2bar": 9, "top": 104, "bottom": 96, "open": true, "mitigated": false, "text": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "BoS-",
+        "items": []
+      }
+    ]
+  }
+}

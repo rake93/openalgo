@@ -86,7 +86,7 @@ def test_the_fixture_case_count_is_exact():
     """Exact, not >=: these fixtures are the only thing preventing TS/Python drift and
     the only expression of the G1 matrix, so deleting one must fail loudly rather than
     quietly shrink the suite."""
-    assert len(FIXTURE_FILES) == 24
+    assert len(FIXTURE_FILES) == 29
 
 
 def test_every_fixture_name_matches_its_filename():
@@ -236,3 +236,71 @@ def test_the_acceptance_pair_resolves_to_genuinely_different_calendars():
 def test_the_acceptance_pair_expects_different_geometry():
     ist, utc = _pair()
     assert utc["expect"]["drawings"] != ist["expect"]["drawings"]
+
+
+# -- the FVG structure-breaking exclusivity pair -------------------------------------
+#
+# Super OrderBlock note 7 claims `FVG+ SB` and `FVG+` are EXACTLY exclusive: the SB
+# output takes the structure-breaking case, the plain output takes `not sbFvgUp`, and
+# with SB disabled an SB-qualifying bar falls through to the plain output (the Pine's
+# else-if). That is a statement about a PAIR of runs, so like the UTC/IST pair above it
+# cannot live inside either fixture -- each half on its own shows a partition, never
+# that the partition is lossless.
+#
+# The load-bearing assertion is the multiset one. Equal item COUNTS would pass while the
+# two outputs silently overlapped or dropped a zone, so the guard compares the
+# concatenated items themselves: disabling SB may move a zone between outputs and must
+# not create, destroy or duplicate one.
+#
+# Mirrors `describe('the FVG structure-breaking exclusivity pair')` in the engine's
+# tests/drawing-geometry.test.ts. Both sides must agree or the pair proves nothing.
+
+
+def _sb_pair():
+    return (
+        _load(FIXTURE_DIR / "green-zone-fvg-sb-exclusive.json"),
+        _load(FIXTURE_DIR / "green-zone-fvg-sb-disabled.json"),
+    )
+
+
+def _named(fx: dict, title: str) -> dict:
+    return next(o for o in fx["expect"]["drawings"] if o["title"] == title)
+
+
+def _all_items(fx: dict) -> list:
+    return [item for o in fx["expect"]["drawings"] for item in o["items"]]
+
+
+def test_the_sb_pair_differs_only_by_the_plot_sb_input():
+    on, off = _sb_pair()
+    assert off["bars"] == on["bars"]
+    assert off["source"] == on["source"]
+    assert off["instrument"] == on["instrument"]
+    assert on["inputs"] == {"plotSB": True}
+    assert off["inputs"] == {"plotSB": False}
+
+
+def test_the_sb_output_carries_a_zone_when_enabled_and_none_when_disabled():
+    # Non-vacuity: without the first assertion the pair would still "pass" if the SB
+    # condition never fired at all, which is exactly the shape of the F5M spawn bug.
+    on, off = _sb_pair()
+    assert len(_named(on, "FVG+ SB")["items"]) > 0
+    assert _named(off, "FVG+ SB")["items"] == []
+
+
+def test_disabling_sb_moves_its_zone_to_the_plain_output_rather_than_dropping_it():
+    on, off = _sb_pair()
+    assert _named(off, "FVG+")["items"] == (
+        _named(on, "FVG+ SB")["items"] + _named(on, "FVG+")["items"]
+    )
+
+
+def test_no_zone_is_created_destroyed_or_duplicated_by_the_sb_toggle():
+    on, off = _sb_pair()
+    key = lambda xs: sorted(json.dumps(x, sort_keys=True) for x in xs)  # noqa: E731
+    assert key(_all_items(off)) == key(_all_items(on))
+
+
+def test_the_sb_pair_expects_different_geometry():
+    on, off = _sb_pair()
+    assert off["expect"]["drawings"] != on["expect"]["drawings"]
