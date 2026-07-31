@@ -2,6 +2,14 @@
 
 All notable changes to OpenAlgo will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- `/api/v1/search` results are now relevance-ranked rather than returned in arbitrary
+  master-contract load order. Exact symbol matches rank ahead of prefixes and substring matches.
+  Response schema and result limits are unchanged.
+
 ## [2.0.0.0] - 2026-01-22
 
 ### Major Release: Complete Frontend Rewrite & Feature Expansion
