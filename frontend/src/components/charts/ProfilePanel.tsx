@@ -11,6 +11,7 @@
  * See openalgo-openscript/docs/openscript-phase2-performance-profile-design.md.
  */
 
+import { BUILD_STAMP, formatBuildStamp } from '@openalgo/openscript'
 import type { IndicatorInstance } from '@/lib/charts/indicator-host'
 import { fallbackLabel, isSilentFallback, type IndicatorProfile } from '@/lib/charts/indicator-profile'
 
@@ -125,6 +126,45 @@ export function ProfilePanel({
           ))
         )}
       </div>
+
+      <BuildStampRow />
+    </div>
+  )
+}
+
+/**
+ * Which engine build this page is running (M6 piece B, trap T1).
+ *
+ * A PANEL-LEVEL fact, not a per-indicator one: there is one bundled engine per
+ * page, so it sits in the footer rather than inside each `Entry` — which also
+ * means it still shows when no indicator has been added yet.
+ *
+ * It does NOT detect staleness and must not imply that it does. The frontend
+ * bundles the engine at build time, so a bundle cannot know what the repo looks
+ * like now; only the server can do the live recompute that makes the freshness
+ * endpoint exact. What this answers is "which engine produced what I am looking
+ * at", which is the question the 2026-07-30 session could not answer for ~14
+ * hours while the editor and the chart quietly disagreed.
+ *
+ * `isDevBuild` is rendered distinctly on purpose. A dev bundle showing something
+ * that reads like a real build identity would be believed, and a stamp that can
+ * lie about which code you are running is worse than no stamp at all.
+ */
+function BuildStampRow() {
+  const title = BUILD_STAMP.isDevBuild
+    ? 'Running the engine from source — no build identity was injected.'
+    : `engine source ${BUILD_STAMP.fingerprint} · built ${BUILD_STAMP.builtAt}\n` +
+      'Identifies this bundle. It cannot detect staleness — rebuild frontend/dist after an engine change.'
+
+  return (
+    <div
+      className="flex items-baseline justify-between gap-3 border-t border-border px-2.5 py-1 tabular-nums"
+      title={title}
+    >
+      <span className="text-muted-foreground">engine build</span>
+      <span className={BUILD_STAMP.isDevBuild ? 'text-amber-500' : 'text-muted-foreground'}>
+        {formatBuildStamp()}
+      </span>
     </div>
   )
 }
