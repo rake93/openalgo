@@ -45,6 +45,27 @@ class SessionCalendar:
 
     utc_offset_seconds: int
     semantic_key: str
+    # Seconds past LOCAL midnight at which the trading day opens, anchoring
+    # intraday HTF buckets (session-model design 3.1). OPTIONAL, and None means
+    # "the local day IS the trading day" -- the correct reading for a 24/7 venue
+    # like CRYPTO, and what keeps this inert for every calendar that omits it.
+    session_open_seconds: int | None = None
+
+
+def session_calendar(utc_offset_seconds: int, session_open_seconds: int) -> SessionCalendar:
+    """A fixed-offset calendar that also knows when its trading day opens.
+
+    `semantic_key` MUST differ from the session-less form, and that is not
+    cosmetic: it is the HTF resample cache identity. Two calendars sharing an
+    offset and differing in session would otherwise collide, and a bucket
+    structure built under one session would be served under the other -- a wrong
+    answer with no error and no diff.
+    """
+    return SessionCalendar(
+        utc_offset_seconds,
+        f"fixed:{utc_offset_seconds}@{session_open_seconds}",
+        session_open_seconds,
+    )
 
 
 def fixed_offset_calendar(utc_offset_seconds: int) -> SessionCalendar:
@@ -111,19 +132,29 @@ def local_day_key(t_sec, calendar: SessionCalendar):
 # "JAPAN225": fixed_offset_calendar(32400) is correct by construction.
 # GLOBAL_INDEX is deliberately ABSENT: it mixes zones (US30 is US Eastern WITH DST,
 # JAPAN225 +09:00, HANGSENG +08:00, GIFTNIFTY IST) and is handled separately.
+# Trading-day opens, seconds past LOCAL midnight (session-model design 3.2).
+# A calendar per SESSION, not per offset: NSE and MCX share IST and do not share
+# hours, so the single frozen IST_CALENDAR they used to share cannot carry one.
+NSE_SESSION_CALENDAR = session_calendar(19_800, 9 * 3600 + 15 * 60)
+MCX_SESSION_CALENDAR = session_calendar(19_800, 9 * 3600)
+
 _CALENDAR_BY_EXCHANGE = {
-    "NSE": IST_CALENDAR,
-    "BSE": IST_CALENDAR,
-    "NFO": IST_CALENDAR,
-    "BFO": IST_CALENDAR,
+    "NSE": NSE_SESSION_CALENDAR,
+    "BSE": NSE_SESSION_CALENDAR,
+    "NFO": NSE_SESSION_CALENDAR,
+    "BFO": NSE_SESSION_CALENDAR,
+    "NSE_INDEX": NSE_SESSION_CALENDAR,
+    "BSE_INDEX": NSE_SESSION_CALENDAR,
+    "MCX": MCX_SESSION_CALENDAR,
+    "MCX_INDEX": MCX_SESSION_CALENDAR,
+    # SESSION-LESS ON PURPOSE, not overlooked. CDS/BCD/NCDEX/NCO hours are not
+    # owner-confirmed, and a WRONG session produces exactly the silently-shifted
+    # buckets this change exists to remove.
     "CDS": IST_CALENDAR,
     "BCD": IST_CALENDAR,
-    "MCX": IST_CALENDAR,
     "NCDEX": IST_CALENDAR,
     "NCO": IST_CALENDAR,
-    "NSE_INDEX": IST_CALENDAR,
-    "BSE_INDEX": IST_CALENDAR,
-    "MCX_INDEX": IST_CALENDAR,
+    # 24/7 -- the local day IS the trading day.
     "CRYPTO": UTC_CALENDAR,
 }
 

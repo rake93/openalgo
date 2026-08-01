@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from services.openscript.runtime.calendar import fixed_offset_calendar
+from services.openscript.runtime.calendar import fixed_offset_calendar, session_calendar
 from services.openscript.runtime.htf_resample import bucket_key
 from services.openscript.runtime.timeframe import (
     Timeframe,
@@ -68,7 +68,13 @@ def _calendar(name):
     same number; resolving a name to a hard-coded offset here would be a second
     source of truth.
     """
-    return fixed_offset_calendar(FX["calendars"][name]["utcOffsetSeconds"])
+    spec = FX["calendars"][name]
+    # Rebuilt from the RECORDED session, not a local table: a calendar that
+    # dropped its session here would silently bucket from local midnight and the
+    # case would pass against a calendar it was never generated under.
+    if spec.get("sessionOpenSeconds") is not None:
+        return session_calendar(spec["utcOffsetSeconds"], spec["sessionOpenSeconds"])
+    return fixed_offset_calendar(spec["utcOffsetSeconds"])
 
 
 def _tf(d):

@@ -83,8 +83,17 @@ def bucket_key(t_sec, tf: Timeframe, calendar: SessionCalendar) -> int:
     if tf.unit == "M":
         return _year_month_ordinal(day_number) // tf.multiple
     if tf.unit == "min":
+        # Anchored to the TRADING day, not the local one (session-model design
+        # 3.3). NSE opens 09:15 = 555 minutes past midnight, so a midnight grid
+        # only lines up for timeframes dividing 555 -- 1m/3m/5m/15m do, 30m/60m
+        # are 15 minutes out. Absent session = 0 = the previous behaviour exactly.
+        #
+        # `sec_of_day - open` goes NEGATIVE for a pre-open bar, and Python's
+        # floor division toward -inf is the behaviour we want: such a bar lands
+        # in the bucket BEFORE the session's first, never folded into it.
+        open_sec = calendar.session_open_seconds or 0
         sec_of_day = t_sec + calendar.utc_offset_seconds - day_number * DAY_SECONDS
-        return day_number * MIN_KEY_DAY_STRIDE + int(sec_of_day // (tf.multiple * 60))
+        return day_number * MIN_KEY_DAY_STRIDE + int((sec_of_day - open_sec) // (tf.multiple * 60))
     raise ValueError(f"unknown timeframe unit: {tf.unit!r}")
 
 

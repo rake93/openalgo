@@ -30,7 +30,7 @@ from unittest.mock import MagicMock, patch
 # ImportError. Pre-existing fragility, not introduced here.
 from services.openscript import openscript  # noqa: F401
 from services.openscript.alert_service import _evaluate_one
-from services.openscript.runtime.calendar import IST_CALENDAR, UTC_CALENDAR
+from services.openscript.runtime.calendar import IST_CALENDAR, NSE_SESSION_CALENDAR, UTC_CALENDAR
 
 # Eagerly imported (module level, at collection time) rather than left for
 # `unittest.mock.patch`'s dotted-path lookup to import lazily inside the test:
@@ -121,7 +121,12 @@ def test_nse_alert_evaluates_under_ist_calendar():
     constant that happens to equal the IST default for every alert.
     """
     calendar = _run_and_capture_calendar("NSE")
-    assert calendar is IST_CALENDAR
+    # NSE now resolves to the SESSION-bearing IST calendar (09:15 trading-day
+    # open). The point of the test is unchanged -- the value reaching execute_ir
+    # is resolved per-instrument rather than a constant -- so it asserts that
+    # resolved identity, and that the offset is still IST.
+    assert calendar is NSE_SESSION_CALENDAR
+    assert calendar.utc_offset_seconds == IST_CALENDAR.utc_offset_seconds
 
 
 def test_unmapped_exchange_logs_a_warning_naming_the_fallback(caplog):
