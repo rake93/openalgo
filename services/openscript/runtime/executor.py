@@ -794,6 +794,36 @@ def _scan_start_for(term, s: int) -> int:
     return s if term == "new_session" else s + 1
 
 
+def _sampled_span(o: dict, off: int) -> int:
+    """Extra object-bars to charge for a LEFT extension, and only a SAMPLED one.
+
+    A constant `offset` is visible to the plan cost estimator, so it is already
+    part of the admitted plan and charging it here would move the budget for
+    every indicator that has ever used one. A sampled offset is the genuinely
+    new hazard: nothing bounds it before execution, so it pays per object.
+    """
+    return 0 if o.get("offsetNodeId") is None else abs(off)
+
+
+def _resolve_offset(o: dict, const_offset: int, s: int, values: list) -> int:
+    """The object's LEFT shift, sampled at spawn when it is a series (design 3.1).
+
+    `na` falls back to 0 -- the identity, i.e. no shift. That differs from an
+    `na` marker PRICE, which drops the marker, and the asymmetry is deliberate:
+    there is no defensible price to invent, but "do not move it" is the obvious
+    meaning of a missing shift, and dropping the object instead would make it
+    vanish exactly while its offset expression was warming up.
+    """
+    node = o.get("offsetNodeId")
+    if node is None:
+        return const_offset
+    v = float(_sample_at(_as_series(values[node], s + 1), s))
+    if not math.isfinite(v):
+        return 0
+    max_back = SCRIPT_LIMITS["maximumLookback"]
+    return max(-max_back, min(max_back, int(v)))
+
+
 def _resolve_right_edge(
     o: dict, s: int, top: float, bottom: float, dataset: dict, n: int, calendar: SessionCalendar
 ) -> dict:
@@ -884,11 +914,12 @@ def _materialize_drawing(
                 continue
             price = _sample_at(price_v, s)
             edge = _resolve_right_edge(o, s, price, price, dataset, n, calendar)
+            off = _resolve_offset(o, offset, s, values)
             if budget is not None:
-                budget.charge(DRAW_OBJECT_WEIGHT * edge["objBars"])
+                budget.charge(DRAW_OBJECT_WEIGHT * (edge["objBars"] + _sampled_span(o, off)))
             item = {
                 "id": f"{idx}:{_time_key(spawn_time)}",
-                "x1": _anchor(dataset, s + offset, n),
+                "x1": _anchor(dataset, s + off, n),
                 "x2": _anchor(dataset, edge["x2bar"], n),
                 "price": price,
                 "open": edge["open"],
@@ -921,11 +952,12 @@ def _materialize_drawing(
         top = _sample_at(top_v, s)
         bottom = _sample_at(bottom_v, s)
         edge = _resolve_right_edge(o, s, top, bottom, dataset, n, calendar)
+        off = _resolve_offset(o, offset, s, values)
         if budget is not None:
-            budget.charge(DRAW_OBJECT_WEIGHT * edge["objBars"])
+            budget.charge(DRAW_OBJECT_WEIGHT * (edge["objBars"] + _sampled_span(o, off)))
         item = {
             "id": f"{idx}:{_time_key(spawn_time)}",
-            "x1": _anchor(dataset, s + offset, n),
+            "x1": _anchor(dataset, s + off, n),
             "x2": _anchor(dataset, edge["x2bar"], n),
             "top": top,
             "bottom": bottom,

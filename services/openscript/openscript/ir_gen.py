@@ -859,6 +859,9 @@ class IRGenerator:
             "maxKept": self._draw_max_kept(call, 20),
             "labelLatestOnly": self._const_arg(call, None, "label_latest_only") is True,
         }
+        _off_node = self._draw_offset_node(call)
+        if _off_node is not None:
+            out["offsetNodeId"] = _off_node
         self._apply_extend_args(out, call, extend)
         label = self._draw_text(call, "label", {"price": out["priceNodeId"]})
         if label is not None:
@@ -898,6 +901,9 @@ class IRGenerator:
             "extend": extend,
             "maxKept": self._draw_max_kept(call, 10),
         }
+        _off_node = self._draw_offset_node(call)
+        if _off_node is not None:
+            out["offsetNodeId"] = _off_node
         self._apply_extend_args(out, call, extend)
         # mitigated_color styles a zone closed BY PRICE (design §4); semantic
         # OS2022 already rejects it on a level or on `new_session`. This gate
@@ -976,6 +982,20 @@ class IRGenerator:
         """`style=`/`border_style=` enum -> IR lineStyle/borderStyle; default 'solid'."""
         v = self._const_arg(call, None, name)
         return v if v in ("dashed", "dotted") else "solid"
+
+    def _draw_offset_node(self, call: ast.CallExpr) -> int | None:
+        """`offset=` when it is NOT a compile-time constant: lower it to a node
+        sampled at spawn (design 3.1). Returns None for the const case so the
+        existing numeric path is preserved byte-for-byte -- an IR that could
+        always be written as a plain number must keep being written that way, or
+        every stored IR and golden churns for a feature they do not use.
+        """
+        e = self._arg_expr(call, None, "offset")
+        if e is None:
+            return None
+        if isinstance(self._const_arg(call, None, "offset"), (int, float)):
+            return None
+        return self._lower_expr(e)
 
     def _draw_num(self, call: ast.CallExpr, name: str, fallback: float):
         v = self._const_arg(call, None, name)

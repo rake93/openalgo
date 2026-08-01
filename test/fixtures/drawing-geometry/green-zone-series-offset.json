@@ -1,0 +1,27 @@
+{
+  "name": "green-zone-series-offset",
+  "note": "plotzone with a SERIES offset. `offset` was const-only, enforced by OS2023 (`offset= must be a compile-time constant`) -- an honest rejection, not a silent drop. That is what made the ICT suite's EQH/EQL misalignment unfixable in script: `ta.pivothigh` confirms a pivot `right` bars late, so a band spawning at the confirming bar sits `right` bars to the RIGHT of the candle that made the level, and the obvious `offset=-liqRight` would not compile because `liqRight` is a user input. Here `back` is an input (runtime, never const-folded) defaulting to 2, the zone spawns at bar 3, and x1 must be bar 1 -- not bar 3.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nback = input.int(2, \"Back\", minval=0, maxval=10)\nplotzone(bar_index == 3, high, low, \"Z\", offset=-back, extend=extend.bars, bars=1)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [11, 9, 10.5, 11.5, 12],
+    "high":   [12, 11, 13, 14, 15],
+    "low":    [10, 8, 10.5, 11, 12],
+    "close":  [11, 8.5, 10.75, 12, 13],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "Z",
+        "items": [
+          { "x1bar": 1, "x2bar": 4, "top": 14, "bottom": 11, "open": false, "mitigated": false, "text": null }
+        ]
+      }
+    ]
+  }
+}

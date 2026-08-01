@@ -1,0 +1,27 @@
+{
+  "name": "green-zone-series-offset-na",
+  "note": "An `na` series offset falls back to 0, anchoring the object on its own spawn bar. Unlike an `na` PRICE -- which drops a marker, because there is no defensible level to draw it at -- an `na` offset has an obvious identity: no shift. Dropping the object instead would make a zone vanish whenever its offset expression was still warming up, which is the one moment a warmup-sensitive port most needs to see it. Here `ta.sma(close, 10)` is na at bar 3 on a 5-bar dataset, so x1 must equal the spawn bar 3.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nsm = ta.sma(close, 10)\nplotzone(bar_index == 3, high, low, \"Z\", offset=-sm, extend=extend.bars, bars=1)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [11, 9, 10.5, 11.5, 12],
+    "high":   [12, 11, 13, 14, 15],
+    "low":    [10, 8, 10.5, 11, 12],
+    "close":  [11, 8.5, 10.75, 12, 13],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "Z",
+        "items": [
+          { "x1bar": 3, "x2bar": 4, "top": 14, "bottom": 11, "open": false, "mitigated": false, "text": null }
+        ]
+      }
+    ]
+  }
+}

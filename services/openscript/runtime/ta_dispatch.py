@@ -204,4 +204,23 @@ def invoke_kernel(fn: str, args: list):
         impl = LOCAL_KERNELS.get(fn)
     if impl is None or not callable(impl):
         raise ValueError(f"unknown ta kernel: {fn}")
-    return impl(*args)
+    try:
+        return impl(*args)
+    except ValueError as exc:
+        # `openalgo.ta` REJECTS a window longer than the data ("Period (10)
+        # cannot be greater than data length (5)"), where Pine and the TS runtime
+        # both return `na` for bars the window has not warmed up on. That is a
+        # cross-language divergence with a crash on one side: a chart holding
+        # fewer bars than an indicator's longest window would 500 the server-side
+        # execute instead of drawing nothing, and it is reachable from any script
+        # whose window comes from an input.
+        #
+        # Narrow on purpose -- only this message is absorbed, and only into the
+        # all-`na` series the other runtime already produces. Every other
+        # ValueError still propagates.
+        if "cannot be greater than data length" not in str(exc):
+            raise
+        base = next((a for a in args if isinstance(a, np.ndarray)), None)
+        if base is None:
+            raise
+        return np.full(len(base), np.nan, dtype=float)

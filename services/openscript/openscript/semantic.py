@@ -542,7 +542,11 @@ class Analyzer:
         # args check const-numeric-resolvability; enum args check STRUCTURE (is it a
         # `ns.member`?) so an unknown MEMBER stays OS2001 via the generic member
         # visit rather than double-reporting here.
-        for name in ("bars", "offset", "right_pad", "max_kept"):
+        # `offset` is NOT in this list: it accepts a series, sampled at spawn
+        # (spawn-sampled-drawing-values design 3.1). The others stay const
+        # because they are plan inputs, not per-object geometry -- `bars`/
+        # `right_pad` size the object stream the planner admits, `max_kept` caps it.
+        for name in ("bars", "right_pad", "max_kept"):
             e = self._named_arg_value(call, name)
             if e is not None and self._numeric_arg_value(call, name) is None:
                 self._error("OS2023", e.span, f"{name}= must be a compile-time constant")
