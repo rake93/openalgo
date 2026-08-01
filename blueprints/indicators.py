@@ -27,6 +27,7 @@ from database.indicator_db import (
     db_session,
 )
 from services.openscript.compiler_service import COMPILER_FINGERPRINT, compile_source
+from services.openscript.freshness import freshness
 from services.openscript.runtime.admit import admit_ir
 from utils.logging import get_logger
 from utils.session import check_session_validity
@@ -38,6 +39,24 @@ indicators_bp = Blueprint("indicators_bp", __name__, url_prefix="/indicators/api
 
 def _user() -> str:
     return session.get("user")
+
+
+@indicators_bp.route("/openscript/freshness", methods=["GET"])
+@check_session_validity
+def openscript_freshness():
+    """Is this process running the OpenScript code currently on disk? (trap T2)
+
+    `FLASK_DEBUG=False` has no reloader, so a change to the Python service does
+    not reach the server until `app.py` restarts, and the symptom is not an error
+    but results that quietly disagree with the source being read. Each subtree's
+    fingerprint is bound once at import; this recomputes from disk and compares,
+    so the answer is exact rather than inferred.
+
+    Always 200, including when stale: "the process is out of date" is a
+    successful answer to the question, not a server error, and a non-200 would
+    make callers treat a working diagnostic as a broken endpoint.
+    """
+    return jsonify(freshness())
 
 
 def _layout_row(layout: ChartLayout) -> dict:

@@ -9,42 +9,26 @@ routes need.
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 
+from .freshness import COMPILER_FINGERPRINT
 from .openscript import compile as _compile
 
 COMPILER_VERSION = "openscript-1.0"
 
-
-def _compiler_fingerprint() -> str:
-    """sha-256 over the compiler package's own sources.
-
-    `COMPILER_VERSION` is frozen per LANGUAGE revision, so it does not move when
-    a lowering is fixed or extended -- which is precisely the case that leaves a
-    stored IR stale while still admissible (finding P2). This does move, because
-    it is derived from the code that produces the IR.
-
-    Content-hashed rather than hand-maintained on purpose: a constant someone has
-    to remember to bump is a constant that will not be bumped, and the failure is
-    silent (a saved indicator quietly keeps old semantics). Paths are sorted and
-    the relative name is hashed alongside the bytes, so a rename counts as a
-    change and the order cannot drift between machines.
-
-    Computed ONCE at import. `__pycache__` is excluded -- it is derived, and
-    including it would make the fingerprint depend on whether the interpreter had
-    written bytecode yet, i.e. move for reasons unrelated to the compiler.
-    """
-    package = Path(__file__).parent / "openscript"
-    digest = hashlib.sha256()
-    for path in sorted(package.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
-
-
-COMPILER_FINGERPRINT = _compiler_fingerprint()
+# `COMPILER_FINGERPRINT` is a sha-256 over the compiler package's own sources,
+# computed ONCE at import. It lives in `freshness` now because that module needs
+# the same primitive for `runtime/` and the service layer (M6-A), and two
+# definitions of one hash would eventually disagree. Re-exported here so its
+# long-standing import path keeps working, and because this is where its MEANING
+# belongs: it identifies the exact compiler build that produced a stored IR.
+#
+# `COMPILER_VERSION` cannot serve that purpose -- it is frozen per LANGUAGE
+# revision, so it does not move when a lowering is fixed or extended, which is
+# precisely the case that leaves a stored IR stale while still admissible
+# (finding P2). The fingerprint is content-hashed rather than hand-maintained
+# because a constant someone must remember to bump will not be bumped, and the
+# failure is silent: a saved indicator quietly keeps old semantics.
+__all__ = ["COMPILER_FINGERPRINT", "COMPILER_VERSION", "compile_source"]
 
 
 def compile_source(source: str) -> dict:
