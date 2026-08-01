@@ -268,10 +268,15 @@ NAMED_ARGS: dict[str, frozenset[str]] = {
         # `mitigated_color` IS dropped on a level, but OS2022 reports it precisely.
         # Listing it keeps ONE diagnostic per mistake.
         "mitigated_color",
+        # Singular, not a list: OS1011 bans collection literals in v1 and the
+        # spawn-sampled-values design declines arrays outright. Every label in
+        # scope needs one value; a second would be a named sibling, never a list.
+        "label_value",
     }),
     "plotzone": frozenset({
         "title", "color", "border_color", "border_style", "offset", "right_pad",
         "extend", "bars", "terminate", "mitigated_color", "max_kept", "text", "text_size",
+        "text_value",
     }),
 }
 

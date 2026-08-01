@@ -1,0 +1,68 @@
+{
+  "name": "green-zone-text-values-compact",
+  "note": "plotzone text= interpolating an AUTHOR-supplied value with the `compact` format. The template mechanism already sampled node ids at spawn; what was restricted is WHICH nodes could fill a slot -- only the output's own geometry (`{top}`/`{bottom}`), never an arbitrary series. `text_value=` lifts that, which is what the Pine's `EQH (8.8M)` needs, where 8.8M is the SUM OF TWO PIVOT VOLUMES and has nothing to do with the box's own edges. `compact` is load-bearing rather than sugar: Pine builds the magnitude suffix with an if/else returning different STRINGS per magnitude, and this language has no string series, so the suffix has to live in the formatter. Here the zone spawns at bar 2 with volume 6_100_000, so the text must read exactly `EQH (6.1M)`. `text_value=` is SINGULAR on purpose. An array literal would have been the obvious spelling, but OS1011 bans collection literals in v1 and the spawn-sampled-values design itself declines arrays (they are the imperative object model this language does not want). Every label in scope needs exactly one value, so a single argument is the honest surface; a second value would be a named sibling, never a list.",
+  "instrument": {
+    "exchange": "NSE",
+    "symbol": "SBIN"
+  },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nplotzone(bar_index == 2, high, low, \"EQH\", extend=extend.bars, bars=1, text=\"EQH ({0:compact})\", text_value=volume)",
+  "ir": null,
+  "bars": {
+    "time": [
+      1784782800,
+      1784782860,
+      1784782920,
+      1784782980
+    ],
+    "open": [
+      11,
+      9,
+      10.5,
+      11.5
+    ],
+    "high": [
+      12,
+      11,
+      13,
+      14
+    ],
+    "low": [
+      10,
+      8,
+      10.5,
+      11
+    ],
+    "close": [
+      11,
+      8.5,
+      10.75,
+      12
+    ],
+    "volume": [
+      100,
+      2500,
+      6100000,
+      900
+    ]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "EQH",
+        "items": [
+          {
+            "x1bar": 2,
+            "x2bar": 3,
+            "top": 13,
+            "bottom": 10.5,
+            "open": false,
+            "mitigated": false,
+            "text": "EQH (6.1M)"
+          }
+        ]
+      }
+    ]
+  }
+}

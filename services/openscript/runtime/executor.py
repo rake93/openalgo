@@ -11,6 +11,7 @@ numpy series. Booleans are 1.0/0.0; `na` is NaN. `ta.*` dispatches to
 from __future__ import annotations
 
 import math
+import re
 
 import numpy as np
 
@@ -714,6 +715,65 @@ def _format_draw_number(v: float) -> str:
     return ("-" if neg else "") + str(intp) + "." + str(frac).zfill(2)
 
 
+_FIXED_SPEC = re.compile(r"^\.(\d)f$")
+
+
+def _format_draw_compact(v: float) -> str:
+    """`{n:compact}` -- a magnitude-suffixed number (`6.1M`, `2.5K`, `940`).
+
+    Lives in the ENGINE, not the renderer, for a reason worth stating: it is the
+    only way the shared fixture corpus can pin it, and both runtimes must emit
+    the identical string. A renderer-side formatter would be invisible to the
+    corpus -- exactly the hole that let a marker ship with an unread title.
+
+    It exists at all because Pine gets its suffix from an if/else returning
+    different STRINGS per magnitude, and this language has no string series, so
+    the branch has to happen after sampling. Here.
+    """
+    if not math.isfinite(v):
+        return _format_draw_number(v)
+    neg = v < 0
+    a = abs(v)
+    if a >= 1e9:
+        scaled, suffix = a / 1e9, "B"
+    elif a >= 1e6:
+        scaled, suffix = a / 1e6, "M"
+    elif a >= 1e3:
+        scaled, suffix = a / 1e3, "K"
+    else:
+        scaled, suffix = a, ""
+    # One decimal via the same round-half-to-even discipline
+    # `_format_draw_number` uses, so a tie never disagrees across runtimes.
+    t = scaled * 10
+    fl = math.floor(t)
+    diff = t - fl
+    if diff > 0.5:
+        r = fl + 1
+    elif diff < 0.5:
+        r = fl
+    else:
+        r = fl if fl % 2 == 0 else fl + 1
+    whole, dec = divmod(int(r), 10)
+    body = f"{whole}" if dec == 0 else f"{whole}.{dec}"
+    return ("-" if neg else "") + body + suffix
+
+
+def _apply_draw_format(v: float, spec: str | None) -> str:
+    """Apply one `{n[:spec]}` format spec. An unknown spec falls back to the
+    default numeric rendering rather than raising -- the compiler is where a bad
+    spec belongs, and a chart must never show a thrown formatter."""
+    if not spec:
+        return _format_draw_number(v)
+    if spec == "compact":
+        return _format_draw_compact(v)
+    m = _FIXED_SPEC.match(spec)
+    if m:
+        return f"{v:.{int(m.group(1))}f}" if math.isfinite(v) else _format_draw_number(v)
+    if spec == "#":
+        return f"{round(v)}" if math.isfinite(v) else _format_draw_number(v)
+    return _format_draw_number(v)
+
+
 def _render_draw_text(spec: dict, s: int, values: list) -> str:
     """Resolve an IRDrawText at the spawn bar: const verbatim; template formatted
     once from its args sampled at s (design §11)."""
@@ -722,7 +782,10 @@ def _render_draw_text(spec: dict, s: int, values: list) -> str:
     out = spec["fmt"]
     for k, arg in enumerate(spec["args"]):
         v = _sample_at(values[arg], s)
-        out = out.replace(f"{{{k}}}", _format_draw_number(v))
+        # Replace `{k}` and `{k:spec}` in one pass so a spec cannot be left
+        # behind as literal text when the plain form also appears.
+        pattern = r"\{" + str(k) + r"(?::([^}]*))?\}"
+        out = re.sub(pattern, lambda m, _v=v: _apply_draw_format(_v, m.group(1)), out)
     return out
 
 

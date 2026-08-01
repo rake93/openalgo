@@ -863,7 +863,7 @@ class IRGenerator:
         if _off_node is not None:
             out["offsetNodeId"] = _off_node
         self._apply_extend_args(out, call, extend)
-        label = self._draw_text(call, "label", {"price": out["priceNodeId"]})
+        label = self._draw_text(call, "label", {"price": out["priceNodeId"]}, "label_value")
         if label is not None:
             out["label"] = label
         label_size = self._draw_size(call, "label_size")
@@ -917,7 +917,7 @@ class IRGenerator:
                 out["mitigatedColor"] = mc[0]
                 if mc[1] is not None:
                     out["mitigatedColorInputId"] = mc[1]
-        text = self._draw_text(call, "text", {"top": out["topNodeId"], "bottom": out["bottomNodeId"]})
+        text = self._draw_text(call, "text", {"top": out["topNodeId"], "bottom": out["bottomNodeId"]}, "text_value")
         if text is not None:
             out["text"] = text
         text_size = self._draw_size(call, "text_size")
@@ -1015,7 +1015,11 @@ class IRGenerator:
         return _as_bar_count(raw)
 
     def _draw_text(
-        self, call: ast.CallExpr, name: str, slots: dict[str, int] | None = None
+        self,
+        call: ast.CallExpr,
+        name: str,
+        slots: dict[str, int] | None = None,
+        value_arg: str | None = None,
     ) -> dict | None:
         """`label=`/`text=` -> IRDrawText (design §11). Mirror of the TS `drawText`.
 
@@ -1040,6 +1044,17 @@ class IRGenerator:
             return {"kind": "const", "value": v}
         args: list[int] = []
         fmt = v
+        # The AUTHOR's value is index 0, allocated BEFORE the geometry slots.
+        # Order matters and is not cosmetic: allocate the named slots first and
+        # `{0}` would silently mean the box's own top on one output and the
+        # author's value on another, depending only on which placeholders that
+        # template happened to use. Printing a price where a volume belonged is
+        # not an error the compiler can catch, so the allocation has to be the
+        # thing that cannot vary.
+        if value_arg is not None:
+            e = self._arg_expr(call, None, value_arg)
+            if e is not None:
+                args.append(self._lower_expr(e))
         for placeholder, node_id in slots.items():
             token = "{" + placeholder + "}"
             if token not in fmt:
