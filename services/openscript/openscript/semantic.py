@@ -42,6 +42,16 @@ CONTEXT_IDS = frozenset(
 )
 KNOWN_SERIES = SOURCE_IDS | CONTEXT_IDS
 
+# Argument names an `input.color` may legally flow into (OS2017).
+#
+# `color` alone until G8: a zone's `border_color=` and `mitigated_color=` are
+# colour slots too, and rejecting an input there while accepting it in `color=`
+# made the settings surface arbitrary rather than principled. Everything here is
+# a slot both materializers now substitute at render time, so admitting a name
+# without wiring its `colorInputId` would recreate the placebo control this set
+# exists to prevent. Mirrors COLOR_ARG_NAMES in the TS semantic analyser.
+_COLOR_ARG_NAMES = frozenset({"color", "border_color", "mitigated_color"})
+
 
 class Analyzer:
     def __init__(self) -> None:
@@ -289,7 +299,9 @@ class Analyzer:
 
     def _visit_arg(self, arg: ast.Argument, top_level: bool) -> None:
         prev = self._in_color_arg_position
-        self._in_color_arg_position = arg.name == "color" and arg.value.type == "Identifier"
+        self._in_color_arg_position = (
+            arg.name in _COLOR_ARG_NAMES and arg.value.type == "Identifier"
+        )
         self._visit_expr(arg.value, top_level)
         self._in_color_arg_position = prev
 

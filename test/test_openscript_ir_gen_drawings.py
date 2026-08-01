@@ -99,3 +99,66 @@ def test_max_kept_over_cap_clamps_and_warns_os5001():
 def test_non_drawing_script_keeps_required_features_empty():
     p = _ir("plot(close)")
     assert p["header"]["requiredFeatures"] == []
+
+
+# -- G8: drawing colors follow an input.color -----------------------------------------
+#
+# Drawings were the one family that dropped the binding id: the hex was baked at
+# compile time and nothing replaced it, so the script compiled clean, the settings
+# dialog showed the swatch, and dragging it did nothing. Mirrors the TS ir-gen
+# tests; byte-identity of the resulting IR is enforced separately by
+# test_openscript_ir_conformance against the engine's goldens.
+
+
+def test_plotlevel_color_records_the_color_input_id():
+    p = _ir('c = input.color(color.red, "C")\nplotlevel(close > open, close, "L", color=c)')
+    style = p["outputs"][0]["style"]
+    assert style["color"] == "#ef5350"
+    assert style["colorInputId"] == "c"
+
+
+def test_plotzone_binds_all_three_color_slots_independently():
+    # Three DIFFERENT inputs: one shared id would satisfy a same-id assertion
+    # while a per-slot mix-up went unnoticed.
+    p = _ir(
+        'a = input.color(color.red, "A")\n'
+        'b = input.color(color.blue, "B")\n'
+        'm = input.color(color.gray, "M")\n'
+        'plotzone(close > open, high, low, "Z", color=a, border_color=b, mitigated_color=m,'
+        " extend=extend.until, terminate=terminate.touch)"
+    )
+    out = p["outputs"][0]
+    assert out["style"]["colorInputId"] == "a"
+    assert out["style"]["borderColorInputId"] == "b"
+    assert out["mitigatedColorInputId"] == "m"
+    assert out["style"]["color"] == "#ef5350"
+    assert out["style"]["borderColor"] == "#2962ff"
+    assert out["mitigatedColor"] == "#787b86"
+
+
+def test_a_const_draw_color_records_no_color_input_id():
+    # Additive-optional (the labelSize precedent): ABSENT for a literal color, or
+    # every stored artifact and every TS golden moves.
+    p = _ir('plotlevel(close > open, close, "L", color=#ff0000)')
+    style = p["outputs"][0]["style"]
+    assert style["color"] == "#ff0000"
+    assert "colorInputId" not in style
+
+
+def test_an_input_color_in_border_or_mitigated_slots_is_not_os2017():
+    # OS2017 used to allow `color=` only, so these were rejected outright -- the
+    # settings surface was arbitrary rather than principled.
+    result = openscript.compile(
+        'b = input.color(color.blue, "B")\n'
+        'm = input.color(color.gray, "M")\n'
+        'plotzone(close > open, high, low, "Z", border_color=b, mitigated_color=m,'
+        " extend=extend.until, terminate=terminate.touch)"
+    )
+    assert [d.code for d in result.diagnostics] == []
+
+
+def test_an_input_color_outside_any_color_slot_is_still_os2017():
+    # The widening must not become "anywhere": a color input used as a VALUE is
+    # still an error, or the diagnostic stops meaning anything.
+    result = openscript.compile('c = input.color(color.red, "C")\nplot(close + c)')
+    assert "OS2017" in [d.code for d in result.diagnostics]

@@ -315,6 +315,63 @@ def test_empty_string_override_falls_back_to_default(dataset):
     assert out[0]["style"]["color"] == "#ef5350"
 
 
+# ── G8 the substitution reaching the two DRAWING kinds ─────────────────────
+#
+# Until this landed, a drawing colour wired to an input.color baked its default
+# and ignored the live value on BOTH runtimes. The shared drawing-geometry
+# fixtures cannot cover it -- their normalizer drops `style` -- so each runtime
+# pins it directly. Mirrors the TS executor tests.
+
+
+def _drawing(out, kind):
+    return next(o for o in out if o["kind"] == kind)
+
+
+def test_plotlevel_honors_a_color_input_override(dataset):
+    out = _run(
+        'c = input.color(color.red, "C")\nplotlevel(bar_index == 0, close, "L", color=c)',
+        dataset,
+        {"c": "#00ff00"},
+    )
+    assert _drawing(out, "levels")["style"]["color"] == "#00ff00"
+
+
+def test_plotzone_honors_overrides_on_all_three_color_slots(dataset):
+    # Three DIFFERENT overrides: a single shared value would let a slot mix-up pass.
+    out = _run(
+        'a = input.color(color.red, "A")\n'
+        'b = input.color(color.blue, "B")\n'
+        'm = input.color(color.gray, "M")\n'
+        'plotzone(bar_index == 0, high, low, "Z", color=a, border_color=b, mitigated_color=m,'
+        " extend=extend.until, terminate=terminate.touch)",
+        dataset,
+        {"a": "#111111", "b": "#222222", "m": "#333333"},
+    )
+    style = _drawing(out, "zones")["style"]
+    assert style["color"] == "#111111"
+    assert style["borderColor"] == "#222222"
+    assert style["mitigatedColor"] == "#333333"
+
+
+def test_a_drawing_with_no_override_still_renders_its_baked_default(dataset):
+    out = _run(
+        'c = input.color(color.red, "C")\nplotlevel(bar_index == 0, close, "L", color=c)', dataset
+    )
+    assert _drawing(out, "levels")["style"]["color"] == "#ef5350"
+
+
+def test_a_drawing_output_never_leaks_the_binding_id_to_the_renderer(dataset):
+    # colorInputId is COMPILE-side metadata; the output carries the RESOLVED
+    # color. Leaking it would make the two runtimes' outputs differ in shape from
+    # every other kind for no benefit.
+    out = _run(
+        'c = input.color(color.red, "C")\nplotlevel(bar_index == 0, close, "L", color=c)',
+        dataset,
+        {"c": "#00ff00"},
+    )
+    assert "colorInputId" not in _drawing(out, "levels")["style"]
+
+
 # ── P1.4 plotcandle / plotbar ──────────────────────────────────────────────
 
 

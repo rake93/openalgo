@@ -817,10 +817,13 @@ class IRGenerator:
         self._uses_drawings = True
         cond_expr = self._arg_expr(call, 0, None)
         price_expr = self._arg_expr(call, 1, None)
+        level_color = self._draw_color_binding(call, "color")
         style: dict = {
-            "color": self._draw_color(call, "color", "#2962ff"),
+            "color": level_color[0] if level_color is not None else "#2962ff",
             "lineStyle": self._draw_line_style(call, "style"),
         }
+        if level_color is not None and level_color[1] is not None:
+            style["colorInputId"] = level_color[1]
         width = self._const_arg(call, None, "width")
         if isinstance(width, (int, float)) and not isinstance(width, bool):
             style["lineWidth"] = width
@@ -851,13 +854,18 @@ class IRGenerator:
         cond_expr = self._arg_expr(call, 0, None)
         top_expr = self._arg_expr(call, 1, None)
         bottom_expr = self._arg_expr(call, 2, None)
+        fill_color = self._draw_color_binding(call, "color")
         style: dict = {
-            "color": self._draw_color(call, "color", "#2962ff33"),
+            "color": fill_color[0] if fill_color is not None else "#2962ff33",
             "borderStyle": self._draw_line_style(call, "border_style"),
         }
-        border_color = self._draw_color_opt(call, "border_color")
-        if border_color is not None:
-            style["borderColor"] = border_color
+        if fill_color is not None and fill_color[1] is not None:
+            style["colorInputId"] = fill_color[1]
+        border = self._draw_color_binding(call, "border_color")
+        if border is not None:
+            style["borderColor"] = border[0]
+            if border[1] is not None:
+                style["borderColorInputId"] = border[1]
         extend = self._draw_extend(call)
         out: dict = {
             "kind": "zone",
@@ -876,9 +884,11 @@ class IRGenerator:
         # terminate.straddle (design §4); semantic OS2022 already rejects it on a
         # level or on any other terminate.
         if out.get("terminate") in ("touch", "straddle"):
-            mc = self._draw_color_opt(call, "mitigated_color")
+            mc = self._draw_color_binding(call, "mitigated_color")
             if mc is not None:
-                out["mitigatedColor"] = mc
+                out["mitigatedColor"] = mc[0]
+                if mc[1] is not None:
+                    out["mitigatedColorInputId"] = mc[1]
         text = self._draw_text(call, "text", {"top": out["topNodeId"], "bottom": out["bottomNodeId"]})
         if text is not None:
             out["text"] = text
@@ -910,17 +920,32 @@ class IRGenerator:
 
     def _draw_color(self, call: ast.CallExpr, name: str, fallback: str) -> str:
         """A drawing color arg by name -> static hex: const color, folded
-        color.new, or an input.color's baked default (binding id dropped)."""
-        v = self._draw_color_opt(call, name)
-        return v if v is not None else fallback
+        color.new, or an input.color's baked default."""
+        b = self._draw_color_binding(call, name)
+        return b[0] if b is not None else fallback
 
     def _draw_color_opt(self, call: ast.CallExpr, name: str) -> str | None:
+        b = self._draw_color_binding(call, name)
+        return b[0] if b is not None else None
+
+    def _draw_color_binding(self, call: ast.CallExpr, name: str) -> tuple[str, str | None] | None:
+        """A draw-color argument as (baked_hex, colorInputId or None) -- G8.
+
+        This used to keep only the hex and drop the binding id, so a drawing
+        colour wired to an `input.color` compiled clean, showed a swatch in the
+        settings dialog, and ignored it. Every non-drawing kind already threads
+        the id through; this is the same shape, mirrored from the TS ir-gen.
+
+        Callers omit `colorInputId` entirely when it is None rather than writing
+        a null, so IR for an unchanged script stays byte-identical to both the
+        stored artifact and the TS golden.
+        """
         expr = self._arg_expr(call, None, name)
         ci = self._color_input_id_of(expr)
         if ci is not None:
-            return ci[1]
+            return ci[1], ci[0]
         v = _resolve_const(expr) if expr is not None else None
-        return v if isinstance(v, str) else None
+        return (v, None) if isinstance(v, str) else None
 
     def _draw_line_style(self, call: ast.CallExpr, name: str) -> str:
         """`style=`/`border_style=` enum -> IR lineStyle/borderStyle; default 'solid'."""

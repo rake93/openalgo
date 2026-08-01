@@ -837,7 +837,7 @@ def _anchor(dataset: dict, bar: int, n: int) -> dict:
 
 
 def _materialize_drawing(
-    o, values, n, idx, pane, dataset, budget, total_state, calendar: SessionCalendar
+    o, values, n, idx, pane, dataset, budget, total_state, calendar: SessionCalendar, inputs: dict
 ) -> dict:
     """Materialize one level/zone output into a levels/zones output dict."""
     oid = f"out_{idx}"
@@ -892,7 +892,18 @@ def _materialize_drawing(
             if label and (not o.get("labelLatestOnly") or k == len(spawns) - 1):
                 item["label"] = _render_draw_text(label, s, values)
             items.append(item)
-        return {"kind": "levels", "id": oid, "title": o["title"], "pane": pane, "style": dict(o.get("style", {})), "items": items}
+        # Built key by key rather than copied: the IR style also carries the G8
+        # colorInputId, which is COMPILE-side binding metadata and must not reach
+        # the renderer -- the output carries the RESOLVED color.
+        style_in = o.get("style", {})
+        level_style = {
+            "color": _input_color(inputs, style_in.get("colorInputId"), style_in.get("color", ""))
+        }
+        if style_in.get("lineWidth") is not None:
+            level_style["lineWidth"] = style_in["lineWidth"]
+        if style_in.get("lineStyle") is not None:
+            level_style["lineStyle"] = style_in["lineStyle"]
+        return {"kind": "levels", "id": oid, "title": o["title"], "pane": pane, "style": level_style, "items": items}
 
     # zone
     top_v = values[o["topNodeId"]]
@@ -921,9 +932,19 @@ def _materialize_drawing(
         if text:
             item["text"] = _render_draw_text(text, s, values)
         items.append(item)
-    style = dict(o.get("style", {}))
+    # Same as the level branch: resolve each slot, and never emit the binding ids.
+    style_in = o.get("style", {})
+    style = {"color": _input_color(inputs, style_in.get("colorInputId"), style_in.get("color", ""))}
+    if style_in.get("borderColor") is not None:
+        style["borderColor"] = _input_color(
+            inputs, style_in.get("borderColorInputId"), style_in["borderColor"]
+        )
+    if style_in.get("borderStyle") is not None:
+        style["borderStyle"] = style_in["borderStyle"]
     if o.get("mitigatedColor") is not None:
-        style["mitigatedColor"] = o["mitigatedColor"]
+        style["mitigatedColor"] = _input_color(
+            inputs, o.get("mitigatedColorInputId"), o["mitigatedColor"]
+        )
     return {"kind": "zones", "id": oid, "title": o["title"], "pane": pane, "style": style, "items": items}
 
 
@@ -1023,7 +1044,7 @@ def _collect_outputs(
         elif kind in ("level", "zone"):
             outputs.append(
                 _materialize_drawing(
-                    o, values, n, idx, pane, dataset, budget, total_objects, calendar
+                    o, values, n, idx, pane, dataset, budget, total_objects, calendar, inputs
                 )
             )
     return outputs
