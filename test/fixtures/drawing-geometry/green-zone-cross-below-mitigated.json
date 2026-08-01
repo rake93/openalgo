@@ -1,0 +1,27 @@
+{
+  "name": "green-zone-cross-below-mitigated",
+  "note": "The EQL mirror of green-zone-cross-above-mitigated: Pine sweeps an equal-low zone on `low < sweepLevel`, where sweepLevel is the zone BOTTOM. Bars 1-2 hold above the bottom edge (low 10.5, 10.2 > bottom 10) and leave the zone live; bar 3 (low 9.5) takes it out, so cross_below fires and the zone closes mitigated. Paired with the cross_above case so the mitigation rule is pinned on BOTH directional predicates, not just the one the ICT port happens to use first.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nplotzone(bar_index == 0, high, low, \"EQL\", extend=extend.until, terminate=terminate.cross_below, mitigated_color=color.gray)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980],
+    "open":   [11, 11.2, 10.8, 10.4],
+    "high":   [12, 11.5, 11, 10.5],
+    "low":    [10, 10.5, 10.2, 9.5],
+    "close":  [11, 11.0, 10.5, 9.8],
+    "volume": [100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "EQL",
+        "items": [
+          { "x1bar": 0, "x2bar": 3, "top": 12, "bottom": 10, "open": false, "mitigated": true, "text": null }
+        ]
+      }
+    ]
+  }
+}

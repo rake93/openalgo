@@ -735,7 +735,10 @@ class IRGenerator:
         out: dict = {
             "kind": fn,
             "condNodeId": cond_node,
-            "title": self._title(call, None),
+            # Positional index 1, matching Pine's `plotshape(series, title, ...)`
+            # and every other output. It read ONLY a named `title=` before, so a
+            # positional one was silently dropped and the marker shipped untitled.
+            "title": self._title(call, 1),
             "location": location if isinstance(location, str) else "aboveBar",
             "color": color,
         }
@@ -890,10 +893,13 @@ class IRGenerator:
             "maxKept": self._draw_max_kept(call, 10),
         }
         self._apply_extend_args(out, call, extend)
-        # mitigated_color styles a zone closed via terminate.touch or the strict
-        # terminate.straddle (design §4); semantic OS2022 already rejects it on a
-        # level or on any other terminate.
-        if out.get("terminate") in ("touch", "straddle"):
+        # mitigated_color styles a zone closed BY PRICE (design §4); semantic
+        # OS2022 already rejects it on a level or on `new_session`. This gate
+        # must track that rule exactly -- narrower here and the colour is
+        # dropped silently from IR the compiler accepted, which is invisible
+        # until a chart renders the zone in the wrong colour.
+        _term = out.get("terminate")
+        if _term is not None and _term != "new_session":
             mc = self._draw_color_binding(call, "mitigated_color")
             if mc is not None:
                 out["mitigatedColor"] = mc[0]

@@ -488,12 +488,22 @@ class Analyzer:
         if extend_mode == "bars" and not has_bars:
             self._error("OS2021", call.span)
         if mitigated_arg is not None:
-            # mitigated_color= is a zone-only styling of a terminate.touch close.
+            # mitigated_color= is a zone-only styling of a PRICE-terminated close.
             term_arg = self._named_arg_value(call, "terminate")
             term_mode = self._enum_member(term_arg) if term_arg is not None else None
-            # `straddle` closes a zone the same way `touch` does -- strictly rather
-            # than inclusively -- so it carries the same mitigated styling.
-            if fn == "plotlevel" or term_mode not in ("touch", "straddle"):
+            # A zone is mitigated when price TAKES IT OUT, so every directional
+            # predicate carries the styling -- `touch`/`straddle` (entered), the
+            # `close_*` pair (closed through), and the `cross_*` pair (wicked
+            # through). `cross_above` is what an equal-high liquidity sweep
+            # actually is (`high > top`); restricting the styling to `touch`
+            # forced that shape to spell its sweep as a retest, which fires on
+            # the wrong bar.
+            #
+            # `new_session` is the sole exception, and stays out on purpose: it
+            # is a TIME expiry, so the object aged out untouched -- nothing
+            # mitigated it.
+            price_terminated = term_mode is not None and term_mode != "new_session"
+            if fn == "plotlevel" or not price_terminated:
                 self._error("OS2022", call.span)
         offset = self._numeric_arg_value(call, "offset")
         if offset is not None and offset > 0:

@@ -54,8 +54,8 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS2020": "bars= requires extend.bars",
     "OS2021": "extend.bars requires a bars= count",
     "OS2022": (
-        "mitigated_color= applies only to a zone terminated by terminate.touch "
-        "or terminate.straddle"
+        "mitigated_color= applies only to a zone terminated by price "
+        "(any terminate. except new_session)"
     ),
     "OS2023": "invalid drawing-output argument",
     # Semantic — request.security, same-symbol HTF (Phase 3 / register C4).

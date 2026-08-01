@@ -821,10 +821,15 @@ def _resolve_right_edge(
     for b in range(_scan_start_for(term, s), last_bar_index + 1):
         obj_bars += 1
         if _terminate_holds(term, b, top, bottom, dataset, n, calendar):
+            # Price took the object out, so it closed MITIGATED -- true for
+            # every directional predicate, not just the `touch`/`straddle`
+            # pair. Only `new_session` reaches here without price doing
+            # anything: that is a time expiry, and an object that merely aged
+            # out was never mitigated.
             return {
                 "x2bar": b,
                 "open": False,
-                "mitigated": term in ("touch", "straddle"),
+                "mitigated": term != "new_session",
                 "objBars": obj_bars,
             }
     return {"x2bar": last_bar_index, "open": True, "mitigated": False, "objBars": obj_bars}

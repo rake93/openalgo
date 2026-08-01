@@ -1,0 +1,27 @@
+{
+  "name": "green-zone-cross-above-mitigated",
+  "note": "plotzone + terminate.cross_above, the EQH liquidity-sweep shape: Pine's LuxAlgo ICT suite sweeps an equal-high zone on `high > sweepLevel`, where sweepLevel is the zone TOP. `touch` is the wrong predicate for that -- it fires as soon as price ENTERS the band from below, which is a retest, not a sweep. Bars 1-2 sit inside/below the band (high 11, 11.5 < top 12) and must NOT terminate it. Bar 3 (high 12.5) clears the top, so cross_above fires and the zone closes SWEPT. mitigated must be true: a zone taken out by price is mitigated whichever price-based predicate names the takeout, and only `new_session` (a time expiry, not a takeout) is exempt.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nplotzone(bar_index == 0, high, low, \"EQH\", extend=extend.until, terminate=terminate.cross_above, mitigated_color=color.gray)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980],
+    "open":   [11, 10.8, 11.2, 12.0],
+    "high":   [12, 11, 11.5, 12.5],
+    "low":    [10, 10.5, 11, 11.8],
+    "close":  [11, 10.9, 11.4, 12.4],
+    "volume": [100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "EQH",
+        "items": [
+          { "x1bar": 0, "x2bar": 3, "top": 12, "bottom": 10, "open": false, "mitigated": true, "text": null }
+        ]
+      }
+    ]
+  }
+}
