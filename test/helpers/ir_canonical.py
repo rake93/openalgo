@@ -45,6 +45,8 @@ _NODE_REF_FIELDS = {
     "scan": ("inputs",),
 }
 
+from .ir_integers import integer_semantic_values
+
 # IR fields that carry compiler provenance or telemetry rather than behaviour.
 # Each is excluded deliberately; see `DIVERGENCES` for what that concedes.
 _PROVENANCE_FIELDS = ("sourceHash", "compilerVersion", "meta")
@@ -146,7 +148,20 @@ def canonical_outputs(ir: dict) -> list:
 
 
 def canonical_ir(ir: dict) -> dict:
-    """The behaviour-determining projection of an IR program."""
+    """The behaviour-determining projection of an IR program.
+
+    `normalize_numbers` collapses integer-valued floats, and it has to: the
+    Python lexer floats every numeric literal, so without it every golden would
+    differ on values that are genuinely f64 either way (`nodes.value`,
+    `hline.price`, `input.float` bounds).
+
+    That same collapse is what let `offset: -2.0` pass as `-2` while the
+    server-side executor crashed on it. So the INTEGER-SEMANTIC fields — bar
+    indices, counts and widths, where a float is a latent `IndexError` rather
+    than a formatting difference — are carried alongside WITH THEIR TYPE and
+    compared exactly. Narrow on purpose: a blanket strict comparison would fail
+    every golden and prove nothing, because JS cannot emit `2.0` at all.
+    """
     return {
         "version": ir.get("version"),
         "header": normalize_numbers(ir.get("header")),
@@ -154,6 +169,9 @@ def canonical_ir(ir: dict) -> dict:
         "inputs": normalize_numbers(ir.get("inputs")),
         "outputs": canonical_outputs(ir),
         "palette": normalize_numbers(ir.get("palette")),
+        "integerSemantics": [
+            (field, type(value).__name__, value) for field, value in integer_semantic_values(ir)
+        ],
     }
 
 

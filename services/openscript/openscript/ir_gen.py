@@ -604,11 +604,21 @@ class IRGenerator:
         decl: dict = {"id": input_id, "type": type_, "label": label}
         static_val = None
         if type_ in ("integer", "float"):
-            decl["defaultValue"] = default if isinstance(default, (int, float)) and not isinstance(default, bool) else 0
+            # An `input.int`'s bounds and default are INTEGRAL; the Python lexer
+            # floats every literal, so they arrive as 9.0/1.0/50.0 where TS emits
+            # 9/1/50. `step` is deliberately excluded: it is a UI increment and
+            # `input.int(..., step=0.5)` is not nonsense to a settings dialog.
+            # `input.float` keeps float bounds even when they hold whole numbers
+            # -- coercing those would infer the contract from JSON rather than
+            # from what the field MEANS.
+            num = _as_bar_count if type_ == "integer" else (lambda x: x)
+            decl["defaultValue"] = (
+                num(default) if isinstance(default, (int, float)) and not isinstance(default, bool) else 0
+            )
             for key, field in (("minval", "min"), ("maxval", "max"), ("step", "step")):
                 v = self._const_arg(call, None, key)
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
-                    decl[field] = v
+                    decl[field] = num(v) if field != "step" else v
             static_val = decl["defaultValue"]
         elif type_ == "bool":
             decl["defaultValue"] = default is True
@@ -699,7 +709,7 @@ class IRGenerator:
             style["colorInputId"] = color_input_id
         lw = self._const_arg(call, None, "linewidth")
         if isinstance(lw, (int, float)) and not isinstance(lw, bool):
-            style["lineWidth"] = lw
+            style["lineWidth"] = _as_bar_count(lw)
         variant = self._const_arg(call, None, "style")
         if isinstance(variant, str):
             style["variant"] = variant
@@ -826,7 +836,7 @@ class IRGenerator:
             style["colorInputId"] = level_color[1]
         width = self._const_arg(call, None, "width")
         if isinstance(width, (int, float)) and not isinstance(width, bool):
-            style["lineWidth"] = width
+            style["lineWidth"] = _as_bar_count(width)
         extend = self._draw_extend(call)
         out: dict = {
             "kind": "level",
@@ -916,7 +926,10 @@ class IRGenerator:
         elif extend == "bars":
             b = self._const_arg(call, None, "bars")
             if isinstance(b, (int, float)) and not isinstance(b, bool):
-                out["bars"] = b
+                # Same class as `offset`: `x2 = spawn + bars` indexes a bar.
+                # `_as_bar_count`'s docstring listed this field from the start
+                # and it never routed through it -- the one the fix missed.
+                out["bars"] = _as_bar_count(b)
 
     def _draw_color(self, call: ast.CallExpr, name: str, fallback: str) -> str:
         """A drawing color arg by name -> static hex: const color, folded
