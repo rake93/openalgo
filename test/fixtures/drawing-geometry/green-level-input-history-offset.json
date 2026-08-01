@@ -1,0 +1,27 @@
+{
+  "name": "green-level-input-history-offset",
+  "note": "`close[r]` where `r` is an input, not a literal. OS2006 required a literal history offset, which is what put Pine's `volume[liqRightLen]` -- the volume AT the pivot bar -- out of reach and left the ICT suite's `EQH (8.8M)` labels unportable. An INPUT is constant for the whole run, so this is a fixed shift the planner can bound by `maxval`, not a per-bar-varying offset; warmup is priced at the declared bound. Here r defaults to 2 and the level spawns at bar 3, so its price must be close[2] counted back from bar 3 = close at bar 1 = 8.5. Picking up the spawn bar's own close (12) or bar 2's (10.75) are the two off-by-one failures this pins.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nr = input.int(2, \"R\", minval=0, maxval=10)\nplotlevel(bar_index == 3, close[r], \"L\", extend=extend.bars, bars=1)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [11, 9, 10.5, 11.5, 12],
+    "high":   [12, 11, 13, 14, 15],
+    "low":    [10, 8, 10.5, 11, 12],
+    "close":  [11, 8.5, 10.75, 12, 13],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "L",
+        "items": [
+          { "x1bar": 3, "x2bar": 4, "price": 8.5, "open": false, "label": null }
+        ]
+      }
+    ]
+  }
+}

@@ -576,19 +576,66 @@ class IRGenerator:
     def _lower_hist(self, index: ast.IndexExpr) -> int:
         arg = self._lower_expr(index.object)
         offset = _resolve_const(index.index)
-        is_int = isinstance(offset, (int, float)) and not isinstance(offset, bool) and float(offset).is_integer()
-        if not is_int or offset < 0:
+        is_num = isinstance(offset, (int, float)) and not isinstance(offset, bool)
+        if is_num:
+            if not float(offset).is_integer() or offset < 0:
+                self._diagnostics.append(
+                    make_diagnostic(
+                        "OS2006", "error", index.span, "historical offset must be a non-negative integer literal"
+                    )
+                )
+                return arg
+            offset = int(offset)
+            if offset > SCRIPT_LIMITS["maximumLookback"]:
+                self._diagnostics.append(
+                    make_diagnostic("OS3007", "error", index.span, f"{offset} > {SCRIPT_LIMITS['maximumLookback']}")
+                )
+                return arg
+            return self._emit({"op": "hist", "arg": arg, "offset": offset}, index.span, self._warmups[arg] + offset)
+        # An INTEGER INPUT is admissible where a general expression is not, and
+        # the distinction is what makes it safe: an input is CONSTANT for the
+        # whole run, so `x[r]` is one fixed shift rather than a per-bar-varying
+        # reach, and the planner can price warmup against its declared `maxval`.
+        #
+        # Without this, Pine's `volume[liqRightLen]` -- the volume at the pivot
+        # bar, which is where a liquidity zone's `(8.8M)` comes from -- is
+        # unportable whenever the pivot length is a setting rather than a literal.
+        #
+        # Resolved WITHOUT lowering: emitting the index expression just to inspect
+        # it would leave a dead node in the DAG on every failed match.
+        bound_node = self._resolve_var(index.index.name) if index.index.type == "Identifier" else None
+        decl = None
+        if bound_node is not None and self._nodes[bound_node].get("op") == "input":
+            input_id = self._nodes[bound_node]["inputId"]
+            decl = next((d for d in self._inputs if d["id"] == input_id), None)
+        if decl is None or decl.get("type") != "integer":
             self._diagnostics.append(
-                make_diagnostic("OS2006", "error", index.span, "historical offset must be a non-negative integer literal")
+                make_diagnostic(
+                    "OS2006",
+                    "error",
+                    index.span,
+                    "historical offset must be a non-negative integer literal or an integer input",
+                )
             )
             return arg
-        offset = int(offset)
-        if offset > SCRIPT_LIMITS["maximumLookback"]:
+        # Warmup is priced at the UPPER bound, never the default: the default is
+        # what the author happened to ship, while admission has to hold for every
+        # value the setting can take. An undeclared bound falls back to
+        # maximumLookback and is reported by the G9 pass (OS5008), which owns the
+        # one-warning-per-input rule.
+        raw_max = decl.get("max")
+        declared = raw_max if isinstance(raw_max, (int, float)) and math.isfinite(raw_max) else None
+        priced = int(declared) if declared is not None else SCRIPT_LIMITS["maximumLookback"]
+        if priced > SCRIPT_LIMITS["maximumLookback"]:
             self._diagnostics.append(
-                make_diagnostic("OS3007", "error", index.span, f"{offset} > {SCRIPT_LIMITS['maximumLookback']}")
+                make_diagnostic("OS3007", "error", index.span, f"{priced} > {SCRIPT_LIMITS['maximumLookback']}")
             )
             return arg
-        return self._emit({"op": "hist", "arg": arg, "offset": offset}, index.span, self._warmups[arg] + offset)
+        return self._emit(
+            {"op": "hist", "arg": arg, "offset": decl["defaultValue"], "offsetInputId": decl["id"]},
+            index.span,
+            self._warmups[arg] + priced,
+        )
 
     # ── inputs ──────────────────────────────────────────────────────────────────
 

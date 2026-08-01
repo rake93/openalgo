@@ -450,6 +450,38 @@ def _eval_htf(node, dataset, htf_cache, inputs, decls, calendar):
     return out
 
 
+def _hist_offset(node: dict, inputs: dict, decls: dict) -> int:
+    """The shift for a `hist` node: the literal, or an integer input read at run time.
+
+    Clamped to the input's declared `maxval` because the COMPILER priced warmup
+    against that bound. A runtime value beyond it would read further back than
+    was charged, which is the one way this feature could break the
+    `charged <= estimate` invariant. Non-finite or negative falls back to the
+    stored default rather than reading forward -- `x[-1]` is not history.
+    """
+    input_id = node.get("offsetInputId")
+    if input_id is None:
+        return int(node["offset"])
+    decl = decls.get(input_id)
+    raw = inputs.get(input_id)
+    if raw is None:
+        raw = decl.get("defaultValue") if decl else node["offset"]
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return int(node["offset"])
+    if not math.isfinite(v):
+        return int(node["offset"])
+    declared = None
+    if decl is not None and decl.get("type") == "integer":
+        raw_max = decl.get("max")
+        if isinstance(raw_max, (int, float)) and math.isfinite(raw_max):
+            declared = int(raw_max)
+    max_back = min(declared if declared is not None else SCRIPT_LIMITS["maximumLookback"],
+                   SCRIPT_LIMITS["maximumLookback"])
+    return max(0, min(max_back, int(v)))
+
+
 def _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar: SessionCalendar, htf_cache=None):
     # `calendar` is REQUIRED, mirroring the TS `evalNode`: a default here is how a
     # wrong calendar would silently reach production.
@@ -470,7 +502,7 @@ def _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar: Sess
     if op == "select":
         return _select(values[node["cond"]], values[node["then"]], values[node["else"]], n)
     if op == "hist":
-        return _hist(values[node["arg"]], node["offset"], n)
+        return _hist(values[node["arg"]], _hist_offset(node, inputs, decls), n)
     if op == "nz":
         return _nz(values[node["arg"]], node.get("replacement", 0), n)
     if op == "scan":

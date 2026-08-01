@@ -58,6 +58,39 @@ def analyze_window_bounds(ir: dict) -> list:
     # how a useful diagnostic becomes something people filter out.
     reported: set[str] = set()
 
+    # `x[r]` with an integer input `r` is the same hazard in a different shape:
+    # the compiler prices its WARMUP at declared_max(decl) or maximumLookback, so
+    # an unbounded input silently demands 20,000 bars of warmup. Reported here
+    # rather than at the lowering site so it shares the one-warning-per-input rule
+    # above -- an input used as both a window length and a history offset is still
+    # one `maxval=` to add.
+    for node in nodes:
+        if node.get("op") != "hist" or node.get("offsetInputId") is None:
+            continue
+        decl = decls.get(node["offsetInputId"])
+        if decl is None or decl.get("type") != "integer":
+            continue
+        if _declared_max(decl) is not None:
+            continue
+        if decl["id"] in reported:
+            continue
+        reported.add(decl["id"])
+        nid = node["id"]
+        raw = spans.get(nid) or spans.get(str(nid))
+        if raw is None:
+            continue
+        # `meta.spans` stores spans as PLAIN DICTS; a Diagnostic carries a `Span`.
+        span = Span(start=raw["start"], end=raw["end"], line=raw["line"], column=raw["column"])
+        out.append(
+            make_diagnostic(
+                "OS5008",
+                "warning",
+                span,
+                f"'{decl['id']}' has no maxval, so its history offset is priced at maximumLookback "
+                f"({SCRIPT_LIMITS['maximumLookback']} bars of warmup) - add maxval= to bound it",
+            )
+        )
+
     for node in nodes:
         if node.get("op") != "call":
             continue
