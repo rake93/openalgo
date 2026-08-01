@@ -1623,13 +1623,37 @@ export class ChartWorkspaceController {
 
   /* ── snapshot / restore ────────────────────────────────────────────────── */
 
+  /**
+   * Entries from the last restore that could not be run, kept so saving the
+   * layout does not erase them. Cleared and rebuilt on each restore.
+   */
+  private unrestoredIndicators: IndicatorSnapshotEntry[] = []
+
+  /**
+   * The live indicators plus any entry that failed to restore.
+   *
+   * Deduped by scriptId: once the same script is running again -- the user
+   * re-added it, or a later reload found its IR -- the live entry is
+   * authoritative and the carried one is dropped, so a recovered indicator can
+   * never appear twice in a saved layout.
+   */
+  private indicatorSnapshotWithUnrestored(): IndicatorSnapshotEntry[] {
+    const live = this.indicators.snapshot()
+    if (this.unrestoredIndicators.length === 0) return live
+    const liveIds = new Set(live.map((e) => e.script?.scriptId).filter((id) => id !== undefined))
+    const carried = this.unrestoredIndicators.filter(
+      (e) => e.script === undefined || !liveIds.has(e.script.scriptId)
+    )
+    return [...live, ...carried]
+  }
+
   snapshot(): WorkspaceSnapshot {
     return {
       chartType: this.chartType,
       transform: { ...this.transform },
       volumeMode: this.volumeMode,
       grid: { ...this.grid },
-      indicators: this.indicators.snapshot(),
+      indicators: this.indicatorSnapshotWithUnrestored(),
       libraryIndicators: this.library.snapshot(),
       drawings: this.drawing.snapshot(),
       profiles: this.profiles.snapshot(),
@@ -1688,6 +1712,9 @@ export class ChartWorkspaceController {
   async restoreIndicators(snap: Partial<WorkspaceSnapshot> | undefined): Promise<void> {
     if (!snap) return
     const entries = snap.indicators ?? []
+    // Rebuilt per restore: this run's failures are the ones worth carrying, and
+    // keeping an older run's would resurrect entries the user has since removed.
+    this.unrestoredIndicators = []
     // Resolve every durable entry's IR first, in parallel — a layout with
     // several custom indicators would otherwise pay one full round trip each.
     const resolved = await Promise.all(entries.map((item) => this.resolveRestoreIr(item)))
@@ -1697,6 +1724,12 @@ export class ChartWorkspaceController {
       const outcome = resolved[index] as RestoreResolution
       if (outcome.error) {
         failures.push(outcome.error)
+        // The chart cannot run it, but the LAYOUT must keep it. `snapshot()` is
+        // what the layout is saved from, so an entry missing there is erased on
+        // the next autosave -- turning a transient failure (a version that
+        // momentarily has no compiled IR, a blip mid-reload) into permanent loss
+        // of the indicator along with its inputs and style overrides.
+        this.unrestoredIndicators.push(item)
         continue
       }
       try {
@@ -1744,13 +1777,22 @@ export class ChartWorkspaceController {
     try {
       const version = await getVersion(item.script.scriptId, item.script.versionId)
       if (!version) {
-        return { error: `${describeRestoreEntry(item)}: version not found` }
+        // The VERSION is named because a layout pins one: the script may well
+ // still exist and compile fine, and "not found" without the number sends
+ // people to look at the wrong thing.
+        return {
+          error: `${describeRestoreEntry(item)}: saved version ${item.script.versionId} not found`,
+        }
       }
       if (!version.compiled_ir) {
         // The server stored this version without IR — a source it could not
         // compile. Nothing to run, and recompiling in the browser is exactly
         // what the reopen contract forbids.
-        return { error: `${describeRestoreEntry(item)}: the server has no compiled IR for it` }
+        return {
+          error:
+            `${describeRestoreEntry(item)}: saved version ${item.script.versionId} has no compiled IR ` +
+            `— it is kept in this layout and will load once that version compiles`,
+        }
       }
       return { ir: version.compiled_ir }
     } catch (err) {

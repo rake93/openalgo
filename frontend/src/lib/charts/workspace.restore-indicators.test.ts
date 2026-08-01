@@ -293,3 +293,49 @@ describe('a restored layout can be saved again unchanged', () => {
     expect(controller.snapshot().indicators).toEqual(saved.map((s) => ({ ...s, inputs: s.inputs })))
   })
 })
+
+/**
+ * A FAILED restore must not delete the indicator from the saved layout.
+ *
+ * The chart drops what it cannot run — correctly, since there is nothing to
+ * draw. But `snapshot()` is what the layout is saved from, and an entry missing
+ * there is an entry ERASED on the next autosave. So a transient failure (a
+ * version that momentarily has no compiled IR, a server blip mid-reload) turns
+ * into permanent data loss: the indicator is gone from the layout and the user
+ * has to find and re-add it, losing its inputs and style overrides with it.
+ *
+ * Observed for real: a script saved in a state the server could not compile
+ * vanished from the chart, and re-adding it was the only recovery.
+ */
+describe('an unrestorable entry survives in the layout', () => {
+  it('keeps the entry in snapshot() so the next reload can retry it', async () => {
+    getVersion.mockResolvedValue({ compiled_ir: null })
+    const saved = [
+      { definitionId: 'ir', inputs: { len: 20 }, script: { scriptId: 7, versionId: 42 } },
+    ]
+
+    await controller.restoreIndicators({ indicators: saved })
+
+    // Nothing runs on the chart...
+    expect(latest).toHaveLength(0)
+    // ...but the layout still carries it, inputs and identity intact.
+    expect(controller.snapshot().indicators).toEqual(saved)
+  })
+
+  it('does not duplicate the entry once the same script restores successfully', async () => {
+    getVersion.mockResolvedValue({ compiled_ir: null })
+    const saved = [
+      { definitionId: 'ir', inputs: {}, script: { scriptId: 7, versionId: 42 } },
+    ]
+    await controller.restoreIndicators({ indicators: saved })
+    expect(controller.snapshot().indicators).toHaveLength(1)
+
+    // Second reload, this time the server has the IR.
+    getVersion.mockResolvedValue(versionWith(SAVED_IR))
+    await controller.restoreIndicators({ indicators: saved })
+
+    const entries = controller.snapshot().indicators
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.script?.scriptId).toBe(7)
+  })
+})
