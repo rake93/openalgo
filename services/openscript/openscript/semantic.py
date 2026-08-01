@@ -546,7 +546,13 @@ class Analyzer:
         # (spawn-sampled-drawing-values design 3.1). The others stay const
         # because they are plan inputs, not per-object geometry -- `bars`/
         # `right_pad` size the object stream the planner admits, `max_kept` caps it.
-        for name in ("bars", "right_pad", "max_kept"):
+        # `offset` and `bars` are NOT in this list: both are per-object GEOMETRY
+        # and both accept a series sampled at spawn. They travel together -- a
+        # projected object is drawn at `left = offset` and `right = offset +
+        # width`, so leaving `bars` const while `offset` varies lets x1 overtake
+        # x2. `right_pad`/`max_kept` size and cap the object STREAM the planner
+        # admits, which has to be knowable before execution.
+        for name in ("right_pad", "max_kept"):
             e = self._named_arg_value(call, name)
             if e is not None and self._numeric_arg_value(call, name) is None:
                 self._error("OS2023", e.span, f"{name}= must be a compile-time constant")

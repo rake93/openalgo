@@ -900,6 +900,21 @@ def _sampled_span(o: dict, off: int) -> int:
     return 0 if o.get("offsetNodeId") is None else abs(off)
 
 
+def _resolve_span(o: dict, field: str, const_value: int, s: int, values: list) -> int:
+    """Shared sampler for the two series-valued geometry spans (`offset`,
+    `bars`): const passthrough, else sample at spawn, truncate, clamp. ONE
+    function so the two cannot drift in rounding or clamping and produce a box
+    whose edges disagree about where they are."""
+    node = o.get(field)
+    if node is None:
+        return const_value
+    v = float(_sample_at(_as_series(values[node], s + 1), s))
+    if not math.isfinite(v):
+        return 0
+    max_back = SCRIPT_LIMITS["maximumLookback"]
+    return max(-max_back, min(max_back, int(v)))
+
+
 def _resolve_offset(o: dict, const_offset: int, s: int, values: list) -> int:
     """The object's LEFT shift, sampled at spawn when it is a series (design 3.1).
 
@@ -920,8 +935,7 @@ def _resolve_offset(o: dict, const_offset: int, s: int, values: list) -> int:
 
 
 def _resolve_right_edge(
-    o: dict, s: int, top: float, bottom: float, dataset: dict, n: int, calendar: SessionCalendar
-) -> dict:
+    o: dict, s: int, top: float, bottom: float, dataset: dict, n: int, calendar: SessionCalendar, values: list) -> dict:
     """Resolve the right edge + open/mitigated flags for one object (design §3/§4)."""
     last_bar_index = n - 1
     right_pad = o.get("rightPad", 0)
@@ -930,8 +944,9 @@ def _resolve_right_edge(
     if extend == "lastbar":
         return {"x2bar": max(last_bar_index, x2_0), "open": True, "mitigated": False, "objBars": 1}
     if extend == "bars":
-        bars = o["bars"] if isinstance(o.get("bars"), (int, float)) else 0
-        return {"x2bar": s + int(bars), "open": False, "mitigated": False, "objBars": 1}
+        const_bars = o["bars"] if isinstance(o.get("bars"), (int, float)) else 0
+        bars = _resolve_span(o, "barsNodeId", int(const_bars), s, values)
+        return {"x2bar": s + bars, "open": False, "mitigated": False, "objBars": 1}
     # extend == 'until': forward scan from the per-predicate start (see
     # _scan_start_for); x2 = the first terminate bar, INCLUSIVE.
     #
@@ -963,7 +978,13 @@ def _resolve_right_edge(
 def _anchor(dataset: dict, bar: int, n: int) -> dict:
     # TRUE geometric bar (may be <0 for a left overhang or >last for a not-yet
     # -reached edge) with a None time when outside the dataset (Fable #1/#2).
-    return {"bar": int(bar), "time": _anchor_time(dataset, bar, n)}
+    a = {"bar": int(bar), "time": _anchor_time(dataset, bar, n)}
+    # A forward anchor states how far past the last bar it sits, so the renderer
+    # can project it instead of degrading it to a chart edge. Only forward: a
+    # left overhang has no destination to state.
+    if bar > n - 1:
+        a["ahead"] = int(bar) - (n - 1)
+    return a
 
 
 def _materialize_drawing(
@@ -1008,7 +1029,7 @@ def _materialize_drawing(
             if not math.isfinite(spawn_time):
                 continue
             price = _sample_at(price_v, s)
-            edge = _resolve_right_edge(o, s, price, price, dataset, n, calendar)
+            edge = _resolve_right_edge(o, s, price, price, dataset, n, calendar, values)
             off = _resolve_offset(o, offset, s, values)
             if budget is not None:
                 budget.charge(DRAW_OBJECT_WEIGHT * (edge["objBars"] + _sampled_span(o, off)))
@@ -1046,7 +1067,7 @@ def _materialize_drawing(
             continue
         top = _sample_at(top_v, s)
         bottom = _sample_at(bottom_v, s)
-        edge = _resolve_right_edge(o, s, top, bottom, dataset, n, calendar)
+        edge = _resolve_right_edge(o, s, top, bottom, dataset, n, calendar, values)
         off = _resolve_offset(o, offset, s, values)
         if budget is not None:
             budget.charge(DRAW_OBJECT_WEIGHT * (edge["objBars"] + _sampled_span(o, off)))

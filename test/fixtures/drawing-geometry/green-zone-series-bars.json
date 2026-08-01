@@ -1,0 +1,27 @@
+{
+  "name": "green-zone-series-bars",
+  "note": "`bars=` from an input, the right-edge counterpart of green-zone-series-offset. An HTF projected candle is drawn at `left = bar_index + projOffset + slot*spacing` and `right = left + width`, so BOTH edges move with a setting; leaving `bars` const while `offset` became a series means x1 can overtake x2 and the box collapses or inverts. Here off=2 and span=5 with the zone spawning at bar 2, so the box runs bar 4 to bar 7 -- and bars 5..7 do not exist in this 5-bar dataset, which is the point: a projected candle lives entirely past the last bar and its anchors carry `ahead` rather than a time.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\noff = input.int(2, \"Off\", minval=0, maxval=50)\nspan = input.int(5, \"Span\", minval=1, maxval=50)\nplotzone(bar_index == 2, high, low, \"P\", offset=off, extend=extend.bars, bars=span)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [11, 9, 10.5, 11.5, 12],
+    "high":   [12, 11, 13, 14, 15],
+    "low":    [10, 8, 10.5, 11, 12],
+    "close":  [11, 8.5, 10.75, 12, 13],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "zones",
+        "title": "P",
+        "items": [
+          { "x1bar": 4, "x2bar": 7, "top": 13, "bottom": 10.5, "open": false, "mitigated": false, "text": null }
+        ]
+      }
+    ]
+  }
+}
