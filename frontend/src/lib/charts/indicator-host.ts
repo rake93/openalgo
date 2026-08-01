@@ -868,6 +868,7 @@ export class IndicatorHost {
     // all. Lifecycle is unchanged — `remove` deletes the entry and `clear` drops
     // them all, both keyed by the same sessionId.
     if (scope === 'full') this.lastOutputs.set(sessionId, outputs)
+    publishDebugOutputs(sessionId, outputs, scope)
 
     const renderer = this.renderers.get(sessionId)
     if (!renderer) return
@@ -905,6 +906,93 @@ export class IndicatorHost {
 
 /** Fold an alpha (0..1) into a hex or rgb(a) color; returns the input unchanged
  *  when opacity is full or the color can't be parsed (e.g. named colors). */
+/**
+ * Publish the computed outputs of a session to `window.__openscript` so a chart
+ * can be inspected for what it ACTUALLY produced, not what its pixels suggest.
+ *
+ * WHY THIS EXISTS. Three separate investigations stalled on the same blind spot:
+ * a marker shipped with an unread `title` and nothing could show it, the M2
+ * drawing-diff question could not be answered because `ObjectDiff` has no
+ * observable consumer, and an HTF projected candle went missing while offline
+ * replays of the same script produced it every time. Each was chased through
+ * screenshots and canvas pixel sampling, and pixel inference produced a
+ * FALSE POSITIVE at least once -- a colour target computed rather than measured
+ * matched an unrelated zone and "confirmed" a candle that was not there.
+ *
+ * OFF unless asked for. Reading it costs a `localStorage` lookup per publish and
+ * nothing else; enabling it holds one reference per session, which is the same
+ * snapshot `lastOutputs` already retains.
+ *
+ *     localStorage.setItem('oa-openscript-debug', '1')   // then reload
+ *     window.__openscript.outputs                        // sessionId -> outputs
+ *     window.__openscript.drawings('EQH')                // titles + item geometry
+ */
+interface OpenScriptDebug {
+  outputs: Record<string, IndicatorOutput[]>
+  scopes: Record<string, string>
+  drawings: (titleFilter?: string) => unknown[]
+}
+
+function publishDebugOutputs(
+  sessionId: string,
+  outputs: IndicatorOutput[],
+  scope: 'full' | 'update'
+): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (localStorage.getItem('oa-openscript-debug') !== '1') return
+  } catch {
+    return // storage unavailable (private mode / sandbox) — stay silent
+  }
+  const w = window as unknown as { __openscript?: OpenScriptDebug }
+  if (!w.__openscript) {
+    w.__openscript = {
+      outputs: {},
+      scopes: {},
+      drawings(titleFilter?: string) {
+        const rows: unknown[] = []
+        for (const [sid, outs] of Object.entries(w.__openscript!.outputs)) {
+          for (const o of outs) {
+            if (o.kind !== 'zones' && o.kind !== 'levels' && o.kind !== 'marker') continue
+            if (titleFilter && !o.title.includes(titleFilter)) continue
+            const items = (o as unknown as { items?: unknown[]; markers?: unknown[] })
+            rows.push({
+              session: sid,
+              kind: o.kind,
+              title: o.title,
+              // `ahead` is the forward projection distance; a drawing past the
+              // last bar carries it instead of a resolvable time.
+              items: (items.items ?? items.markers ?? []).map((it) => {
+                const g = it as {
+                  x1?: { bar: number; time: number | null; ahead?: number }
+                  x2?: { bar: number; time: number | null; ahead?: number }
+                  barIndex?: number
+                  price?: number
+                  top?: number
+                  bottom?: number
+                  text?: string
+                }
+                return {
+                  x1: g.x1 ? { bar: g.x1.bar, ahead: g.x1.ahead ?? null } : undefined,
+                  x2: g.x2 ? { bar: g.x2.bar, ahead: g.x2.ahead ?? null } : undefined,
+                  barIndex: g.barIndex,
+                  price: g.price,
+                  top: g.top,
+                  bottom: g.bottom,
+                  text: g.text,
+                }
+              }),
+            })
+          }
+        }
+        return rows
+      },
+    }
+  }
+  w.__openscript.outputs[sessionId] = outputs
+  w.__openscript.scopes[sessionId] = scope
+}
+
 function withAlpha(color: string, alpha: number): string {
   if (!(alpha < 1)) return color
   const a = Math.max(0, Math.min(1, alpha))
