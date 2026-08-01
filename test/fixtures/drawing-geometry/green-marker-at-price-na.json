@@ -1,0 +1,27 @@
+{
+  "name": "green-marker-at-price-na",
+  "note": "An `na` price DROPS the marker rather than drawing it somewhere invented. `ta.pivothigh` is na on every bar it has not confirmed a pivot, which is most of them -- so this is the COMMON case for the liquidity-pivot markers, not an edge case, and a fallback price would scatter glyphs across the chart at a fabricated level. Matches the existing rule that a dynamic colour resolving to na hides a marker (Pine color=na). Here left=1/right=1 confirms a pivot only at bar 2 (high 13 is a strict local max, confirmed one bar later), so exactly one marker survives -- at bar 2, carrying that pivot's value.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nph = ta.pivothigh(high, 1, 1)\nplotshape(true, \"Pivot\", shape=shape.circle, location=location.absolute, price=ph, color=color.red, size=size.small)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980],
+    "open":   [11, 9, 10.5, 11.5],
+    "high":   [10, 11, 13, 12],
+    "low":    [9, 8, 10.5, 11],
+    "close":  [9.5, 8.5, 10.75, 11.5],
+    "volume": [100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "markers",
+        "title": "Pivot",
+        "items": [
+          { "barIndex": 3, "position": "atPrice", "price": 13, "shape": "circle", "text": null, "size": "small" }
+        ]
+      }
+    ]
+  }
+}

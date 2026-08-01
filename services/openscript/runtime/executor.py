@@ -1003,13 +1003,60 @@ def _collect_outputs(
         elif kind in ("plotshape", "plotchar"):
             cond = _as_series(values[o["condNodeId"]], n)
             per_bar = _dynamic_colors(o.get("colorNodeId"), values, n, ir)
+            base_color = _input_color(inputs, o.get("colorInputId"), o.get("color", ""))
+            price_node = o.get("priceNodeId")
+            price_series = _as_series(values[price_node], n) if price_node is not None else None
+            text = o.get("char") if kind == "plotchar" else o.get("text")
+            shape = "text" if kind == "plotchar" else o.get("shape", "circle")
+            location = o.get("location", "aboveBar")
+            size = o.get("size")
             # Dynamic color resolving to na hides the marker (Pine color=na).
-            bars = [
-                i
-                for i in range(n)
-                if _truthy_scalar(cond[i]) and (per_bar is None or per_bar[i] != "")
-            ]
-            outputs.append({"kind": kind, "id": oid, "title": o.get("title", ""), "bars": bars})
+            bars = []
+            marker_items = []
+            for i in range(n):
+                if not _truthy_scalar(cond[i]):
+                    continue
+                color = per_bar[i] if per_bar is not None else base_color
+                if color == "":
+                    continue
+                # An `na` price DROPS the marker rather than inventing a level for
+                # it. This is the common case, not an edge one: `ta.pivothigh` is
+                # na on every bar it has not confirmed a pivot, so a fallback
+                # would scatter glyphs at a fabricated price. Same rule as
+                # `color=na` hiding a marker.
+                price = None
+                if price_series is not None:
+                    p = float(price_series[i])
+                    if not math.isfinite(p):
+                        continue
+                    price = p
+                bars.append(i)
+                item: dict = {
+                    "barIndex": i,
+                    "position": location,
+                    "shape": shape,
+                    "color": color,
+                }
+                if price is not None:
+                    item["price"] = price
+                if isinstance(text, str):
+                    item["text"] = text
+                if isinstance(size, str):
+                    item["size"] = size
+                marker_items.append(item)
+            # `bars` is kept for existing consumers; `markers` is the full item
+            # list the TS runtime emits. Without it the shared fixture corpus
+            # could not replay a marker at all, which is exactly how a marker
+            # shipped with an unread `title` on both runtimes.
+            outputs.append(
+                {
+                    "kind": kind,
+                    "id": oid,
+                    "title": o.get("title", ""),
+                    "bars": bars,
+                    "markers": marker_items,
+                }
+            )
         elif kind in ("barcolor", "bgcolor"):
             cond = _as_series(values[o["condNodeId"]], n)
             per_bar = _dynamic_colors(o.get("colorNodeId"), values, n, ir)

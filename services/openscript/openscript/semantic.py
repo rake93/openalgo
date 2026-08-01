@@ -456,6 +456,8 @@ class Analyzer:
                 self._register_title(call, self._alert_titles, "OS2015")
             if name in ("plotlevel", "plotzone"):
                 self._validate_drawing_output(name, call)
+            if name in ("plotshape", "plotchar"):
+                self._validate_marker_output(call)
             return
         if name in self._functions:
             arity = self._functions[name]
@@ -465,6 +467,23 @@ class Analyzer:
                 self._error("OS2008", call.span, name)
             return
         self._error("OS2002", call.span, name)
+
+    def _validate_marker_output(self, call: ast.CallExpr) -> None:
+        """`location.absolute` and `price=` are meaningless apart and must pair.
+
+        The one-directional half is the important one. `location.absolute`
+        already lowered to position 'atPrice', and the renderer's atPrice branch
+        requires a price -- without one it falls through and draws the glyph at
+        the BAR MIDPOINT. So the pre-`price=` behaviour was not a missing feature
+        but a silent misplacement, and OS2029 turns it into a compile error.
+        """
+        loc_arg = self._named_arg_value(call, "location")
+        is_absolute = loc_arg is not None and self._enum_member(loc_arg) == "absolute"
+        has_price = self._named_arg_value(call, "price") is not None
+        if is_absolute and not has_price:
+            self._error("OS2029", call.span)
+        if has_price and not is_absolute:
+            self._error("OS2030", call.span)
 
     def _validate_drawing_output(self, fn: str, call: ast.CallExpr) -> None:
         """`plotlevel`/`plotzone` argument-consistency (design 0.5 §2/§4). These

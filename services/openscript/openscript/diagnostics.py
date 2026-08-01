@@ -67,6 +67,8 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS2026": "request.security timeframe string is not a valid timeframe",
     "OS2027": "request.security expression must be a source series (optionally with a [n] offset)",
     "OS2028": "request.security lookahead must be barmerge.lookahead_off",
+    "OS2029": "location.absolute requires price=",
+    "OS2030": "price= applies only to location.absolute",
     # Limits
     "OS3001": "Source exceeds maximum size",
     "OS3002": "Program exceeds maximum AST nodes",

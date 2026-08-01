@@ -86,7 +86,7 @@ def test_the_fixture_case_count_is_exact():
     """Exact, not >=: these fixtures are the only thing preventing TS/Python drift and
     the only expression of the G1 matrix, so deleting one must fail loudly rather than
     quietly shrink the suite."""
-    assert len(FIXTURE_FILES) == 31
+    assert len(FIXTURE_FILES) == 33
 
 
 def test_every_fixture_name_matches_its_filename():
@@ -138,6 +138,35 @@ def _normalize_drawings(outputs: list[dict]) -> list[dict]:
                             "text": it.get("text"),
                         }
                         for it in o["items"]
+                    ],
+                }
+            )
+        elif o["kind"] in ("plotshape", "plotchar", "marker"):
+            # The two runtimes name this output differently -- TS emits kind
+            # 'marker', Python keeps the IR's 'plotshape'/'plotchar'. The
+            # normalizer is where that difference is absorbed, since the fixture
+            # encodes ONE language-neutral shape.
+            # Markers were outside this corpus until the at-price work, and their
+            # absence has cost twice: `title` shipped unread from a positional
+            # argument, and `location.absolute` lowers to 'atPrice' while nothing
+            # populates `price`. Both compiled clean on BOTH runtimes because
+            # nothing replayed a marker across them.
+            result.append(
+                {
+                    "kind": "markers",
+                    "title": o["title"],
+                    "items": [
+                        {
+                            "barIndex": int(it["barIndex"]),
+                            "position": it["position"],
+                            "price": (
+                                float(it["price"]) if it.get("price") is not None else None
+                            ),
+                            "shape": it["shape"],
+                            "text": it.get("text"),
+                            "size": it.get("size"),
+                        }
+                        for it in o["markers"]
                     ],
                 }
             )

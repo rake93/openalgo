@@ -1,0 +1,30 @@
+{
+  "name": "green-marker-at-price",
+  "note": "plotshape + location.absolute + price=. Pine's location.absolute places the glyph AT a value rather than above or below the bar -- the shape the ICT suite's liquidity-pivot circles need, since they sit on the pivot price, not on the candle. `location.absolute` already lowered to position 'atPrice', but nothing populated `price`, so the renderer's atPrice branch (which requires price !== undefined) fell through to the mid-bar case and the glyph drew at (open+close)/2. Here the marker fires on every bar and must carry the sampled `high` as its price -- 12, 11, 13, 14 -- NOT the bar midpoint.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"H\", shorttitle=\"H\", overlay=true)\nplotshape(true, \"Pivot\", shape=shape.circle, location=location.absolute, price=high, color=color.red, size=size.small)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980],
+    "open":   [11, 9, 10.5, 11.5],
+    "high":   [12, 11, 13, 14],
+    "low":    [10, 8, 10.5, 11],
+    "close":  [11, 8.5, 10.75, 12],
+    "volume": [100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "markers",
+        "title": "Pivot",
+        "items": [
+          { "barIndex": 0, "position": "atPrice", "price": 12, "shape": "circle", "text": null, "size": "small" },
+          { "barIndex": 1, "position": "atPrice", "price": 11, "shape": "circle", "text": null, "size": "small" },
+          { "barIndex": 2, "position": "atPrice", "price": 13, "shape": "circle", "text": null, "size": "small" },
+          { "barIndex": 3, "position": "atPrice", "price": 14, "shape": "circle", "text": null, "size": "small" }
+        ]
+      }
+    ]
+  }
+}

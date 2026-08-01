@@ -760,6 +760,12 @@ class IRGenerator:
             size = self._const_arg(call, None, "size")
             if isinstance(size, str):
                 out["size"] = size
+        # `price=` is a SERIES, sampled at the marker's own bar (markers are
+        # per-bar objects, so there is no spawn to sample at). Semantic
+        # OS2029/OS2030 keep it paired with location.absolute.
+        price_expr = self._arg_expr(call, None, "price")
+        if price_expr is not None:
+            out["priceNodeId"] = self._lower_expr(price_expr)
         return out
 
     def _candle_output(self, fn: str, call: ast.CallExpr) -> dict | None:

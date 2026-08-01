@@ -253,8 +253,10 @@ NAMED_ARGS: dict[str, frozenset[str]] = {
     "plot": frozenset({"title", "color", "linewidth", "style"}),
     "hline": frozenset({"title", "color"}),
     "fill": frozenset({"title", "color"}),
-    "plotshape": frozenset({"title", "color", "location", "shape", "size", "text"}),
-    "plotchar": frozenset({"title", "color", "location", "char", "text"}),
+    # `price` pairs with location.absolute (OS2029/OS2030): the glyph sits AT a
+    # value instead of above or below the bar.
+    "plotshape": frozenset({"title", "color", "location", "shape", "size", "text", "price"}),
+    "plotchar": frozenset({"title", "color", "location", "char", "text", "price"}),
     "plotcandle": frozenset({"title", "color"}),
     "plotbar": frozenset({"title", "color"}),
     "barcolor": frozenset({"title", "color"}),
