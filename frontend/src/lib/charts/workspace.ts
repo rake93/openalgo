@@ -1597,10 +1597,21 @@ export class ChartWorkspaceController {
     )
   }
 
-  /** Live preview of the OpenScript editor — one preview session at a time. */
-  async previewIr(ir: IRProgram): Promise<void> {
+  /**
+   * Live preview of the OpenScript editor — one preview session at a time.
+   *
+   * `inputs` is what makes the editor's settings dialog usable at all (P4). The
+   * editor recompiles on a 400 ms debounce, and this method is `clearPreview()`
+   * + `addIr`: the session is torn down and rebuilt on every keystroke. Without
+   * carrying the values through, an edited input reverts to its declared default
+   * the moment the author types the next character — which reads as the settings
+   * dialog being broken rather than as state being dropped here.
+   *
+   * Omitted means "use the declared defaults", which is the untouched case.
+   */
+  async previewIr(ir: IRProgram, inputs?: Record<string, unknown>): Promise<void> {
     await this.clearPreview()
-    this.previewId = await this.indicators.addIr(ir)
+    this.previewId = await this.indicators.addIr(ir, inputs ? { inputs } : undefined)
   }
 
   async clearPreview(): Promise<void> {

@@ -24,7 +24,8 @@ import {
   updateScript,
 } from '@/api/indicators'
 import { type AlertCondition, CreateAlertDialog } from '@/components/charts/CreateAlertDialog'
-import { DataWindow } from '@/components/charts/DataWindow'
+import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
+import type { IndicatorInstance } from '@/lib/charts/indicator-host'
 import { InspectorPanel } from '@/components/charts/InspectorPanel'
 import { ProfilePanel } from '@/components/charts/ProfilePanel'
 import { useInspectorPin } from '@/lib/charts/use-inspector-pin'
@@ -131,6 +132,30 @@ export default function ChartEditor() {
     setDirty(next !== savedSourceRef.current)
   }, [])
 
+  // P4. The editor recompiles on every keystroke and `previewIr` tears the
+  // session down, so an edited input has to live HERE rather than in the
+  // preview instance — otherwise it reverts to its declared default as the
+  // author types, which reads as the settings dialog being broken.
+  //
+  // Mirrored into a ref because `compileAndPreview` is a stable callback: it
+  // must read the CURRENT values without being re-created on every edit,
+  // which would restart the debounce.
+  // A ref, not state: nothing RENDERS from these values. The dialog reads the
+  // live instance's `inputs`, and the chart updates through the host, so
+  // mirroring them into state would be a second source of truth that only
+  // ever forced a redundant re-render.
+  const previewInputsRef = useRef<Record<string, unknown>>({})
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  // The editor previews exactly one indicator, so the preview IS the head of
+  // the list — but it must come through `onIndicators`, not a read of the
+  // controller during render. Reading at render (as ProfilePanel does) leaves
+  // React with no idea the preview attached, so the Settings button stayed
+  // DISABLED until some unrelated state change re-rendered the page. The host
+  // already announces every list change; subscribing is the whole fix, and it
+  // keeps the instance fresh after an input update too.
+  const [previewInstance, setPreviewInstance] = useState<IndicatorInstance | null>(null)
+
   const compileAndPreview = useCallback((src: string) => {
     const result = compile(src)
     setDiagnostics(result.diagnostics)
@@ -142,7 +167,19 @@ export default function ChartEditor() {
     }
     setAlertConditions(alerts)
     if (result.ir && controllerRef.current) {
-      void controllerRef.current.previewIr(result.ir).catch(() => undefined)
+      // Prune to the ids the CURRENT source declares. Editing a script renames
+      // and removes inputs, and carrying a value for one that no longer exists
+      // would quietly feed the engine a key it never declared.
+      const declared = new Set(result.ir.inputs.map((d) => d.id))
+      const kept: Record<string, unknown> = {}
+      for (const [id, v] of Object.entries(previewInputsRef.current)) {
+        if (declared.has(id)) kept[id] = v
+      }
+      if (Object.keys(kept).length !== Object.keys(previewInputsRef.current).length) {
+        previewInputsRef.current = kept
+      }
+      const inputs = Object.keys(kept).length > 0 ? kept : undefined
+      void controllerRef.current.previewIr(result.ir, inputs).catch(() => undefined)
     }
   }, [])
 
@@ -179,6 +216,7 @@ export default function ChartEditor() {
               setIntervalValue(info.interval)
             },
             onError: (message) => setStatus(message),
+            onIndicators: (list) => setPreviewInstance(list[0] ?? null),
           },
         })
         controllerRef.current = controller
@@ -495,6 +533,15 @@ export default function ChartEditor() {
         >
           Profile
         </button>
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          disabled={!previewInstance}
+          title="Edit this script's inputs and preview the result (P4)"
+          className="h-8 rounded bg-card px-3 text-sm font-medium hover:bg-accent disabled:opacity-40"
+        >
+          Settings
+        </button>
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <div className="relative">
@@ -592,7 +639,12 @@ export default function ChartEditor() {
 
         <div className="relative min-h-0 flex-1">
           <div ref={containerRef} className="absolute inset-0" />
-          {ready && <DataWindow data={crosshair} inspectHint />}
+          {/* The crosshair OHLC readout is deliberately NOT rendered here. It is
+              pinned top-left, which is exactly where the chart draws its indicator
+              legend, so it covered the legend and swallowed clicks on it — the
+              affordance you use to reach an indicator's settings. `crosshair` is
+              still subscribed because `useInspectorPin` needs it; only the readout
+              is gone. `/charts` keeps its own, toggleable from the status bar. */}
           {ready && profileOpen && (
             <ProfilePanel
               // The editor previews a single indicator and keeps no indicator
@@ -604,7 +656,25 @@ export default function ChartEditor() {
               onClose={() => setProfileOpen(false)}
             />
           )}
+          {/* Settings is gated on `ready` ALONE. It sat inside the inspector's
+              `pinned` branch at first, which tied opening an indicator's inputs
+              to having a crosshair bar pinned — two unrelated things. */}
+          {ready && (
+            <IndicatorSettingsDialog
+              instance={settingsOpen ? (previewInstance ?? null) : null}
+              manifest={controllerRef.current?.manifest ?? []}
+              onSave={(instanceId, inputs) => {
+                // Two writes on purpose. `updateIndicatorInputs` applies the
+                // change to the LIVE session immediately, with no recompile;
+                // the ref/state is what carries it through the NEXT one.
+                previewInputsRef.current = inputs
+                void controllerRef.current?.updateIndicatorInputs(instanceId, inputs)
+              }}
+              onClose={() => setSettingsOpen(false)}
+            />
+          )}
           {ready && pinned && (
+
             <InspectorPanel
               bar={pinned}
               inspect={(instanceId, outputId, barIndex) =>
