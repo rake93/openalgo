@@ -217,6 +217,23 @@ for _key in KERNEL_COST:
         raise ValueError(f"cost entry for unknown builtin: {_key}")
 
 
+def window_length_arg_indices(namespace: str, fn: str, arity: int) -> list[int]:
+    """The argument positions a windowed kernel is PRICED on, for a given arity.
+
+    Exported so the G9 compiler warning is driven by the same table that causes
+    the cost it explains. Duplicating these positions in the compiler would let
+    the two drift, and a diagnostic pointing at an argument the cost model does
+    not price is worse than none -- it sends the author to fix the wrong thing.
+
+    Empty for a non-window kernel, an unknown key, or an unpriced arity.
+    Mirrors the TS `windowLengthArgIndices`.
+    """
+    spec = KERNEL_COST.get(f"{namespace}.{fn}")
+    if spec is None or spec.get("family") != "window":
+        return []
+    return [arg_idx for arg_idx, _k in (spec.get("lens") or {}).get(arity, ())]
+
+
 def has_cost(namespace: str, fn: str) -> bool:
     """Registry membership — the admission-side pre-check for IR_UNPRICED_OPERATOR."""
     return f"{namespace}.{fn}" in KERNEL_COST

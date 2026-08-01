@@ -46,7 +46,13 @@ def _make_dataset(n):
 
 def _compile_ir(source):
     result = openscript.compile(source)
-    assert result.diagnostics == [], f"unexpected diagnostics: {result.diagnostics}"
+    # G9's OS5008 is ADVISORY and fires on exactly the shape these cases exist
+    # to exercise -- an input-bound window with no `maxval`. Declaring one would
+    # destroy the subject, so it is filtered here rather than avoided. Anything
+    # else must still be empty; OS5008 itself is covered by
+    # test_openscript_window_bounds.py.
+    unexpected = [d for d in result.diagnostics if d.code != "OS5008"]
+    assert unexpected == [], f"unexpected diagnostics: {unexpected}"
     assert result.ir is not None
     return result.ir
 

@@ -89,6 +89,7 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS5005": "variable name should be lowerCamelCase",
     "OS5006": "source is not formatted (run Format)",
     "OS5007": "magic number as a ta.*/kernels.* length — prefer a named input/const",
+    "OS5008": "window length bound to an input with no maxval — priced at maximumLookback",
 }
 
 

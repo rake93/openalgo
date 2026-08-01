@@ -48,7 +48,9 @@ from services.openscript.runtime.admit import admit_ir  # noqa: E402
 
 RSI_SOURCE = (
     'indicator("RSI", overlay=false)\n'
-    "len = input.int(14, \"Length\")\n"
+    # `maxval` bounds the window so G9's advisory OS5008 does not fire: these
+    # tests are about CRUD and diagnostics plumbing, not about admission cost.
+    "len = input.int(14, \"Length\", maxval=200)\n"
     "r = ta.rsi(close, len)\n"
     'plot(r, "RSI")\n'
 )

@@ -15,6 +15,7 @@ from .finality import analyze_finality
 from .ir_gen import generate_ir
 from .parser import parse
 from .semantic import analyze_program
+from .window_bounds import analyze_window_bounds
 
 
 @dataclass
@@ -47,7 +48,12 @@ def compile(source: str) -> CompileResult:
     if ir is None:
         return CompileResult(ir=None, diagnostics=[*semantic, *ir_diagnostics])
     fin_diagnostics = analyze_finality(ir)  # mutates ir["meta"]; returns repaint warnings
-    return CompileResult(ir=ir, diagnostics=[*semantic, *ir_diagnostics, *fin_diagnostics])
+    # G9: advisory only, and appended AFTER the error gate above by construction —
+    # an unbounded window is a cost to explain, never a reason to refuse the IR.
+    win_diagnostics = analyze_window_bounds(ir)
+    return CompileResult(
+        ir=ir, diagnostics=[*semantic, *ir_diagnostics, *fin_diagnostics, *win_diagnostics]
+    )
 
 
 __all__ = ["CompileResult", "compile"]
