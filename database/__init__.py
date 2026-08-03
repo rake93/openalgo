@@ -25,6 +25,16 @@ scheduler thread, silently stopping every scheduled job for the life of the
 process. Waiting is always better than failing: normal writes take milliseconds,
 so the timeout only ever engages behind a genuinely long transaction.
 
+Nothing else in the project sets it, and the contention is structural: every
+engine uses NullPool, so each operation opens a fresh connection that must
+acquire the write lock on its own, and openalgo.db is shared by every feature
+module (auth, symtoken, telegram, whatsapp, apilog, settings, strategies) AND by
+two processes — the gunicorn worker and the out-of-process websocket proxy. The
+wait stays well under the gunicorn 300s worker timeout, so it turns a spurious
+"database is locked" into a slightly slower commit. It does NOT help with a WAL
+snapshot conflict (SQLITE_BUSY_SNAPSHOT), which is reported with the same
+message but returns immediately; only re-running the transaction fixes that one.
+
 Registered here (the package __init__) because every database module is
 imported as ``database.<module>``, so this listener is guaranteed to be in
 place before any engine in the project creates its first connection. The
