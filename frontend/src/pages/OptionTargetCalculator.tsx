@@ -1,10 +1,21 @@
+import { Check, ChevronsUpDown } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { gexApi } from '@/api/gex'
 import { optionTargetApi, toCompactExpiry } from '@/api/option-target'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command'
 import { Label } from '@/components/ui/label'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Select,
   SelectContent,
@@ -14,6 +25,7 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useOptionTarget } from '@/hooks/useOptionTarget'
+import { useSupportedExchanges } from '@/hooks/useSupportedExchanges'
 import ScenarioPanel, { type ScenarioState } from '@/pages/option-target/ScenarioPanel'
 import { StrikeDetail } from '@/pages/option-target/StrikeDetail'
 import { StrikeTable } from '@/pages/option-target/StrikeTable'
@@ -21,13 +33,6 @@ import { useAuthStore } from '@/stores/authStore'
 import type { Candidate, Objective, OptionTargetRequest } from '@/types/option-target'
 
 const NEAREST_EXPIRY_VALUE = '__nearest__'
-
-const EXCHANGE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'NFO', label: 'NFO (NSE F&O)' },
-  { value: 'BFO', label: 'BFO (BSE F&O)' },
-  { value: 'MCX', label: 'MCX (Commodity)' },
-  { value: 'CDS', label: 'CDS (Currency)' },
-]
 
 const MCX_UNSUPPORTED_NOTE =
   'Commodity options are not yet supported. MCX has no spot instrument - its options are written on futures with a different expiry - and the shared option chain service cannot resolve an underlying price for them. This is a platform limitation that also affects the Option Chain page, not a fault in this calculator.'
@@ -59,10 +64,14 @@ function formatDte(days: number): string {
 
 export default function OptionTargetCalculator() {
   const { apiKey } = useAuthStore()
+  const { toolsFnoExchanges, defaultFnoExchange, defaultUnderlyings } = useSupportedExchanges()
 
-  const [underlyingInput, setUnderlyingInput] = useState('NIFTY')
-  const [underlying, setUnderlying] = useState('NIFTY')
-  const [exchange, setExchange] = useState('NFO')
+  const [exchange, setExchange] = useState(defaultFnoExchange)
+  const [underlyings, setUnderlyings] = useState<string[]>(
+    defaultUnderlyings[defaultFnoExchange] || []
+  )
+  const [underlyingOpen, setUnderlyingOpen] = useState(false)
+  const [underlying, setUnderlying] = useState(defaultUnderlyings[defaultFnoExchange]?.[0] || '')
   const [expiries, setExpiries] = useState<string[]>([])
   const [expiry, setExpiry] = useState('')
   const [scenario, setScenario] = useState<ScenarioState>(DEFAULT_SCENARIO)
@@ -71,6 +80,45 @@ export default function OptionTargetCalculator() {
   const [selected, setSelected] = useState<Candidate | null>(null)
 
   const isDark = document.documentElement.classList.contains('dark')
+
+  // Re-sync exchange when broker capabilities load asynchronously.
+  useEffect(() => {
+    setExchange((prev) =>
+      prev && toolsFnoExchanges.some((ex) => ex.value === prev) ? prev : defaultFnoExchange
+    )
+  }, [defaultFnoExchange, toolsFnoExchanges])
+
+  // Fetch underlyings when the exchange changes. Seed from the static
+  // defaults first so the picker is never empty, then replace with the
+  // broker's live list on success; on failure keep the seed rather than
+  // surfacing an error, since a missing list must not block the page.
+  // Resetting underlying here also guarantees a stale underlying from a
+  // previously selected exchange can never be submitted.
+  useEffect(() => {
+    const defaults = defaultUnderlyings[exchange] || []
+    setUnderlyings(defaults)
+    setUnderlying(defaults[0] || '')
+
+    let cancelled = false
+    const fetchUnderlyings = async () => {
+      try {
+        const response = await gexApi.getUnderlyings(exchange)
+        if (cancelled) return
+        if (response.status === 'success' && response.underlyings.length > 0) {
+          setUnderlyings(response.underlyings)
+          if (!response.underlyings.includes(defaults[0])) {
+            setUnderlying(response.underlyings[0])
+          }
+        }
+      } catch {
+        // Keep the seeded defaults
+      }
+    }
+    fetchUnderlyings()
+    return () => {
+      cancelled = true
+    }
+  }, [exchange, defaultUnderlyings])
 
   // Fetch expiries when underlying or exchange changes; leave expiry '' so the
   // backend resolves the nearest live expiry until the user picks one
@@ -110,15 +158,6 @@ export default function OptionTargetCalculator() {
   useEffect(() => {
     setSelected(null)
   }, [expiry])
-
-  const commitUnderlying = () => {
-    const next = underlyingInput.trim().toUpperCase()
-    if (next && next !== underlying) {
-      setUnderlying(next)
-    } else {
-      setUnderlyingInput(underlying)
-    }
-  }
 
   const targetPriceValue = Number.parseFloat(scenario.targetPrice)
   const hasTarget = Number.isFinite(targetPriceValue) && targetPriceValue > 0
@@ -191,35 +230,60 @@ export default function OptionTargetCalculator() {
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
             <div className="flex flex-wrap items-end gap-3">
               <div className="flex flex-col gap-1">
-                <Label htmlFor="ot-underlying" className="text-xs text-muted-foreground">
-                  Underlying
-                </Label>
-                <Input
-                  id="ot-underlying"
-                  value={underlyingInput}
-                  onChange={(e) => setUnderlyingInput(e.target.value.toUpperCase())}
-                  onBlur={commitUnderlying}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') e.currentTarget.blur()
-                  }}
-                  placeholder="NIFTY"
-                  className="w-28 uppercase"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
                 <Label className="text-xs text-muted-foreground">Exchange</Label>
                 <Select value={exchange} onValueChange={setExchange}>
-                  <SelectTrigger className="w-[150px]">
+                  <SelectTrigger className="w-[100px]">
                     <SelectValue placeholder="Exchange" />
                   </SelectTrigger>
                   <SelectContent>
-                    {EXCHANGE_OPTIONS.map((ex) => (
+                    {toolsFnoExchanges.map((ex) => (
                       <SelectItem key={ex.value} value={ex.value}>
                         {ex.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label className="text-xs text-muted-foreground">Underlying</Label>
+                <Popover open={underlyingOpen} onOpenChange={setUnderlyingOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={underlyingOpen}
+                      className="w-[160px] justify-between"
+                    >
+                      {underlying || 'Underlying'}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-48 p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search underlying..." />
+                      <CommandList>
+                        <CommandEmpty>No underlying found.</CommandEmpty>
+                        <CommandGroup>
+                          {underlyings.map((u) => (
+                            <CommandItem
+                              key={u}
+                              value={u}
+                              onSelect={() => {
+                                setUnderlying(u)
+                                setUnderlyingOpen(false)
+                              }}
+                            >
+                              <Check
+                                className={`mr-2 h-4 w-4 ${underlying === u ? 'opacity-100' : 'opacity-0'}`}
+                              />
+                              {u}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
               <div className="flex flex-col gap-1">
                 <Label className="text-xs text-muted-foreground">Expiry</Label>
