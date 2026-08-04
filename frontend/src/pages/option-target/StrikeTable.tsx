@@ -1,5 +1,6 @@
 import { Fragment } from 'react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
   Select,
@@ -25,6 +26,7 @@ interface StrikeTableProps {
   selectedStrike: number | null
   onObjectiveChange: (objective: Objective) => void
   onSelect: (candidate: Candidate) => void
+  onBuy: (candidate: Candidate) => void
 }
 
 const OBJECTIVE_OPTIONS: { value: Objective; label: string }[] = [
@@ -35,7 +37,7 @@ const OBJECTIVE_OPTIONS: { value: Objective; label: string }[] = [
   { value: 'max_robust', label: 'Best partial-move average' },
 ]
 
-const COLUMN_COUNT = 15
+const COLUMN_COUNT = 16
 
 function formatRupees(value: number): string {
   return value.toLocaleString('en-IN', { maximumFractionDigits: 0 })
@@ -56,6 +58,7 @@ export function StrikeTable({
   selectedStrike,
   onObjectiveChange,
   onSelect,
+  onBuy,
 }: StrikeTableProps) {
   return (
     <Card>
@@ -101,6 +104,7 @@ export function StrikeTable({
                 <TableHead className="text-right">IV now / target</TableHead>
                 <TableHead className="text-right">Spread %</TableHead>
                 <TableHead className="text-right">OI</TableHead>
+                <TableHead className="text-right">Trade</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -201,6 +205,23 @@ export function StrikeTable({
                         {candidate.spread_pct.toFixed(1)}%
                       </TableCell>
                       <TableCell className="text-right">{formatRupees(candidate.oi)}</TableCell>
+                      <TableCell className="text-right">
+                        {!candidate.excluded && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-[11px] font-sans"
+                            // The row itself selects; buying must not also be a
+                            // side effect of that click.
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onBuy(candidate)
+                            }}
+                          >
+                            Buy
+                          </Button>
+                        )}
+                      </TableCell>
                     </TableRow>
                     {(candidate.recommended || candidate.excluded) && (
                       <TableRow className="border-b-0 hover:bg-transparent">

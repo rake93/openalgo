@@ -1,5 +1,6 @@
 import { Check, ChevronsUpDown } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router'
 import { gexApi } from '@/api/gex'
 import { optionTargetApi, toCompactExpiry } from '@/api/option-target'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -26,6 +27,8 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { useOptionTarget } from '@/hooks/useOptionTarget'
 import { useSupportedExchanges } from '@/hooks/useSupportedExchanges'
+import { buildHandoffSearch } from '@/lib/strategyHandoff'
+import PlaceOrderDialog from '@/pages/option-target/PlaceOrderDialog'
 import ScenarioPanel, { type ScenarioState } from '@/pages/option-target/ScenarioPanel'
 import { StrikeDetail } from '@/pages/option-target/StrikeDetail'
 import { StrikeTable } from '@/pages/option-target/StrikeTable'
@@ -83,6 +86,8 @@ export default function OptionTargetCalculator() {
   const [objective, setObjective] = useState<Objective>('balanced')
   const [frozen, setFrozen] = useState(false)
   const [selected, setSelected] = useState<Candidate | null>(null)
+  const [buyCandidate, setBuyCandidate] = useState<Candidate | null>(null)
+  const navigate = useNavigate()
 
   const isDark = document.documentElement.classList.contains('dark')
 
@@ -237,6 +242,32 @@ export default function OptionTargetCalculator() {
   }, [data, selected])
 
   const snapshot = data?.snapshot ?? null
+
+  const lots = useMemo(() => {
+    const parsed = Number.parseInt(scenario.lots, 10)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1
+  }, [scenario.lots])
+
+  // Hand the selected strike to the Strategy Builder as a single long leg. Only
+  // its identity travels; the builder resolves symbol, lot size and price from
+  // its own live chain, so nothing here can go stale in transit.
+  const sendToStrategyBuilder = useCallback(() => {
+    if (!activeCandidate || !snapshot) return
+    const search = buildHandoffSearch({
+      exchange: snapshot.exchange,
+      underlying: snapshot.underlying,
+      expiry: snapshot.expiry_date,
+      legs: [
+        {
+          strike: activeCandidate.strike,
+          optionType: activeCandidate.option_type,
+          side: 'BUY',
+          lots,
+        },
+      ],
+    })
+    navigate(`/strategybuilder${search}`)
+  }, [activeCandidate, snapshot, lots, navigate])
 
   return (
     <div className="py-6 space-y-4">
@@ -453,20 +484,39 @@ export default function OptionTargetCalculator() {
                 selectedStrike={activeCandidate?.strike ?? null}
                 onObjectiveChange={setObjective}
                 onSelect={setSelected}
+                onBuy={setBuyCandidate}
               />
 
               {activeCandidate && (
-                <StrikeDetail
-                  candidate={activeCandidate}
-                  ladder={data.ladder}
-                  scenario={data.scenario}
-                  isDark={isDark}
-                />
+                <>
+                  <div className="flex justify-end">
+                    <Button variant="outline" size="sm" onClick={sendToStrategyBuilder}>
+                      Open {activeCandidate.strike} {activeCandidate.option_type} in Strategy
+                      Builder
+                    </Button>
+                  </div>
+                  <StrikeDetail
+                    candidate={activeCandidate}
+                    ladder={data.ladder}
+                    scenario={data.scenario}
+                    isDark={isDark}
+                  />
+                </>
               )}
             </>
           )}
         </div>
       </div>
+
+      <PlaceOrderDialog
+        candidate={buyCandidate}
+        snapshot={snapshot}
+        lots={lots}
+        apiKey={apiKey}
+        onOpenChange={(open) => {
+          if (!open) setBuyCandidate(null)
+        }}
+      />
     </div>
   )
 }

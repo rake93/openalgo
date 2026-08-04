@@ -33,6 +33,7 @@ import { ExecuteBasketDialog } from '@/components/trading/ExecuteBasketDialog'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useSupportedExchanges } from '@/hooks/useSupportedExchanges'
+import { type HandoffLeg, parseHandoff } from '@/lib/strategyHandoff'
 import {
   buildFutureSymbol,
   buildOptionSymbol,
@@ -140,6 +141,10 @@ export default function StrategyBuilder() {
 
   const [greeksByLeg, setGreeksByLeg] = useState<Record<string, LegGreeks>>({})
   const [payoffClock, setPayoffClock] = useState(() => Date.now())
+
+  // Legs handed over from another tool via ?legs=, parked until the chain that
+  // resolves their symbol, lot size and price has actually loaded.
+  const [pendingHandoff, setPendingHandoff] = useState<HandoffLeg[] | null>(null)
 
   const [editLegId, setEditLegId] = useState<string | null>(null)
   const [marginRequired, setMarginRequired] = useState<number | null>(null)
@@ -1058,6 +1063,65 @@ export default function StrategyBuilder() {
       cancelled = true
     }
   }, [searchParams, setSearchParams])
+
+  // Accept legs handed over from another tool (the Option Target Calculator
+  // today) with ?exchange=&underlying=&expiry=&legs=24600CE:BUY:2. Only the
+  // legs' identity travels; price, IV, lot size and the broker symbol are
+  // resolved below from this page's own live chain.
+  useEffect(() => {
+    const handoff = parseHandoff(searchParams)
+    if (!handoff) return
+    setSelectedExchange(handoff.exchange)
+    setSelectedUnderlying(handoff.underlying)
+    setSelectedExpiry(handoff.expiry)
+    setPendingHandoff(handoff.legs)
+    for (const key of ['exchange', 'underlying', 'expiry', 'legs']) searchParams.delete(key)
+    setSearchParams(searchParams, { replace: true })
+  }, [searchParams, setSearchParams])
+
+  // Resolve those legs once the matching chain has arrived. Guarded on the
+  // chain's own expiry so a stale chain from the previous underlying cannot
+  // resolve them against the wrong strikes.
+  useEffect(() => {
+    if (!pendingHandoff || !chainData?.chain || !lotSize || !selectedExpiry) return
+    const expiryCode = normalizeExpiryCode(selectedExpiry)
+    if (normalizeExpiryCode(chainData.expiry_date || '') !== expiryCode) return
+
+    const resolved: StrategyLeg[] = []
+    const missing: string[] = []
+    for (const leg of pendingHandoff) {
+      const row = chainData.chain.find((s) => s.strike === leg.strike)
+      const quote = leg.optionType === 'CE' ? row?.ce : row?.pe
+      if (!quote) {
+        missing.push(`${leg.strike}${leg.optionType}`)
+        continue
+      }
+      resolved.push({
+        id: uid(),
+        segment: 'OPTION',
+        side: leg.side,
+        lots: leg.lots,
+        lotSize: quote.lotsize ?? lotSize,
+        expiry: expiryCode,
+        strike: leg.strike,
+        optionType: leg.optionType,
+        price: quote.ltp,
+        iv: 0,
+        active: true,
+        symbol: quote.symbol,
+      })
+    }
+
+    setPendingHandoff(null)
+    // A partial strategy has a different payoff from the one that was sent, so
+    // it is refused outright rather than silently loaded short a leg.
+    if (missing.length > 0) {
+      showToast.error(`Not on this chain: ${missing.join(', ')}. Nothing was loaded.`)
+      return
+    }
+    setLegs(resolved)
+    showToast.success(`Loaded ${resolved.length} leg${resolved.length === 1 ? '' : 's'}`)
+  }, [pendingHandoff, chainData, lotSize, selectedExpiry])
 
   const saveOrUpdateStrategy = useCallback(
     async (name: string, watchlist: Watchlist) => {
