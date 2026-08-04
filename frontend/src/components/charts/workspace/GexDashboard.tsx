@@ -88,6 +88,32 @@ export function GexDashboard({ data, stale }: GexDashboardProps) {
   const regimeTone =
     regime === 'suppressive' ? GREEN : regime === 'amplifying' ? RED : 'text-muted-foreground'
 
+  const sentiment = data.sentiment
+  /**
+   * Bullish / Bearish / Neutral — a genuinely directional read, separate from
+   * Regime above. It is NOT derived from net GEX's sign (that would print
+   * bearish during a gamma-driven squeeze upward); see
+   * services/gex_levels/sentiment.py for the three signals it rests on.
+   *
+   * The count alongside the label — e.g. "Bullish 2/3" — is `agreeing` of
+   * `participating`, so a one-signal verdict is visibly a one-signal verdict
+   * and never mistaken for a unanimous one.
+   */
+  const sentimentLabel =
+    sentiment?.bias === 'bullish'
+      ? 'Bullish'
+      : sentiment?.bias === 'bearish'
+        ? 'Bearish'
+        : sentiment
+          ? 'Neutral'
+          : undefined
+  const sentimentTone =
+    sentiment?.bias === 'bullish'
+      ? GREEN
+      : sentiment?.bias === 'bearish'
+        ? RED
+        : 'text-muted-foreground'
+
   const quality = data.quality
   const qualityTone = quality ? (quality.verdict === 'good' ? GREEN : AMBER) : undefined
 
@@ -110,6 +136,14 @@ export function GexDashboard({ data, stale }: GexDashboardProps) {
         <Row label="Put GEX" value={formatMoney(data.total_put_gex)} tone={RED} />
         <Row label="Net GEX" value={formatMoney(data.net_gex)} tone={regimeTone} emphasis />
         <Row label="Regime" value={regimeLabel} tone={regimeTone} emphasis />
+        {sentiment && (
+          <Row
+            label="Sentiment"
+            value={`${sentimentLabel} ${sentiment.agreeing}/${sentiment.participating}`}
+            tone={sentimentTone}
+            emphasis
+          />
+        )}
         <Row label="Call Wall" value={formatPrice(data.call_wall)} tone={GREEN} />
         <Row label="Put Wall" value={formatPrice(data.put_wall)} tone={RED} />
         <Row

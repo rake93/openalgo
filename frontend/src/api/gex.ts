@@ -60,6 +60,22 @@ export interface GEXQuality {
   notes: string[]
 }
 
+export interface GEXSentimentSignal {
+  key: string
+  label: string
+  detail: string
+  bias: 'bullish' | 'bearish' | 'neutral' | 'unavailable'
+}
+
+export interface GEXSentiment {
+  bias: 'bullish' | 'bearish' | 'neutral'
+  score: number
+  /** Signals matching the composite, and signals with any reading at all. */
+  agreeing: number
+  participating: number
+  signals: GEXSentimentSignal[]
+}
+
 export interface GEXLevelsResponse {
   status: 'success' | 'error'
   message?: string
@@ -90,6 +106,7 @@ export interface GEXLevelsResponse {
    */
   regime?: 'suppressive' | 'amplifying'
   quality?: GEXQuality
+  sentiment?: GEXSentiment
 }
 
 export const gexApi = {

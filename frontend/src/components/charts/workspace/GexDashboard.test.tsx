@@ -7,7 +7,7 @@
 
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import type { GEXLevelsResponse, GEXQuality } from '@/api/gex'
+import type { GEXLevelsResponse, GEXQuality, GEXSentiment } from '@/api/gex'
 import { GexDashboard } from './GexDashboard'
 
 function makeQuality(overrides: Partial<GEXQuality> = {}): GEXQuality {
@@ -19,6 +19,26 @@ function makeQuality(overrides: Partial<GEXQuality> = {}): GEXQuality {
     both_sides: true,
     wall_at_edge: false,
     notes: [],
+    ...overrides,
+  }
+}
+
+function makeSentiment(overrides: Partial<GEXSentiment> = {}): GEXSentiment {
+  return {
+    bias: 'bullish',
+    score: 0.67,
+    agreeing: 2,
+    participating: 3,
+    signals: [
+      {
+        key: 'walls',
+        label: 'Wall position',
+        detail: 'Spot 24750 above the call wall 24700',
+        bias: 'bullish',
+      },
+      { key: 'pcr', label: 'Put-call ratio', detail: 'PCR 1.34 by open interest', bias: 'bullish' },
+      { key: 'skew', label: 'IV skew', detail: 'puts 14.2% vs calls 12.4%', bias: 'neutral' },
+    ],
     ...overrides,
   }
 }
@@ -117,6 +137,63 @@ describe('GexDashboard', () => {
   it('does not show the stale caveat when the refresh succeeded', () => {
     render(<GexDashboard data={makeData()} stale={false} />)
     expect(screen.queryByText(/previous snapshot/i)).not.toBeInTheDocument()
+  })
+
+  it('renders Sentiment alongside Regime, as two distinct rows', () => {
+    render(
+      <GexDashboard
+        data={makeData({ regime: 'suppressive', sentiment: makeSentiment({ bias: 'bullish' }) })}
+        stale={false}
+      />
+    )
+    expect(screen.getByText('Suppressive')).toBeInTheDocument()
+    expect(screen.getByText('Bullish 2/3')).toBeInTheDocument()
+  })
+
+  it('renders a bullish Sentiment in green and shows the agreeing/participating count', () => {
+    render(
+      <GexDashboard
+        data={makeData({
+          sentiment: makeSentiment({ bias: 'bullish', agreeing: 2, participating: 3 }),
+        })}
+        stale={false}
+      />
+    )
+    const value = screen.getByText('Bullish 2/3')
+    expect(value.className).toContain('emerald')
+  })
+
+  it('renders a bearish Sentiment in red', () => {
+    render(
+      <GexDashboard
+        data={makeData({
+          sentiment: makeSentiment({ bias: 'bearish', agreeing: 3, participating: 3 }),
+        })}
+        stale={false}
+      />
+    )
+    const value = screen.getByText('Bearish 3/3')
+    expect(value.className).toContain('red')
+  })
+
+  it('renders a neutral Sentiment muted, not green or red', () => {
+    render(
+      <GexDashboard
+        data={makeData({
+          sentiment: makeSentiment({ bias: 'neutral', agreeing: 1, participating: 3 }),
+        })}
+        stale={false}
+      />
+    )
+    const value = screen.getByText('Neutral 1/3')
+    expect(value.className).not.toContain('emerald')
+    expect(value.className).not.toContain('red')
+  })
+
+  it('does not crash and shows no Sentiment row when sentiment is absent (an older cached response)', () => {
+    render(<GexDashboard data={makeData({ sentiment: undefined })} stale={false} />)
+    expect(screen.getByText('Suppressive')).toBeInTheDocument()
+    expect(screen.queryByText(/Bullish|Bearish|Neutral \d/)).not.toBeInTheDocument()
   })
 
   it('renders nothing when data is null', () => {

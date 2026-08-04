@@ -27,6 +27,7 @@ from services.gex_levels.expiry import expiry_datetime
 from services.gex_levels.exposure import ChainRow, compute_exposures
 from services.gex_levels.levels import find_walls, scan_zero_gamma
 from services.gex_levels.quality import assess_quality
+from services.gex_levels.sentiment import read_sentiment
 from services.option_chain_service import get_option_chain
 from services.option_greeks_service import (
     DEFAULT_INTEREST_RATES,
@@ -180,6 +181,18 @@ def get_gex_levels(
         net_gex = total_call_gex + total_put_gex
         regime = "suppressive" if net_gex >= 0 else "amplifying"
 
+        # Sentiment is a SEPARATE directional read from Regime, never derived
+        # from net_gex's sign - see services/gex_levels/sentiment.py's module
+        # docstring for why that sign is deliberately unused here.
+        sentiment = read_sentiment(
+            exposures,
+            walls,
+            rows,
+            spot=spot_price,
+            forward=F,
+            weight_by=weight_by,
+        )
+
         return (
             True,
             {
@@ -217,6 +230,16 @@ def get_gex_levels(
                 "net_gex": round(net_gex, 2),
                 "regime": regime,
                 "quality": _quality_payload(quality),
+                "sentiment": {
+                    "bias": sentiment.bias,
+                    "score": round(sentiment.score, 3),
+                    "agreeing": sentiment.agreeing,
+                    "participating": sentiment.participating,
+                    "signals": [
+                        {"key": x.key, "label": x.label, "detail": x.detail, "bias": x.bias}
+                        for x in sentiment.signals
+                    ],
+                },
             },
             200,
         )

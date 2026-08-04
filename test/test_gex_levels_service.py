@@ -189,8 +189,24 @@ def test_the_payload_carries_every_field_the_frontend_reads():
         "net_gex",
         "regime",
         "quality",
+        "sentiment",
     ):
         assert key in payload, f"payload is missing {key!r}, which the frontend reads"
+
+
+def test_sentiment_bias_is_one_of_the_three_values_and_participation_is_bounded():
+    """Sentiment.bias must never be 'unavailable' - that state is only for the
+    individual signals - and participating can never exceed how many signals
+    exist, or the panel would claim more agreement than the data supports."""
+    chain, forward = _patched()
+    with chain, forward:
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+
+    sentiment = payload["sentiment"]
+    assert sentiment["bias"] in ("bullish", "bearish", "neutral")
+    assert sentiment["participating"] <= len(sentiment["signals"])
+    for signal in sentiment["signals"]:
+        assert signal["bias"] in ("bullish", "bearish", "neutral", "unavailable")
 
 
 def test_the_strike_profile_is_returned_with_one_entry_per_strike():
