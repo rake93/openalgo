@@ -58,6 +58,7 @@ from services.option_symbol_service import (
     get_option_exchange,
     parse_underlying_symbol,
 )
+from services.pricing_underlying import requires_futures_underlying, resolve_pricing_underlying
 from services.quotes_service import get_multiquotes, get_quotes, import_broker_module
 from utils.constants import CRYPTO_EXCHANGES, INSTRUMENT_PERPFUT
 from utils.logging import get_logger
@@ -253,6 +254,7 @@ def get_option_chain(
 
         # Step 2: Determine quote exchange for underlying LTP
         quote_exchange = exchange
+        is_commodity_underlying = requires_futures_underlying(exchange)
         if exchange.upper() in ["NFO", "BFO"]:
             if base_symbol in [
                 "NIFTY",
@@ -271,19 +273,52 @@ def get_option_chain(
             # CRYPTO: look up the canonical perpetual symbol from cache (e.g. BTC -> BTCUSDFUT)
             quote_exchange = exchange.upper()
             _perp = fno_search_symbols(
-                query=f"{base_symbol}USDFUT", exchange=exchange, instrumenttype=INSTRUMENT_PERPFUT, limit=1
+                query=f"{base_symbol}USDFUT",
+                exchange=exchange,
+                instrumenttype=INSTRUMENT_PERPFUT,
+                limit=1,
             )
             if not _perp:
                 return (
                     False,
-                    {"status": "error", "message": f"No perpetual futures found for {base_symbol} on {exchange}"},
+                    {
+                        "status": "error",
+                        "message": f"No perpetual futures found for {base_symbol} on {exchange}",
+                    },
                     404,
                 )
             quote_symbol = _perp[0]["symbol"]
+        elif is_commodity_underlying:
+            # Commodity exchanges (MCX/NCDEX/NCO): options are written on a future,
+            # not a spot instrument. Resolve the linked future via the shared
+            # resolver instead of falling through to the bare-root quote below.
+            underlying_ref = resolve_pricing_underlying(base_symbol, exchange, final_expiry)
+            quote_symbol = underlying_ref.symbol
+            quote_exchange = underlying_ref.exchange
 
-        if exchange.upper() not in CRYPTO_EXCHANGES:
+        if exchange.upper() not in CRYPTO_EXCHANGES and not is_commodity_underlying:
             # Use base symbol for index quotes (non-Delta)
             quote_symbol = base_symbol if embedded_expiry else underlying
+
+        if not is_commodity_underlying:
+            # NFO/BFO/crypto (and any other exchange) already chose quote_symbol /
+            # quote_exchange above. The resolver only records that choice for the
+            # response metadata here -- it never influences it. A defect in that
+            # metadata-only call must not fail an otherwise-successful chain.
+            try:
+                underlying_ref = resolve_pricing_underlying(
+                    base_symbol,
+                    exchange,
+                    final_expiry,
+                    spot_symbol=quote_symbol,
+                    spot_exchange=quote_exchange,
+                )
+            except Exception:
+                logger.exception(
+                    f"Pricing-underlying metadata resolution failed for {base_symbol}/{exchange}; "
+                    "continuing without underlying_ref metadata"
+                )
+                underlying_ref = None
 
         # Step 3: Fetch underlying LTP
         logger.info(f"Fetching LTP for {quote_symbol} on {quote_exchange}")
@@ -405,12 +440,20 @@ def get_option_chain(
                         try:
                             _oq = _dh.get_quotes(_item["symbol"], _item["exchange"])
                             _results.append(
-                                {"symbol": _item["symbol"], "exchange": _item["exchange"], "data": _oq}
+                                {
+                                    "symbol": _item["symbol"],
+                                    "exchange": _item["exchange"],
+                                    "data": _oq,
+                                }
                             )
                         except Exception as _qe:
                             logger.warning(f"[CRYPTO] Quote error for {_item['symbol']}: {_qe}")
                             _results.append(
-                                {"symbol": _item["symbol"], "exchange": _item["exchange"], "error": str(_qe)}
+                                {
+                                    "symbol": _item["symbol"],
+                                    "exchange": _item["exchange"],
+                                    "error": str(_qe),
+                                }
                             )
                     quotes_response = {"status": "success", "results": _results}
                     success = True
@@ -547,6 +590,18 @@ def get_option_chain(
                 "underlying": base_symbol,
                 "underlying_ltp": underlying_ltp,
                 "underlying_prev_close": underlying_prev_close,
+                "underlying_ref": (
+                    {
+                        "symbol": underlying_ref.symbol,
+                        "exchange": underlying_ref.exchange,
+                        "kind": underlying_ref.kind,
+                        "option_expiry": underlying_ref.option_expiry,
+                        "underlying_expiry": underlying_ref.underlying_expiry,
+                        "method": underlying_ref.method,
+                    }
+                    if underlying_ref is not None
+                    else None
+                ),
                 "expiry_date": final_expiry,
                 "atm_strike": atm_strike,
                 "quotes_included": with_quotes,
