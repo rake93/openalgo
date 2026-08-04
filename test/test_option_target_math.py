@@ -73,7 +73,7 @@ def test_forward_anchor_basis():
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from services.option_target.daycount import year_fraction
+from services.option_target.daycount import SESSIONS, session_minutes_for, year_fraction
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -629,3 +629,57 @@ def test_attribution_gamma_grows_with_the_square_of_the_move():
     small = _attribution_case(forward_target=24600.0, iv_target=0.11)
     large = _attribution_case(forward_target=24700.0, iv_target=0.11)
     assert large.gamma == pytest.approx(4 * small.gamma, rel=0.05)
+
+
+def test_session_minutes_nse_equity_and_derivatives():
+    for exchange in ("NSE", "BSE", "NFO", "BFO"):
+        assert session_minutes_for(exchange) == 375
+
+
+def test_session_minutes_mcx_runs_to_late_evening():
+    # MCX trades 09:00-23:55 IST, verified against the platform timings API.
+    assert session_minutes_for("MCX") == 895
+    assert session_minutes_for("NCO") == 895
+
+
+def test_session_minutes_currency_closes_at_five():
+    # CDS/BCD trade 09:00-17:00 IST.
+    assert session_minutes_for("CDS") == 480
+    assert session_minutes_for("BCD") == 480
+
+
+def test_session_lookup_is_case_insensitive():
+    assert session_minutes_for("mcx") == session_minutes_for("MCX")
+
+
+def test_unknown_exchange_falls_back_to_nse_session():
+    assert session_minutes_for("NOSUCHEXCHANGE") == 375
+
+
+def test_mcx_full_session_is_one_trading_day():
+    start = datetime(2026, 8, 4, 9, 0, tzinfo=IST)
+    end = datetime(2026, 8, 4, 23, 55, tzinfo=IST)
+    assert year_fraction(start, end, "trading", exchange="MCX") == pytest.approx(1 / 252, rel=1e-6)
+
+
+def test_mcx_evening_time_is_counted_not_discarded():
+    # 15:30 -> 20:00 is dead time on NFO but 270 live minutes on MCX.
+    start = datetime(2026, 8, 4, 15, 30, tzinfo=IST)
+    end = datetime(2026, 8, 4, 20, 0, tzinfo=IST)
+    assert year_fraction(start, end, "trading", exchange="NFO") == 0.0
+    assert year_fraction(start, end, "trading", exchange="MCX") == pytest.approx(
+        (270 / 895) / 252, rel=1e-6
+    )
+
+
+def test_exchange_is_ignored_for_calendar_day_count():
+    start = datetime(2026, 8, 4, 12, 0, tzinfo=IST)
+    end = datetime(2026, 8, 11, 12, 0, tzinfo=IST)
+    assert year_fraction(start, end, "calendar", exchange="MCX") == year_fraction(
+        start, end, "calendar", exchange="NFO"
+    )
+
+
+def test_sessions_table_covers_the_supported_exchanges():
+    for exchange in ("NSE", "BSE", "NFO", "BFO", "CDS", "BCD", "MCX", "NCO"):
+        assert exchange in SESSIONS
