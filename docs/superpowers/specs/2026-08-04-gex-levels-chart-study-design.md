@@ -423,12 +423,74 @@ These are choices, not oversights. Do not "fix" them on sight.
   additional expiry is a full chain fetch plus IV inversion — roughly
   multiplying refresh latency for a second-order change to the walls. The
   response shape does not preclude adding it.
-- **Migrating `/gex` and `/gammadensity` onto the shared module.** The module is
-  written to be adopted; this build does not touch those pages. The consequence
-  is that `/gex` continues to price off spot and will differ slightly from the
-  chart study until migrated.
+- **Migrating `/gex` and `/gammadensity` onto the shared module.** See the
+  backlog entry below — this is the one deferred item with a known correctness
+  consequence, not merely a missing feature.
 - **A dealer sign-convention toggle.** One constant in `exposure.py`; no UI
   until there is evidence Indian market structure warrants inverting it.
 - **CDS.** Blocked on data, not code — this broker's master has no CDS option
   expiries.
 - **Historical GEX.** No option-chain history is stored anywhere in OpenAlgo.
+
+---
+
+## 11. Backlog: migrate the `/tools` options pages onto the shared module
+
+**Status:** deferred, not scheduled. Raised 2026-08-05 after the chart study
+shipped. **This is the only deferred item with a known correctness consequence**
+rather than a missing capability, so it is written up in enough detail to pick up
+cold.
+
+### What is wrong today
+
+`services/gex_service.py`, which backs the `/gex` Tools page, carries three
+defects the chart study fixed by construction. They were found while building it
+and confirmed against a live chain:
+
+1. **Open interest is multiplied by the lot size.** The broker reports OI and
+   volume in **units**, already lot-multiplied — verified across 188 live NIFTY
+   values, every one an exact multiple of 65. The extra factor inflates every
+   figure by the lot size. On NIFTY that is 65x.
+2. **Black-76 is priced off spot, not the per-expiry forward.** Gamma peaks at
+   the ATM-*forward* strike. The measured BANKNIFTY 21-day basis is +138.9
+   points, which is more than one strike — so the walls land in the wrong place,
+   not merely at the wrong scale.
+3. **`strike_count=45`** — 91 strikes, 182 symbols, well past the 100-symbol
+   Fyers multiquote OI bucket that `oi_tracker_service.py:142` documents.
+   Exceeding it returns **empty open interest rather than an error**.
+
+Point 3 has never been confirmed to bite in practice; the generic multiquote path
+may absorb it. **Verify before assuming it is broken.** Points 1 and 2 are
+certain.
+
+`services/gamma_density_service.py` is largely unaffected: it already resolves
+the forward, and it deliberately omits the lot factor because Γ×OI is a density
+rather than a notional. Its migration is a tidy-up, not a fix.
+
+### Why it was not done here
+
+Changing the numbers on pages the user had not asked to be reviewed is a
+different decision from building a new study, and it needs its own verification
+pass. `/gex`, Max Pain, OI Tracker and Gamma Density all read the same chain.
+
+### What doing it involves
+
+- Point `gex_service` at `services/gex_levels/exposure.py` for the per-strike
+  maths, and at `_resolve_forward_price` for `F`.
+- Drop `strike_count` to 23, or measure that 45 is genuinely safe on this broker.
+- **Expect the displayed magnitudes to change** — roughly 65x smaller on NIFTY.
+  That is the fix, not a regression. Say so in the release note, because a user
+  watching that page will notice.
+- The *strikes* the walls land on should barely move for a near-dated expiry and
+  will move more for a far one, since that is where the basis is largest.
+- Best done centrally: normalising units-versus-lots inside
+  `option_chain_service` would fix every consumer at once and stop the next tool
+  repeating it. Larger blast radius, so it needs its own regression pass across
+  all four pages.
+
+### The honest reason to do it
+
+Until this lands, `/gex` and the chart study will disagree about the same chain.
+The strikes should agree; the magnitudes will not. That is documented in
+`docs/chart-workspace-studies.md` so nobody reads it as a bug — but two surfaces
+disagreeing is a support question waiting to happen.
