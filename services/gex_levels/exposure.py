@@ -159,6 +159,10 @@ def price_exposures(
         black76: The opengreeks.black76 module.
         rows: Chain rows, any order.
         ivs: Volatilities from `resolve_ivs`, inverted at the real forward.
+            MUST have been resolved from this exact same `rows` list -
+            `forward` here may be hypothetical (the zero-gamma scan moves it),
+            but `ivs` may not: it is only ever valid at the real forward it was
+            inverted at.
         forward: The price to evaluate gamma at. May be hypothetical.
         t_years: Time to expiry in years.
         r: Risk-free rate as a decimal.
@@ -173,6 +177,11 @@ def price_exposures(
         ValueError: If `weight_by` is neither 'oi' nor 'volume'. An unrecognised
             weighting must never quietly read as open interest - it would change
             the meaning of the whole study with no signal to the caller.
+        ValueError: If a row's strike is absent from `ivs.call` (or `ivs.put`).
+            That is a genuine key absence - `rows` does not match what
+            `resolve_ivs` was given - and is not the same thing as a strike
+            that is present but `None`, which means the leg did not invert and
+            is a legitimate, expected case that still takes the fallback.
     """
     if weight_by not in ("oi", "volume"):
         raise ValueError(f"weight_by must be 'oi' or 'volume', got {weight_by!r}")
@@ -186,6 +195,11 @@ def price_exposures(
 
     out: list[StrikeExposure] = []
     for row in ordered:
+        if row.strike not in ivs.call or row.strike not in ivs.put:
+            raise ValueError(
+                f"ivs was not resolved for strike {row.strike}; resolve_ivs and "
+                "price_exposures must be given the same rows"
+            )
         call_iv = ivs.call.get(row.strike)
         put_iv = ivs.put.get(row.strike)
         call_weight = _finite(row.call_volume if use_volume else row.call_oi)

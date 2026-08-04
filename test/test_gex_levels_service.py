@@ -54,6 +54,24 @@ def test_the_chain_is_fetched_at_the_multiquote_safe_strike_count():
     assert STRIKE_COUNT == 23
 
 
+def test_get_option_chain_is_actually_called_with_strike_count():
+    """A future edit could hardcode a different number at the call site while
+    leaving STRIKE_COUNT untouched - the constant alone would keep passing.
+    Empty OI from an oversized request zeroes the whole study with no error,
+    so the call itself has to be checked, not just the constant."""
+    with (
+        patch(
+            "services.gex_levels_service.get_option_chain",
+            return_value=(True, _chain_response(), 200),
+        ) as fetch,
+        patch("services.gex_levels_service._resolve_forward_price", return_value=24610.0),
+    ):
+        get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+
+    fetch.assert_called_once()
+    assert fetch.call_args.kwargs["strike_count"] == STRIKE_COUNT
+
+
 def test_a_successful_call_returns_levels_and_a_quality_verdict():
     chain, forward = _patched()
     with chain, forward:

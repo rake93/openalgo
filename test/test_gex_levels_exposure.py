@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from services.gex_levels.exposure import ChainRow, compute_exposures
+from services.gex_levels.exposure import ChainRow, compute_exposures, price_exposures, resolve_ivs
 
 
 class _FlatGamma:
@@ -252,6 +252,29 @@ def test_an_unknown_weighting_is_rejected():
             r=0.065,
             atm_strike=24600.0,
             weight_by="delta",
+        )
+
+
+def test_pricing_with_mismatched_ivs_is_rejected():
+    """A strike missing from `ivs` must not silently read as 'did not invert'."""
+    rows = _rows()
+    ivs = resolve_ivs(
+        _FlatGamma(),
+        rows[:1],
+        forward=24600.0,
+        t_years=0.02,
+        r=0.065,
+        atm_strike=24600.0,
+    )
+    with pytest.raises(ValueError, match="resolve_ivs"):
+        price_exposures(
+            _FlatGamma(),
+            rows,
+            ivs,
+            forward=24600.0,
+            t_years=0.02,
+            r=0.065,
+            weight_by="oi",
         )
 
 
