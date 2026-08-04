@@ -68,11 +68,12 @@ MIN_TIME_YEARS = 1e-6
 # far-OTM strike can lose value even on a favourable underlying move.
 ZERO_DTE_DAYS = 1.0
 
-# Percent of spot the parity-implied basis may plausibly reach with under a
-# day to expiry. Cost-of-carry over a few minutes at even 10% annual is a
-# few hundredths of a point on NIFTY; anything larger is stale or wide
-# at-the-money quotes feeding put-call parity, not carry.
-ZERO_DTE_MAX_BASIS_PCT = 0.15
+# Generous annualised carry bound. Indian index carry runs well under this;
+# the margin is deliberate so ordinary quotes never trip the check.
+MAX_PLAUSIBLE_CARRY_RATE = 0.15
+# Absolute allowance for bid-ask noise in the two at-the-money legs that
+# put-call parity is derived from, as a percent of spot.
+BASIS_QUOTE_TOLERANCE_PCT = 0.10
 
 # Hold duration, as a fraction of the remaining time to expiry, above which
 # the projection is consuming most of the option's remaining life.
@@ -240,6 +241,26 @@ def _expiry_datetime(expiry_date: str, exchange: str) -> datetime:
         raise ValueError(f"Invalid expiry_date {expiry_date!r}; expected DDMMMYY") from exc
 
 
+def _market_is_open(exchange: str, moment: datetime) -> bool:
+    """Whether `moment` falls inside the exchange's session for that date.
+
+    Reuses the same session source as the trading day-count so the two can
+    never disagree about when a market is open.
+    """
+    try:
+        provider = build_session_provider(exchange)
+        bounds = provider(moment.date())
+        if bounds is None:
+            return False
+        (open_h, open_m), (close_h, close_m) = bounds
+        open_at = moment.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+        close_at = moment.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+        return open_at <= moment <= close_at
+    except Exception as exc:  # noqa: BLE001 - must never block a projection
+        logger.warning("Market-open check failed for %s: %s", exchange, exc)
+        return True
+
+
 def _compact_expiry(dashed: str) -> str:
     """Convert the expiry API's DD-MMM-YY into the DDMMMYY the chain needs."""
     return dashed.replace("-", "").upper()
@@ -379,6 +400,13 @@ def get_option_target(
             )
 
         now = datetime.now(IST)
+        market_open = _market_is_open(exchange, now)
+        if not market_open:
+            warnings.append(
+                "Market is closed for this exchange. Every price below is the last "
+                "traded value rather than a live quote, so the forward, implied vols "
+                "and projections are indicative only."
+            )
         expiry = _expiry_datetime(expiry_date, exchange)
         session_provider = build_session_provider(exchange) if day_count == "trading" else None
         t_now = year_fraction(
@@ -412,17 +440,17 @@ def get_option_target(
             )
 
         days_to_expiry = t_now * 365
-        basis_plausible = True
-        if (
-            days_to_expiry < ZERO_DTE_DAYS
-            and abs(anchor.basis) > spot * ZERO_DTE_MAX_BASIS_PCT / 100
-        ):
-            basis_plausible = False
+        carry_bound = spot * MAX_PLAUSIBLE_CARRY_RATE * t_now
+        quote_tolerance = spot * BASIS_QUOTE_TOLERANCE_PCT / 100
+        max_plausible_basis = carry_bound + quote_tolerance
+        basis_plausible = abs(anchor.basis) <= max_plausible_basis
+        if not basis_plausible:
             warnings.append(
-                f"Forward sits {anchor.basis:+.1f} points from spot with under a day to expiry, "
-                f"where carry cannot justify more than a fraction of a point. The at-the-money "
-                f"quotes driving put-call parity are probably stale or wide, and every "
-                f"projection inherits that error."
+                f"Forward sits {anchor.basis:+.1f} points from spot, beyond the "
+                f"{max_plausible_basis:.1f} points that carry over "
+                f"{t_now * 365:.2f} days plus quote noise can explain. The "
+                f"at-the-money quotes driving put-call parity are probably stale or "
+                f"wide, and every projection inherits that error."
             )
         if days_to_expiry < ZERO_DTE_DAYS:
             warnings.append(
@@ -565,6 +593,7 @@ def get_option_target(
                     "days_to_expiry": days_to_expiry,
                     "is_zero_dte": days_to_expiry < ZERO_DTE_DAYS,
                     "basis_plausible": basis_plausible,
+                    "market_open": market_open,
                     "t_years": t_now,
                     "matched_future": matched,
                     "lot_size": next(iter(quotes.values())).lot_size if quotes else 0,

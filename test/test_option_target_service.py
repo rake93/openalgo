@@ -414,3 +414,72 @@ def test_scenario_always_reports_the_requested_model():
 def test_snapshot_reports_basis_plausibility():
     _, resp, _ = _run()
     assert isinstance(resp["snapshot"]["basis_plausible"], bool)
+
+
+def test_basis_bound_accepts_real_carry_at_seven_days():
+    from services.option_target_service import (
+        BASIS_QUOTE_TOLERANCE_PCT,
+        MAX_PLAUSIBLE_CARRY_RATE,
+    )
+
+    spot, t_now, basis = 24463.0, 0.0192, 22.4
+    bound = spot * MAX_PLAUSIBLE_CARRY_RATE * t_now + spot * BASIS_QUOTE_TOLERANCE_PCT / 100
+    assert abs(basis) <= bound
+
+
+def test_basis_bound_rejects_stale_closing_quotes_at_seven_days():
+    from services.option_target_service import (
+        BASIS_QUOTE_TOLERANCE_PCT,
+        MAX_PLAUSIBLE_CARRY_RATE,
+    )
+
+    # Measured on a closed market: -112.3 is about -24 percent annualised.
+    spot, t_now, basis = 24463.0, 0.0192, -112.3
+    bound = spot * MAX_PLAUSIBLE_CARRY_RATE * t_now + spot * BASIS_QUOTE_TOLERANCE_PCT / 100
+    assert abs(basis) > bound
+
+
+def test_basis_bound_rejects_a_large_basis_minutes_before_expiry():
+    from services.option_target_service import (
+        BASIS_QUOTE_TOLERANCE_PCT,
+        MAX_PLAUSIBLE_CARRY_RATE,
+    )
+
+    spot, t_now, basis = 24463.0, 1.29e-05, 59.1
+    bound = spot * MAX_PLAUSIBLE_CARRY_RATE * t_now + spot * BASIS_QUOTE_TOLERANCE_PCT / 100
+    assert abs(basis) > bound
+
+
+def test_basis_bound_accepts_a_monthly_index_basis():
+    from services.option_target_service import (
+        BASIS_QUOTE_TOLERANCE_PCT,
+        MAX_PLAUSIBLE_CARRY_RATE,
+    )
+
+    # BANKNIFTY 21 DTE, measured +138.9.
+    spot, t_now, basis = 57794.0, 0.0575, 138.9
+    bound = spot * MAX_PLAUSIBLE_CARRY_RATE * t_now + spot * BASIS_QUOTE_TOLERANCE_PCT / 100
+    assert abs(basis) <= bound
+
+
+def test_snapshot_reports_market_open_state():
+    _, resp, _ = _run()
+    assert isinstance(resp["snapshot"]["market_open"], bool)
+
+
+def test_market_closed_adds_a_stale_quote_warning():
+    with (
+        patch("services.option_target_service._market_is_open", return_value=False),
+        patch("services.option_target_service.get_option_chain", _fake_chain()),
+        patch("services.option_target_service._matched_future_symbol", return_value=None),
+        patch("services.option_target_service._vol_beta_samples", return_value=[]),
+    ):
+        _, resp, _ = get_option_target(
+            underlying="NIFTY",
+            exchange="NFO",
+            expiry_date="11AUG26",
+            reference="SPOT",
+            target_price=24700.0,
+            api_key="k",
+        )
+    assert any("market is closed" in w.lower() for w in resp["warnings"])
