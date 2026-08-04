@@ -300,7 +300,12 @@ def rank_candidates(candidates: list[dict[str, Any]], objective: str) -> list[di
         best["recommend_reason"] = reason
 
     for c in excluded:
-        c["score"] = float("-inf")
+        # None, never float("-inf"). Python's json module serialises infinity as
+        # the bare token -Infinity, which is NOT valid JSON: JSON.parse in the
+        # browser throws a SyntaxError on it and the whole response is lost,
+        # even though every number in it was computed correctly. An excluded
+        # candidate has no meaningful score anyway - it is sorted by strike.
+        c["score"] = None
     excluded.sort(key=lambda c: c["strike"])
 
     return eligible + excluded

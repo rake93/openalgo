@@ -349,3 +349,25 @@ def test_no_live_expiry_returns_404():
         )
     assert ok is False
     assert code == 404
+
+
+def test_response_is_strict_json_with_no_non_finite_values():
+    """The payload must survive a strict JSON round-trip.
+
+    Python's json module happily emits the bare tokens Infinity, -Infinity and
+    NaN, none of which are valid JSON. JSON.parse in the browser throws a
+    SyntaxError on them, so a single non-finite float silently destroys the
+    entire response even though every number in it was computed correctly.
+    `allow_nan=False` applies the same strictness the browser does.
+    """
+    import json
+
+    _, resp, _ = _run()
+    json.dumps(resp, allow_nan=False)
+
+
+def test_excluded_candidates_carry_a_json_safe_score():
+    _, resp, _ = _run()
+    for candidate in resp["candidates"]:
+        if candidate["excluded"]:
+            assert candidate["score"] is None
