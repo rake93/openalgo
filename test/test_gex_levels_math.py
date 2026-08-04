@@ -27,6 +27,22 @@ class _FakeBlack76:
         return self._gamma
 
 
+class _RecordingBlack76:
+    """Records its arguments so a call-site argument-order regression is caught."""
+
+    def __init__(self):
+        self.iv_args = None
+        self.gamma_args = None
+
+    def implied_volatility(self, price, F, K, r, t, flag):
+        self.iv_args = (price, F, K, r, t, flag)
+        return 0.18
+
+    def gamma(self, flag, F, K, t, r, sigma):
+        self.gamma_args = (flag, F, K, t, r, sigma)
+        return 0.0004
+
+
 def test_safe_iv_returns_the_inverted_value():
     assert safe_iv(_FakeBlack76(iv=0.184), 120.0, 24600.0, 24600.0, 0.065, 0.02, "c") == 0.184
 
@@ -68,6 +84,18 @@ def test_safe_gamma_swallows_failure():
     assert safe_gamma(_FakeBlack76(raises=True), "c", 24600.0, 24600.0, 0.02, 0.065, 0.15) == 0.0
 
 
+def test_safe_iv_forwards_its_arguments_in_the_library_order():
+    fake = _RecordingBlack76()
+    safe_iv(fake, 120.0, 24600.0, 24500.0, 0.065, 0.02, "c")
+    assert fake.iv_args == (120.0, 24600.0, 24500.0, 0.065, 0.02, "c")
+
+
+def test_safe_gamma_forwards_its_arguments_in_the_library_order():
+    fake = _RecordingBlack76()
+    safe_gamma(fake, "p", 24600.0, 24500.0, 0.02, 0.065, 0.15)
+    assert fake.gamma_args == ("p", 24600.0, 24500.0, 0.02, 0.065, 0.15)
+
+
 def test_atm_iv_prefers_the_atm_strike():
     per_strike = {24500.0: 0.20, 24600.0: 0.17, 24700.0: 0.22}
     assert atm_iv_from(per_strike, atm_strike=24600.0) == 0.17
@@ -80,6 +108,12 @@ def test_atm_iv_falls_back_to_the_median_when_atm_is_unpriced():
 
 def test_atm_iv_falls_back_to_the_constant_when_nothing_is_priced():
     assert atm_iv_from({24600.0: None}, atm_strike=24600.0) == 0.15
+
+
+def test_atm_iv_takes_the_upper_middle_of_an_even_length_sample():
+    """Not a true median by design - kept as-is so Gamma Density's numbers do not move."""
+    per_strike = {1.0: 0.10, 2.0: 0.20, 3.0: 0.30, 4.0: 0.40}
+    assert atm_iv_from(per_strike, atm_strike=None) == 0.30
 
 
 @pytest.mark.parametrize(

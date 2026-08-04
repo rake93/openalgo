@@ -54,6 +54,19 @@ def safe_gamma(black76, flag: str, F: float, K: float, t: float, r: float, sigma
 
     Zero is the correct failure value here: a strike whose gamma cannot be
     computed contributes no hedging pressure to the profile.
+
+    Args:
+        black76: The opengreeks.black76 module (injected so this stays pure).
+        flag: 'c' for a call, 'p' for a put.
+        F: Forward price of the underlying.
+        K: Strike.
+        t: Time to expiry in years.
+        r: Risk-free rate as a decimal (0.065, not 6.5).
+        sigma: Volatility as a decimal.
+
+    Returns:
+        The gamma, or 0.0 when the inputs are non-positive, the calculation
+        raises, or the result is non-finite or negative.
     """
     if not sigma or sigma <= 0 or F <= 0 or K <= 0 or t <= 0:
         return 0.0
@@ -70,10 +83,11 @@ def atm_iv_from(per_strike_iv: dict[float, float | None], atm_strike: float | No
     """
     The volatility to price the whole chain with when a strike has none of its own.
 
-    Prefers the ATM strike's own IV. Falls back to the median of every
-    invertible strike IV, which is robust to the handful of far-OTM strikes
-    whose premiums are a tick and whose inverted IV is nonsense. Falls back
-    finally to FALLBACK_IV.
+    Prefers the ATM strike's own IV. Falls back to the upper-middle of the
+    sorted invertible strike IVs (a true median for odd counts; for even
+    counts, the higher of the two middle values), which is robust to the
+    handful of far-OTM strikes whose premiums are a tick and whose inverted
+    IV is nonsense. Falls back finally to FALLBACK_IV.
 
     Args:
         per_strike_iv: Strike to its IV (decimal), or None where it did not invert.
