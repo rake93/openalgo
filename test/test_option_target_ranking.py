@@ -4,6 +4,7 @@ import pytest
 
 from services.option_target.models import SmileFit, StrikeQuote
 from services.option_target.ranking import build_candidate, rank_candidates
+from services.option_target.volbeta import PRESETS, estimate_vol_beta
 
 FLAT_FIT = SmileFit(
     a=0.11, b=0.0, c=0.0, x_lo=-0.5, x_hi=0.5, rms=0.0, n_points=25, degenerate=False
@@ -248,3 +249,41 @@ def test_all_excluded_yields_no_recommendation():
 def test_unknown_objective_raises():
     with pytest.raises(ValueError, match="Unknown objective"):
         rank_candidates([], objective="banana")
+
+
+def test_estimate_recovers_a_known_beta():
+    # Construct samples where IV rises 1.5 vol pts per 1% fall, exactly.
+    samples = []
+    for i in range(40):
+        ret_pct = -0.05 * i
+        samples.append((ret_pct, 12.0 - 1.5 * ret_pct))
+    result = estimate_vol_beta(samples)
+    assert result["beta"] == pytest.approx(1.5, abs=1e-6)
+    assert result["r_squared"] == pytest.approx(1.0, abs=1e-6)
+    assert result["source"] == "estimated"
+
+
+def test_estimate_falls_back_when_too_few_samples():
+    result = estimate_vol_beta([(0.1, 12.0), (0.2, 12.1)])
+    assert result["source"] == "fallback"
+    assert result["beta"] == PRESETS["normal"]
+    assert "samples" in result["reason"].lower()
+
+
+def test_estimate_falls_back_on_a_weak_fit():
+    # Pure noise: no relationship between return and IV.
+    samples = [(0.1 * i, 12.0 + (1.0 if i % 2 else -1.0)) for i in range(40)]
+    result = estimate_vol_beta(samples)
+    assert result["source"] == "fallback"
+    assert result["beta"] == PRESETS["normal"]
+    assert "fit" in result["reason"].lower()
+
+
+def test_estimate_falls_back_on_degenerate_returns():
+    samples = [(0.0, 12.0 + 0.01 * i) for i in range(40)]
+    result = estimate_vol_beta(samples)
+    assert result["source"] == "fallback"
+
+
+def test_presets_are_ordered():
+    assert PRESETS["off"] < PRESETS["calm"] < PRESETS["normal"] < PRESETS["panic"]
