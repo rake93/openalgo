@@ -26,7 +26,7 @@ Functions:
 import math
 from typing import Any
 
-from services.gex_levels.blackscholes import atm_iv_from, safe_gamma, safe_iv
+from services.gex_levels.blackscholes import FALLBACK_IV, atm_iv_from, safe_gamma, safe_iv
 from services.gex_levels.expiry import expiry_datetime as _expiry_datetime
 from services.option_chain_service import get_option_chain
 from services.option_greeks_service import (
@@ -170,6 +170,14 @@ def calculate_gamma_density(
 
         # ATM IV, with median-of-valid then constant fallback.
         atm_iv = atm_iv_from({s["strike"]: s["strike_iv"] for s in strikes}, atm_strike)
+
+        # A chain where not one strike inverts is being priced off a fabricated
+        # volatility. atm_iv_from is pure by contract, so the warning belongs
+        # here, at the orchestration layer where logging already lives.
+        if not any(s["strike_iv"] is not None for s in strikes):
+            logger.warning(
+                f"No invertible IV for {underlying} {expiry_date}; using fallback IV {FALLBACK_IV}"
+            )
 
         # 4. Pass two: gamma at both horizons -> Γ×OI density
         density_chain: list[dict[str, Any]] = []
