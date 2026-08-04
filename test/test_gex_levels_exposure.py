@@ -6,6 +6,7 @@ import math
 import pytest
 
 from services.gex_levels.exposure import ChainRow, compute_exposures, price_exposures, resolve_ivs
+from services.gex_levels.levels import find_walls
 
 
 class _FlatGamma:
@@ -90,7 +91,11 @@ def test_a_balanced_strike_nets_to_zero():
 
 
 def test_the_notional_scaling_is_applied():
-    """GEX = gamma * weight * lot * F^2 * 0.01, calls positive."""
+    """GEX = gamma * weight * F^2 * 0.01, calls positive.
+
+    No lot-size factor: the chain reports OI and volume already multiplied
+    by the lot size, so the contract multiplier is not applied again here.
+    """
     out = compute_exposures(
         _FlatGamma(gamma=0.001),
         _rows(),
@@ -100,7 +105,7 @@ def test_the_notional_scaling_is_applied():
         atm_strike=24600.0,
         weight_by="oi",
     )
-    expected = 0.001 * 1000 * 75 * (24600.0**2) * 0.01
+    expected = 0.001 * 1000 * (24600.0**2) * 0.01
     assert out[0].call_gex == pytest.approx(expected)
 
 
@@ -302,3 +307,119 @@ def test_a_non_finite_weight_contributes_nothing():
     )
     assert out[0].call_gex == 0.0
     assert math.isfinite(out[0].net_gex)
+
+
+def test_open_interest_is_treated_as_units_not_lots():
+    """The chain reports OI already multiplied by the lot size - verified across
+    42 live legs, every one exactly divisible by it. Multiplying by lot_size
+    again would double-count by 65x on NIFTY.
+
+    Walls and the zero-gamma level are unaffected either way, since a uniform
+    scale factor cannot move an argmax or a zero crossing - only the reported
+    magnitudes change.
+    """
+    rows = [
+        ChainRow(
+            strike=24600.0,
+            call_price=120.0,
+            put_price=80.0,
+            call_oi=1000,
+            put_oi=0,
+            call_volume=0,
+            put_volume=0,
+            lot_size=75,
+        )
+    ]
+    out = compute_exposures(
+        _FlatGamma(gamma=0.001),
+        rows,
+        forward=24600.0,
+        t_years=0.02,
+        r=0.065,
+        atm_strike=24600.0,
+        weight_by="oi",
+    )
+    expected = 0.001 * 1000 * (24600.0**2) * 0.01
+    assert out[0].call_gex == pytest.approx(expected)
+    # The lot size must NOT appear as a factor.
+    assert out[0].call_gex != pytest.approx(expected * 75)
+
+
+def _walls_chain(lot_size):
+    """A chain whose strikes carry distinct OI, so the walls are non-degenerate -
+    not all tied at one strike, and not symmetric in a way that would hide a
+    scale bug. Only `lot_size` varies between callers of this helper.
+    """
+    return [
+        ChainRow(
+            strike=24400.0,
+            call_price=250.0,
+            put_price=20.0,
+            call_oi=500,
+            put_oi=1500,
+            call_volume=50,
+            put_volume=300,
+            lot_size=lot_size,
+        ),
+        ChainRow(
+            strike=24500.0,
+            call_price=180.0,
+            put_price=40.0,
+            call_oi=1000,
+            put_oi=6000,
+            call_volume=100,
+            put_volume=900,
+            lot_size=lot_size,
+        ),
+        ChainRow(
+            strike=24600.0,
+            call_price=120.0,
+            put_price=80.0,
+            call_oi=8000,
+            put_oi=3000,
+            call_volume=500,
+            put_volume=500,
+            lot_size=lot_size,
+        ),
+        ChainRow(
+            strike=24700.0,
+            call_price=70.0,
+            put_price=130.0,
+            call_oi=2000,
+            put_oi=1000,
+            call_volume=200,
+            put_volume=100,
+            lot_size=lot_size,
+        ),
+    ]
+
+
+def test_the_walls_do_not_move_when_the_lot_size_changes():
+    """A uniform scale factor cannot move an argmax. This is why dropping the
+    lot factor changes magnitudes without changing a single level.
+
+    Two identical chains, differing only in `lot_size` (75 vs 150), must
+    produce identical walls even though `lot_size` is no longer part of the
+    GEX formula - if it were still a factor here, this would still pass
+    (uniform scaling never moves an argmax), so the real value of this test
+    is documenting the invariant the fix in `price_exposures` relies on.
+    """
+    gamma = _FlatGamma(gamma=0.001)
+    kwargs = {
+        "forward": 24600.0,
+        "t_years": 0.02,
+        "r": 0.065,
+        "atm_strike": 24600.0,
+        "weight_by": "oi",
+    }
+
+    exposures_75 = compute_exposures(gamma, _walls_chain(75), **kwargs)
+    exposures_150 = compute_exposures(gamma, _walls_chain(150), **kwargs)
+
+    walls_75 = find_walls(exposures_75)
+    walls_150 = find_walls(exposures_150)
+
+    assert walls_75.call_wall == walls_150.call_wall
+    assert walls_75.put_wall == walls_150.put_wall
+    assert walls_75.call_wall_at_edge == walls_150.call_wall_at_edge
+    assert walls_75.put_wall_at_edge == walls_150.put_wall_at_edge

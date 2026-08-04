@@ -1,14 +1,22 @@
 """
 Per-strike signed dealer gamma exposure.
 
-    GEX_k = gamma_k(call) * w_k(call) * lot * F^2 * 0.01
-          - gamma_k(put)  * w_k(put)  * lot * F^2 * 0.01
+    GEX_k = gamma_k(call) * w_k(call) * F^2 * 0.01
+          - gamma_k(put)  * w_k(put)  * F^2 * 0.01
 
 Calls positive, puts negative. That is the standard convention across every
 published GEX product and encodes the approximation that dealers are long
 calls and short puts at the index level. It is deliberately a single constant
 here rather than a setting - if Indian market structure is ever shown to
 warrant inverting it, DEALER_CALL_SIGN is the one place to change.
+
+Note there is no contract-multiplier (lot size) factor. The textbook formula
+carries one because open interest is conventionally quoted in contracts
+(lots); this broker's chain reports OI and volume already multiplied by the
+lot size - verified across a live NIFTY chain where every OI and volume value
+was exactly divisible by the lot size. Multiplying by `lot_size` again would
+double-count it. See the comment at the multiplication site in
+`price_exposures` before "fixing" this back to the textbook form.
 
 Units are currency delta change per 1% move in the underlying. The F^2 * 0.01
 factor is constant across strikes, so it moves neither the walls nor the
@@ -211,8 +219,15 @@ def price_exposures(
         call_gamma = safe_gamma(black76, "c", forward, row.strike, t_years, r, call_sigma)
         put_gamma = safe_gamma(black76, "p", forward, row.strike, t_years, r, put_sigma)
 
-        call_gex = DEALER_CALL_SIGN * call_gamma * call_weight * row.lot_size * scale_per_percent
-        put_gex = DEALER_PUT_SIGN * put_gamma * put_weight * row.lot_size * scale_per_percent
+        # No `row.lot_size` factor here, deliberately. The textbook formula
+        # multiplies by the contract multiplier because OI is conventionally
+        # quoted in contracts (lots); this broker's chain reports OI and
+        # volume already multiplied by the lot size (verified: every OI and
+        # volume value across a live chain divides evenly by it). Multiplying
+        # by lot_size again would double-count it - e.g. 65x too large on
+        # NIFTY. `lot_size` is still carried on `ChainRow` for display only.
+        call_gex = DEALER_CALL_SIGN * call_gamma * call_weight * scale_per_percent
+        put_gex = DEALER_PUT_SIGN * put_gamma * put_weight * scale_per_percent
 
         out.append(
             StrikeExposure(
