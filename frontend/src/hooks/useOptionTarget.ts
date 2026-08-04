@@ -18,14 +18,36 @@ interface UseOptionTargetResult {
   refetch: () => void
 }
 
+/**
+ * Turn a thrown request error into something a trader can act on.
+ *
+ * Deliberately never reuses the backend's own error text. The two must stay
+ * distinguishable: a message that could have come from either side makes it
+ * impossible to tell a rejected projection from an unreachable endpoint.
+ */
 function extractErrorMessage(err: unknown): string {
   if (axios.isAxiosError(err)) {
     const data = err.response?.data as { message?: string } | undefined
     if (data?.message) return data.message
-    return err.message || 'Failed to compute option target'
+    const status = err.response?.status
+    return status
+      ? `Projection request failed with HTTP ${status}.`
+      : `Could not reach the projection endpoint: ${err.message}`
   }
   if (err instanceof Error) return err.message
-  return 'Failed to compute option target'
+  return 'Projection request failed for an unknown reason.'
+}
+
+/**
+ * True when the body is not the JSON envelope this endpoint returns.
+ *
+ * The usual cause is the SPA index.html served by the app's 404 fallthrough,
+ * which arrives as HTTP 200 and so does not throw. That happens when the API
+ * route is missing from the running process, typically because the server has
+ * not been restarted since the namespace was added.
+ */
+function isNotOurPayload(response: unknown): boolean {
+  return typeof response !== 'object' || response === null || !('status' in response)
 }
 
 /**
@@ -63,6 +85,15 @@ export function useOptionTarget({
       const response = await optionTargetApi.project(apiKey, request)
       if (requestIdRef.current !== requestId) return // superseded by a newer request
 
+      if (isNotOurPayload(response)) {
+        setError(
+          'The projection endpoint returned a non-JSON response. The API route is ' +
+            'probably not registered in the running server - restart it to pick up ' +
+            '/api/v1/optiontarget.'
+        )
+        return
+      }
+
       if (response.status === 'success') {
         setData(response)
         setError(null)
@@ -70,7 +101,7 @@ export function useOptionTarget({
       } else {
         // A transient failure must not blank a table the user is reading:
         // surface the error but keep the previous data in place.
-        setError(response.message || 'Failed to compute option target')
+        setError(response.message || 'The server rejected the projection request.')
       }
     } catch (err) {
       if (requestIdRef.current !== requestId) return
