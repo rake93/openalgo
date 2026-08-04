@@ -38,6 +38,7 @@ import {
   TickBarAggregator,
 } from 'openalgo-charts'
 import { runTransform } from 'openalgo-charts/transform'
+import { type GEXLevelsResponse, gexApi } from '@/api/gex'
 import { getScript, getVersion } from '@/api/indicators'
 import { buildChartTheme, isLightTheme, volumeColor } from '@/lib/trading/chartTheme'
 import { displayDp, fmtPrice, money, snapTick, tickSize } from '@/lib/trading/format'
@@ -60,6 +61,7 @@ import {
 import { type DirectionVerdict, readDirection } from './direction'
 import { DrawingManager, type DrawingSnapshot } from './drawing'
 import { EventMarkerLayer, expiryEvent, type TradeRow, tradeMarkers } from './event-markers'
+import { type GexInstrument, type GexLevelsConfig, GexLevelsManager } from './gex-levels'
 import { isSilentFallback } from './indicator-profile'
 import {
   type DataWindowRow,
@@ -168,6 +170,7 @@ export interface WorkspaceSnapshot {
   libraryIndicators: LibraryIndicatorSnapshot[]
   drawings: DrawingSnapshot
   profiles: ProfileSettings
+  gexLevels: GexLevelsConfig
   trading: TradingSnapshot
   /** Fill and expiry markers on the chart. */
   markers: boolean
@@ -205,6 +208,8 @@ export interface WorkspaceCallbacks {
   }): void
   onTrading?(view: TradingViewState): void
   onProfileHover?(hover: ProfileHover | null): void
+  /** A new GEX snapshot arrived, or null when the instrument has none. */
+  onGexSnapshot?(snapshot: GEXLevelsResponse | null): void
   /** A pane legend's gear was pressed — the host opens its settings dialog. */
   onIndicatorSettings?(instanceId: string, source: 'engine' | 'library'): void
   /** Confirm an order when the trading panel is not armed. */
@@ -252,6 +257,7 @@ function resolveCallbacks(cb: WorkspaceCallbacks): ResolvedCallbacks {
     onDrawingChange: cb.onDrawingChange ?? noop,
     onTrading: cb.onTrading ?? noop,
     onProfileHover: cb.onProfileHover ?? noop,
+    onGexSnapshot: cb.onGexSnapshot ?? noop,
     onIndicatorSettings: cb.onIndicatorSettings ?? noop,
     confirmOrder: cb.confirmOrder ?? (() => Promise.resolve(false)),
     onDirty: cb.onDirty ?? noop,
@@ -266,6 +272,7 @@ export class ChartWorkspaceController {
   readonly library: LibraryIndicators
   readonly drawing: DrawingManager
   readonly profiles: ProfileManager
+  readonly gexLevels: GexLevelsManager
   readonly trading: TradingLayer
   readonly markers = new EventMarkerLayer()
 
@@ -312,6 +319,12 @@ export class ChartWorkspaceController {
   private lastLtp: number | null = null
   private prevClose: number | null = null
   private liveBucket: number | null = null
+  /**
+   * The GEX underlying the manager was last told about, as `underlying:exchange`
+   * (empty string for an instrument with no chain). Null until the first
+   * `connectLive`, which is what makes a restored layout's study start polling.
+   */
+  private lastGexKey: string | null = null
   private depthActive = false
   private ltpPollTimer: ReturnType<typeof setInterval> | null = null
   private reconcileTimer: ReturnType<typeof setTimeout> | null = null
@@ -393,6 +406,16 @@ export class ChartWorkspaceController {
       tickSize: () => this.tick(),
       visibleRange: () => this.chart?.getVisibleLogicalRange() ?? null,
     })
+    this.gexLevels = new GexLevelsManager({
+      onChange: () => this.cb.onDirty(),
+      instrument: () => this.gexInstrument(),
+      fetchLevels: (params, signal) => gexApi.getGEXLevels(params, signal),
+      onSnapshot: (snap) => this.cb.onGexSnapshot(snap),
+      volumeProfileWidthOnSide: (side) => {
+        const v = this.profiles.config.volume
+        return v.enabled && v.side === side ? v.width : 0
+      },
+    })
     this.trading = new TradingLayer({
       feed: this.tradeFeed,
       api: (path, body) => this.api(path, body),
@@ -432,6 +455,24 @@ export class ChartWorkspaceController {
     return (
       this.lastLtp ?? (this.rawBars.length ? this.rawBars[this.rawBars.length - 1].close : null)
     )
+  }
+
+  /**
+   * The underlying whose option chain backs the GEX levels, or null when there
+   * is none to fetch.
+   *
+   * An option's own chart is excluded deliberately: its price axis is premium,
+   * not underlying price, so an underlying-price level cannot be drawn on it.
+   * A future maps to its own root. Everything else passes through and the
+   * server decides whether a chain exists — an exchange allowlist here would
+   * duplicate knowledge that already lives in option_chain_service.
+   */
+  private gexInstrument(): GexInstrument | null {
+    const sym = this.sym
+    if (!sym) return null
+    if (/\d+(CE|PE)$/.test(sym.symbol)) return null
+    const root = sym.symbol.replace(/\d{2}[A-Z]{3}\d{2}FUT$/, '')
+    return { underlying: root || sym.symbol, exchange: sym.exchange }
   }
 
   /**
@@ -616,6 +657,7 @@ export class ChartWorkspaceController {
     this.library.attachChart(chart, base + claimed)
     this.drawing.attachChart(chart)
     this.profiles.attachChart(chart, this.rawBars, !def.movement)
+    this.gexLevels.attachChart(chart)
     this.trading.attachChart(chart)
 
     // Default zoom: a fixed number of recent bars, so the visible price range is
@@ -1130,6 +1172,18 @@ export class ChartWorkspaceController {
     // The footprint keys off this instrument's prices and this timeframe's bar
     // times, so it starts over whenever either changes.
     this.profiles.resetTape()
+    // GEX is keyed on the underlying, not the timeframe. connectLive also runs
+    // on a timeframe change, and re-fetching a whole option chain (and blanking
+    // the panel) because the user switched 5m to 15m would be a visible bug.
+    // The starting null is also what kicks a restored layout's study into
+    // polling: restore() deliberately leaves the timer stopped because the
+    // instrument is not resolved yet, and this is the first point at which it is.
+    const gex = this.gexInstrument()
+    const gexKey = gex ? `${gex.underlying}:${gex.exchange}` : ''
+    if (gexKey !== this.lastGexKey) {
+      this.lastGexKey = gexKey
+      this.gexLevels.instrumentChanged()
+    }
     this.offLtp?.()
     this.offDepth?.()
     this.offLtp = this.ws.onLtp((e: LtpEvent) => {
@@ -1657,6 +1711,7 @@ export class ChartWorkspaceController {
       libraryIndicators: this.library.snapshot(),
       drawings: this.drawing.snapshot(),
       profiles: this.profiles.snapshot(),
+      gexLevels: this.gexLevels.snapshot(),
       trading: this.trading.snapshot(),
       markers: this.markers.showing,
       ...(this.chart ? { viewport: this.chart.getVisibleLogicalRange() } : {}),
@@ -1687,6 +1742,7 @@ export class ChartWorkspaceController {
     if (snap.volumeMode) this.volumeMode = snap.volumeMode
     if (snap.grid) this.grid = { ...this.grid, ...snap.grid }
     if (snap.profiles) this.profiles.restore(snap.profiles)
+    if (snap.gexLevels) this.gexLevels.restore(snap.gexLevels)
     if (snap.trading) this.trading.restore(snap.trading)
     if (snap.drawings) this.drawing.restore(snap.drawings)
     if (typeof snap.markers === 'boolean') this.markers.setEnabled(snap.markers)
@@ -1808,6 +1864,7 @@ export class ChartWorkspaceController {
     if (this.reconcileTimer) clearTimeout(this.reconcileTimer)
     this.trading.dispose()
     this.profiles.dispose()
+    this.gexLevels.dispose()
     this.drawing.dispose()
     this.library.dispose()
     this.indicators.dispose()
