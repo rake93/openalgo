@@ -39,11 +39,20 @@ function convertExpiryForAPI(expiry: string): string {
   return expiry.replace(/-/g, '').toUpperCase()
 }
 
+/**
+ * Indian short form. Sign is applied to the magnitude rather than compared
+ * against the thresholds: put GEX is signed negative, and a bare `num >=
+ * 10000000` test sends every negative straight to the fallback, printing a
+ * twelve-digit number where a "-1.8Cr" belongs.
+ */
 function formatNumber(num: number): string {
-  if (num >= 10000000) return `${(num / 10000000).toFixed(1)}Cr`
-  if (num >= 100000) return `${(num / 100000).toFixed(1)}L`
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
-  return num.toFixed(0)
+  if (!Number.isFinite(num)) return '—'
+  const sign = num < 0 ? '-' : ''
+  const abs = Math.abs(num)
+  if (abs >= 10000000) return `${sign}${(abs / 10000000).toFixed(1)}Cr`
+  if (abs >= 100000) return `${sign}${(abs / 100000).toFixed(1)}L`
+  if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(1)}K`
+  return `${sign}${abs.toFixed(0)}`
 }
 
 export default function GEXDashboard() {
@@ -369,7 +378,11 @@ export default function GEXDashboard() {
         type: 'bar' as const,
         name: 'Net GEX',
         marker: { color: barColors },
-        hovertemplate: 'Strike %{text}<br>Net GEX: %{y:,.2f}<extra></extra>',
+        // Formatted through the same helper as the table rather than Plotly's
+        // `%{y:,.2f}`, which would print a thirteen-digit number now that GEX
+        // is a currency notional rather than a raw gamma-times-OI count.
+        customdata: netGexValues.map(formatNumber),
+        hovertemplate: 'Strike %{text}<br>Net GEX: %{customdata}<extra></extra>',
         text: tickLabels,
         textposition: 'none' as const,
         showlegend: false,
@@ -446,7 +459,13 @@ export default function GEXDashboard() {
         tickangle: -45,
       },
       yaxis: {
-        title: { text: 'Net GEX (gamma x OI x lot)', font: { color: themeColors.text, size: 12 } },
+        title: {
+          // No lot factor: the chain reports open interest in units, already
+          // lot-multiplied. The scale is currency delta per 1% move, matching
+          // the /charts GEX Levels study so the two surfaces are comparable.
+          text: 'Net GEX (Rs per 1% move)',
+          font: { color: themeColors.text, size: 12 },
+        },
         tickfont: { color: themeColors.text, size: 10 },
         gridcolor: themeColors.grid,
       },
@@ -760,17 +779,17 @@ export default function GEXDashboard() {
                           {item.strike}
                           {isATM && <span className="ml-2 text-xs text-yellow-500">ATM</span>}
                         </td>
-                        <td className="py-1.5 px-3 text-right text-red-500">
-                          {item.ce_gex.toFixed(2)}
-                        </td>
                         <td className="py-1.5 px-3 text-right text-green-500">
-                          {item.pe_gex.toFixed(2)}
+                          {formatNumber(item.ce_gex)}
+                        </td>
+                        <td className="py-1.5 px-3 text-right text-red-500">
+                          {formatNumber(item.pe_gex)}
                         </td>
                         <td
                           className={`py-1.5 px-3 text-right font-medium ${item.net_gex >= 0 ? 'text-blue-500' : 'text-orange-500'}`}
                         >
                           {item.net_gex >= 0 ? '+' : ''}
-                          {item.net_gex.toFixed(2)}
+                          {formatNumber(item.net_gex)}
                         </td>
                       </tr>
                     )
@@ -779,17 +798,17 @@ export default function GEXDashboard() {
                 <tfoot className="sticky bottom-0 bg-background border-t-2 border-border">
                   <tr className="font-semibold">
                     <td className="py-2 px-3">Total</td>
-                    <td className="py-2 px-3 text-right text-red-500">
-                      {(gexData.total_ce_gex || 0).toFixed(2)}
-                    </td>
                     <td className="py-2 px-3 text-right text-green-500">
-                      {(gexData.total_pe_gex || 0).toFixed(2)}
+                      {formatNumber(gexData.total_ce_gex || 0)}
+                    </td>
+                    <td className="py-2 px-3 text-right text-red-500">
+                      {formatNumber(gexData.total_pe_gex || 0)}
                     </td>
                     <td
                       className={`py-2 px-3 text-right ${(gexData.total_net_gex || 0) >= 0 ? 'text-blue-500' : 'text-orange-500'}`}
                     >
                       {(gexData.total_net_gex || 0) >= 0 ? '+' : ''}
-                      {(gexData.total_net_gex || 0).toFixed(2)}
+                      {formatNumber(gexData.total_net_gex || 0)}
                     </td>
                   </tr>
                 </tfoot>
