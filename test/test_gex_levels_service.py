@@ -3,6 +3,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from services.gex_levels_service import STRIKE_COUNT, get_gex_levels
 
 
@@ -153,3 +155,67 @@ def test_an_unknown_weighting_is_rejected_before_any_broker_call():
     assert ok is False
     assert status == 400
     fetch.assert_not_called()
+
+
+def test_the_payload_carries_every_field_the_frontend_reads():
+    """The TypeScript GEXLevelsResponse is the contract; a silently absent key
+    reads as undefined rather than failing, so pin the whole shape.
+
+    This test exists because the first implementation omitted `strikes`,
+    `lot_size` and the two totals. Nothing failed - the chart simply drew
+    levels with no bar column and a dashboard with two blank rows.
+    """
+    chain, forward = _patched()
+    with chain, forward:
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+
+    for key in (
+        "status",
+        "underlying",
+        "exchange",
+        "expiry_date",
+        "weight_by",
+        "spot_price",
+        "forward_price",
+        "atm_strike",
+        "lot_size",
+        "dte_days",
+        "strikes",
+        "call_wall",
+        "put_wall",
+        "zero_gamma",
+        "total_call_gex",
+        "total_put_gex",
+        "net_gex",
+        "regime",
+        "quality",
+    ):
+        assert key in payload, f"payload is missing {key!r}, which the frontend reads"
+
+
+def test_the_strike_profile_is_returned_with_one_entry_per_strike():
+    chain, forward = _patched()
+    with chain, forward:
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+
+    assert len(payload["strikes"]) == payload["quality"]["strikes_used"]
+    for row in payload["strikes"]:
+        assert set(row) == {"strike", "call_gex", "put_gex", "net_gex"}
+
+
+def test_the_totals_agree_with_the_per_strike_profile():
+    """net_gex must be the sum of the profile the chart draws, or the dashboard
+    and the bars would tell the reader two different stories."""
+    chain, forward = _patched()
+    with chain, forward:
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+
+    assert payload["total_call_gex"] == pytest.approx(
+        sum(r["call_gex"] for r in payload["strikes"]), rel=1e-6
+    )
+    assert payload["total_put_gex"] == pytest.approx(
+        sum(r["put_gex"] for r in payload["strikes"]), rel=1e-6
+    )
+    assert payload["net_gex"] == pytest.approx(
+        payload["total_call_gex"] + payload["total_put_gex"], rel=1e-6
+    )

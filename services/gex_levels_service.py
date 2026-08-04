@@ -175,7 +175,9 @@ def get_gex_levels(
         )
         quality = assess_quality(exposures, walls, forward=F, total_weight=total_weight)
 
-        net_gex = sum(e.net_gex for e in exposures)
+        total_call_gex = sum(e.call_gex for e in exposures)
+        total_put_gex = sum(e.put_gex for e in exposures)
+        net_gex = total_call_gex + total_put_gex
         regime = "suppressive" if net_gex >= 0 else "amplifying"
 
         return (
@@ -189,8 +191,23 @@ def get_gex_levels(
                 "spot_price": round(spot_price, 2),
                 "forward_price": round(F, 2),
                 "atm_strike": atm_strike,
+                "lot_size": rows[0].lot_size if rows else 1,
                 "dte_days": round(dte_days, 2),
                 "interest_rate": round(interest_rate, 2),
+                # The per-strike profile the chart's bar column is drawn from.
+                # Without it the study renders levels but no distribution, so a
+                # trader cannot see how concentrated a wall actually is.
+                "strikes": [
+                    {
+                        "strike": e.strike,
+                        "call_gex": round(e.call_gex, 2),
+                        "put_gex": round(e.put_gex, 2),
+                        "net_gex": round(e.net_gex, 2),
+                    }
+                    for e in exposures
+                ],
+                "total_call_gex": round(total_call_gex, 2),
+                "total_put_gex": round(total_put_gex, 2),
                 "call_wall": walls.call_wall,
                 "put_wall": walls.put_wall,
                 # None is a normal outcome - a chain can be long or short gamma
