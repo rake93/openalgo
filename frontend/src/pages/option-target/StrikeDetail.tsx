@@ -26,16 +26,22 @@ interface StatCellProps {
   label: string
   value: string
   valueClassName?: string
+  title?: string
 }
 
-function StatCell({ label, value, valueClassName }: StatCellProps) {
+function StatCell({ label, value, valueClassName, title }: StatCellProps) {
   return (
     <div className="rounded-md border border-border p-2">
       <div className="text-[11px] text-muted-foreground">{label}</div>
-      <div className={cn('text-sm font-semibold tabular-nums', valueClassName)}>{value}</div>
+      <div className={cn('text-sm font-semibold tabular-nums', valueClassName)} title={title}>
+        {value}
+      </div>
     </div>
   )
 }
+
+const EFFECTIVE_DELTA_ABOVE_ONE_TITLE =
+  'Above 1.0 because projected implied vol rises over the move, so the premium gains more than delta alone explains.'
 
 export function StrikeDetail({ candidate, ladder, scenario, isDark }: StrikeDetailProps) {
   const themeColors = useMemo(
@@ -239,6 +245,7 @@ export function StrikeDetail({ candidate, ladder, scenario, isDark }: StrikeDeta
       showlegend: false,
       margin: { l: 55, r: 20, t: 20, b: 40 },
       xaxis: {
+        type: 'category' as const,
         title: { text: 'Move completed', font: { color: themeColors.text, size: 11 } },
         tickfont: { color: themeColors.text, size: 10 },
         gridcolor: themeColors.grid,
@@ -311,7 +318,18 @@ export function StrikeDetail({ candidate, ladder, scenario, isDark }: StrikeDeta
             <StatCell label="Vega" value={candidate.greeks_now.vega.toFixed(2)} />
             <StatCell label="IV now" value={`${candidate.iv_now_pct.toFixed(1)}%`} />
             <StatCell label="IV at target" value={`${candidate.iv_target_pct.toFixed(1)}%`} />
-            <StatCell label="Effective delta" value={candidate.effective_delta.toFixed(2)} />
+            <StatCell
+              label="Effective delta"
+              value={candidate.effective_delta.toFixed(2)}
+              valueClassName={
+                Math.abs(candidate.effective_delta) > 1 ? 'text-amber-500' : undefined
+              }
+              title={
+                Math.abs(candidate.effective_delta) > 1
+                  ? EFFECTIVE_DELTA_ABOVE_ONE_TITLE
+                  : undefined
+              }
+            />
             <StatCell label="Reward : risk" value={candidate.reward_risk.toFixed(2)} />
           </div>
         </CardContent>

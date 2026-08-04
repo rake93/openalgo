@@ -77,6 +77,8 @@ export interface Scenario {
   day_count: DayCount
   t_target_years: number
   iv_model: IvModel
+  iv_model_requested: IvModel
+  iv_model_overridden: boolean
   vol_beta: VolBetaInfo
   vol_shift: number
   side: OptionSide

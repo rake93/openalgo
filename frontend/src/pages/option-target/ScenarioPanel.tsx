@@ -186,6 +186,12 @@ export default function ScenarioPanel({ state, referenceNow, scenario, onChange 
               <SelectItem value="sticky_strike">Sticky strike</SelectItem>
             </SelectContent>
           </Select>
+          {scenario?.iv_model_overridden && (
+            <p className="text-xs text-amber-500">
+              Requested smile slide was overridden to sticky-strike because the smile fit was
+              unreliable.
+            </p>
+          )}
         </div>
 
         {/* Vol response */}

@@ -38,6 +38,15 @@ function formatPrice(value: number): string {
   return value.toLocaleString('en-IN', { maximumFractionDigits: 2 })
 }
 
+/** Days-to-expiry in whichever unit is legible at that scale. */
+function formatDte(days: number): string {
+  if (!Number.isFinite(days) || days < 0) return '-'
+  const minutes = days * 24 * 60
+  if (minutes < 90) return `${minutes.toFixed(0)} min`
+  if (days < 1) return `${(days * 24).toFixed(1)} h`
+  return `${days.toFixed(2)} d`
+}
+
 export default function OptionTargetCalculator() {
   const { apiKey } = useAuthStore()
 
@@ -213,7 +222,7 @@ export default function OptionTargetCalculator() {
                   </Badge>
                   <Badge variant="secondary">ATM {snapshot.atm_strike}</Badge>
                   <Badge variant="secondary">ATM IV {snapshot.atm_iv_pct.toFixed(1)}%</Badge>
-                  <Badge variant="secondary">DTE {snapshot.days_to_expiry}</Badge>
+                  <Badge variant="secondary">DTE {formatDte(snapshot.days_to_expiry)}</Badge>
                   <Badge variant={data.scenario.forward_mode === 'exact' ? 'secondary' : 'outline'}>
                     {data.scenario.forward_mode === 'exact'
                       ? 'Forward: Exact'

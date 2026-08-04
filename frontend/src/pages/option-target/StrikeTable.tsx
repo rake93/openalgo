@@ -47,6 +47,9 @@ function pnlClass(value: number): string {
   return 'text-muted-foreground'
 }
 
+const EFFECTIVE_DELTA_ABOVE_ONE_TITLE =
+  'Above 1.0 because projected implied vol rises over the move, so the premium gains more than delta alone explains.'
+
 export function StrikeTable({
   candidates,
   objective,
@@ -167,7 +170,17 @@ export function StrikeTable({
                       >
                         {formatRupees(candidate.robust_pnl_per_lot)}
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell
+                        className={cn(
+                          'text-right',
+                          Math.abs(candidate.effective_delta) > 1 && 'font-semibold text-amber-500'
+                        )}
+                        title={
+                          Math.abs(candidate.effective_delta) > 1
+                            ? EFFECTIVE_DELTA_ABOVE_ONE_TITLE
+                            : undefined
+                        }
+                      >
                         {candidate.effective_delta.toFixed(2)}
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground">
