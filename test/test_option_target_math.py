@@ -2,7 +2,7 @@
 
 import pytest
 
-from services.option_target.models import ForwardAnchor, StrikeQuote
+from services.option_target.models import ForwardAnchor, SmileFit, StrikeQuote
 
 
 def test_strike_quote_mid_uses_bid_ask_when_both_present():
@@ -248,3 +248,140 @@ def test_project_forward_rejects_non_positive_reference():
             reference_target=90.0,
             matched_future=False,
         )
+
+
+import math
+
+from opengreeks import black76
+
+from services.option_target.smile import calibrate_ivs
+
+
+def _synthetic_chain(forward, t_years, iv, strikes, lot_size=65):
+    """Build a chain priced at a known flat IV, so calibration must recover it."""
+    quotes = {}
+    for k in strikes:
+        for opt_type, flag in (("CE", "c"), ("PE", "p")):
+            price = black76.black(flag, forward, k, t_years, 0.0, iv)
+            quotes[(k, opt_type)] = StrikeQuote(
+                strike=k,
+                option_type=opt_type,
+                symbol=f"X{int(k)}{opt_type}",
+                ltp=price,
+                bid=price - 0.5,
+                ask=price + 0.5,
+                oi=1000,
+                volume=100,
+                lot_size=lot_size,
+            )
+    return quotes
+
+
+def test_calibrate_recovers_a_known_flat_iv():
+    forward, t, iv = 24500.0, 0.02, 0.11
+    strikes = [24300.0, 24400.0, 24500.0, 24600.0, 24700.0]
+    quotes = _synthetic_chain(forward, t, iv, strikes)
+    points, rejects = calibrate_ivs(quotes, forward=forward, t_years=t, rate=0.0)
+    assert len(points) == len(strikes)
+    for p in points:
+        assert p.iv == pytest.approx(iv, abs=1e-4)
+    assert rejects == []
+
+
+def test_calibrate_uses_otm_wing_on_each_side():
+    forward = 24500.0
+    quotes = _synthetic_chain(forward, 0.02, 0.11, [24300.0, 24700.0])
+    points, _ = calibrate_ivs(quotes, forward=forward, t_years=0.02, rate=0.0)
+    by_strike = {p.strike: p.option_type for p in points}
+    assert by_strike[24300.0] == "PE"  # below forward -> put is OTM
+    assert by_strike[24700.0] == "CE"  # above forward -> call is OTM
+
+
+def test_calibrate_sets_log_moneyness():
+    forward = 24500.0
+    quotes = _synthetic_chain(forward, 0.02, 0.11, [24500.0])
+    points, _ = calibrate_ivs(quotes, forward=forward, t_years=0.02, rate=0.0)
+    assert points[0].log_moneyness == pytest.approx(math.log(24500.0 / 24500.0))
+
+
+def test_calibrate_rejects_strike_with_no_time_value():
+    forward = 24500.0
+    # Deep ITM call quoted at pure intrinsic: IV is not recoverable.
+    quotes = {
+        (23000.0, "CE"): StrikeQuote(
+            strike=23000.0,
+            option_type="CE",
+            symbol="X23000CE",
+            ltp=1500.0,
+            bid=1499.0,
+            ask=1501.0,
+            oi=10,
+            volume=1,
+            lot_size=65,
+        ),
+        (23000.0, "PE"): StrikeQuote(
+            strike=23000.0,
+            option_type="PE",
+            symbol="X23000PE",
+            ltp=0.0,
+            bid=0.0,
+            ask=0.0,
+            oi=10,
+            volume=1,
+            lot_size=65,
+        ),
+    }
+    points, rejects = calibrate_ivs(quotes, forward=forward, t_years=0.02, rate=0.0)
+    assert points == []
+    assert len(rejects) == 1
+    assert "no market" in rejects[0].lower() or "time value" in rejects[0].lower()
+
+
+def test_calibrate_returns_positive_vega_for_every_point():
+    quotes = _synthetic_chain(24500.0, 0.02, 0.11, [24400.0, 24500.0, 24600.0])
+    points, _ = calibrate_ivs(quotes, forward=24500.0, t_years=0.02, rate=0.0)
+    assert all(p.vega > 0 for p in points)
+
+
+from services.option_target.smile import fit_smile, smile_iv
+
+
+def test_fit_recovers_a_flat_smile():
+    quotes = _synthetic_chain(24500.0, 0.02, 0.11, [24300.0, 24400.0, 24500.0, 24600.0, 24700.0])
+    points, _ = calibrate_ivs(quotes, forward=24500.0, t_years=0.02, rate=0.0)
+    fit = fit_smile(points, atm_iv_fallback=0.11)
+    assert not fit.degenerate
+    assert fit.a == pytest.approx(0.11, abs=1e-3)
+    assert fit.b == pytest.approx(0.0, abs=1e-2)
+    assert fit.rms < 1e-3
+
+
+def test_fit_is_degenerate_with_too_few_points():
+    quotes = _synthetic_chain(24500.0, 0.02, 0.11, [24500.0])
+    points, _ = calibrate_ivs(quotes, forward=24500.0, t_years=0.02, rate=0.0)
+    fit = fit_smile(points, atm_iv_fallback=0.125)
+    assert fit.degenerate
+    assert fit.a == 0.125
+    assert smile_iv(fit, 0.05) == pytest.approx(0.125)
+
+
+def test_smile_iv_clamps_below_observed_range():
+    fit = SmileFit(
+        a=0.11, b=-0.24, c=10.79, x_lo=-0.02, x_hi=0.02, rms=0.0005, n_points=25, degenerate=False
+    )
+    # Far outside the fitted range: must equal the value at x_lo, not explode.
+    assert smile_iv(fit, -5.0) == pytest.approx(smile_iv(fit, -0.02))
+
+
+def test_smile_iv_clamps_above_observed_range():
+    fit = SmileFit(
+        a=0.11, b=-0.24, c=10.79, x_lo=-0.02, x_hi=0.02, rms=0.0005, n_points=25, degenerate=False
+    )
+    assert smile_iv(fit, 5.0) == pytest.approx(smile_iv(fit, 0.02))
+
+
+def test_smile_iv_is_never_non_positive():
+    fit = SmileFit(
+        a=-1.0, b=0.0, c=0.0, x_lo=-1.0, x_hi=1.0, rms=0.0, n_points=10, degenerate=False
+    )
+    assert smile_iv(fit, 0.0) > 0
