@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 from cachetools import TTLCache
 
+from services.expiry_service import get_expiry_dates
 from services.option_chain_service import get_option_chain
 from services.option_target.daycount import year_fraction
 from services.option_target.forward import compute_forward, project_forward
@@ -51,9 +52,29 @@ _SNAPSHOT_CACHE: TTLCache = TTLCache(maxsize=64, ttl=3)
 LADDER_STEPS = 15
 DEFAULT_STRIKE_COUNT = 12
 
-# Mirrors option_greeks_service.calculate_time_to_expiry: below this, seconds
-# to expiry become numerically unstable inside black76.implied_volatility/vega.
-MIN_TIME_YEARS = 0.0001
+# Pure divide-by-zero guard, not a modelling clamp. Measured directly against
+# the Rust opengreeks Black-76 core at F=24470, K=24450, sigma=0.386: price
+# and implied vol round-trip exactly (error ~0.0000 vp) all the way down to
+# 30 seconds to expiry. The old value, 0.0001 (52.6 minutes) - copied from
+# option_greeks_service, itself a legacy of the original py_vollib Python
+# implementation - is unnecessary for this library and actively harmful: it
+# clamps most of expiry-day trading, and at 15:00 with 30 minutes left it
+# overstates an at-the-money call by 23% (48.52 instead of the correct
+# 39.57). 1e-6 years is ~31 seconds, comfortably below the measured-stable
+# range while still guarding the divide.
+MIN_TIME_YEARS = 1e-6
+
+# Below this many days to expiry, theta dominates and a short hold on a
+# far-OTM strike can lose value even on a favourable underlying move.
+ZERO_DTE_DAYS = 1.0
+
+# Hold duration, as a fraction of the remaining time to expiry, above which
+# the projection is consuming most of the option's remaining life.
+HOLD_FRACTION_WARN = 0.5
+
+# Measured smile RMS: 0.024 vol points at 7 DTE, 0.625 at 0DTE. Above this,
+# the fitted smile - and every IV/premium projected from it - is unreliable.
+MAX_SMILE_RMS_VOL_PTS = 1.0
 
 EXPIRY_TIMES = {"MCX": (23, 30), "CDS": (12, 30)}
 DEFAULT_EXPIRY_TIME = (15, 30)
@@ -205,6 +226,30 @@ def _expiry_datetime(expiry_date: str, exchange: str) -> datetime:
         raise ValueError(f"Invalid expiry_date {expiry_date!r}; expected DDMMMYY") from exc
 
 
+def _compact_expiry(dashed: str) -> str:
+    """Convert the expiry API's DD-MMM-YY into the DDMMMYY the chain needs."""
+    return dashed.replace("-", "").upper()
+
+
+def _default_expiry(underlying: str, exchange: str, api_key: str) -> str | None:
+    """Nearest expiry whose session has not already ended.
+
+    `get_expiry_dates` filters by calendar date, so on expiry day after the
+    close it still lists today's dead contract. Skipping it here means a caller
+    who omits expiry_date gets a tradeable contract rather than a 400.
+    """
+    ok, resp, _ = get_expiry_dates(underlying, exchange, "options", api_key)
+    if not ok:
+        return None
+    now = datetime.now(IST)
+    for dashed in resp.get("data") or []:
+        compact = _compact_expiry(dashed)
+        expiry_dt = _expiry_datetime(compact, exchange)
+        if expiry_dt > now:
+            return compact
+    return None
+
+
 def _vol_beta_samples(underlying: str, exchange: str, api_key: str) -> list[tuple[float, float]]:
     """(percent_return, atm_iv_vol_points) samples for beta estimation.
 
@@ -219,7 +264,8 @@ def _vol_beta_samples(underlying: str, exchange: str, api_key: str) -> list[tupl
 def get_option_target(
     underlying: str,
     exchange: str,
-    expiry_date: str,
+    *,
+    expiry_date: str | None = None,
     reference: str,
     target_price: float,
     api_key: str,
@@ -248,6 +294,18 @@ def get_option_target(
     try:
         if target_price is None or target_price <= 0:
             return False, {"status": "error", "message": "target_price must be positive"}, 400
+
+        if not expiry_date:
+            expiry_date = _default_expiry(underlying, exchange, api_key)
+            if not expiry_date:
+                return (
+                    False,
+                    {"status": "error", "message": "No live expiry available for this underlying"},
+                    404,
+                )
+            warnings.append(
+                f"No expiry supplied; defaulted to the nearest live expiry {expiry_date}."
+            )
 
         hold_min = resolve_hold(hold_minutes, hold_days)
 
@@ -334,6 +392,20 @@ def get_option_target(
         if t_target <= 0:
             warnings.append("Hold runs past expiry - projected values are intrinsic only.")
 
+        days_to_expiry = t_now * 365
+        if days_to_expiry < ZERO_DTE_DAYS:
+            warnings.append(
+                f"Expiry is {days_to_expiry * 24:.1f} hours away. Theta dominates at this range - "
+                f"the projection is highly sensitive to the hold time, and far out-of-the-money "
+                f"strikes can lose value even when the move goes your way."
+            )
+
+        if t_target > 0 and t_now > 0 and (t_now - t_target) / t_now > HOLD_FRACTION_WARN:
+            warnings.append(
+                f"The {hold_min:.0f} minute hold consumes "
+                f"{((t_now - t_target) / t_now) * 100:.0f} percent of the remaining time to expiry."
+            )
+
         rate = interest_rate / 100.0
         points, rejects = calibrate_ivs(quotes, anchor.forward, t_now, rate)
         atm_fallback = next((p.iv for p in points if abs(p.strike - atm_strike) < 1e-6), 0.12)
@@ -341,6 +413,11 @@ def get_option_target(
         if fit.degenerate:
             warnings.append(
                 f"Only {fit.n_points} strikes calibrated - using a flat ATM vol, no smile."
+            )
+        if not fit.degenerate and fit.rms * 100 > MAX_SMILE_RMS_VOL_PTS:
+            warnings.append(
+                f"Volatility smile fits poorly (RMS {fit.rms * 100:.2f} vol points). "
+                f"Projected implied vols, and therefore projected premiums, are less reliable."
             )
 
         if vol_beta == "auto":
@@ -439,7 +516,8 @@ def get_option_target(
                     "atm_strike": atm_strike,
                     "strike_step": step,
                     "atm_iv_pct": smile_iv(fit, 0.0) * 100,
-                    "days_to_expiry": t_now * 365,
+                    "days_to_expiry": days_to_expiry,
+                    "is_zero_dte": days_to_expiry < ZERO_DTE_DAYS,
                     "t_years": t_now,
                     "matched_future": matched,
                     "lot_size": next(iter(quotes.values())).lot_size if quotes else 0,

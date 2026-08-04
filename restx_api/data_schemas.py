@@ -252,12 +252,13 @@ class OptionTargetSchema(Schema):
     underlying = fields.Str(required=True)
     exchange = fields.Str(required=True, validate=validate.OneOf(VALID_EXCHANGES))
     expiry_date = fields.Str(
-        required=True,
+        required=False,
+        allow_none=True,
         validate=validate.Regexp(
             r"^\d{2}[A-Z]{3}\d{2}$",
             error="expiry_date must be DDMMMYY, e.g. 11AUG26 (not the dashed form)",
         ),
-    )  # DDMMMYY, e.g. 11AUG26
+    )  # DDMMMYY, e.g. 11AUG26. Optional - defaults to the nearest live expiry.
     reference = fields.Str(
         required=False, load_default="FUT", validate=validate.OneOf(["FUT", "SPOT"])
     )

@@ -7,6 +7,8 @@ by rupee P&L, percentage return, reward-to-risk or a balanced score.
 
 `expiry_date` is DDMMMYY (11AUG26). Note that /api/v1/expiry returns the dashed
 form (11-AUG-26), which this endpoint does NOT accept - callers must convert.
+`expiry_date` is optional; when omitted, it defaults to the nearest expiry
+whose session has not already ended.
 """
 
 import os
@@ -40,7 +42,7 @@ class OptionTarget(Resource):
                 "Option target request: %s %s expiry=%s reference=%s target=%s",
                 data["underlying"],
                 data["exchange"],
-                data["expiry_date"],
+                data.get("expiry_date"),
                 data["reference"],
                 data["target_price"],
             )
@@ -48,7 +50,7 @@ class OptionTarget(Resource):
             success, response, status_code = get_option_target(
                 underlying=data["underlying"],
                 exchange=data["exchange"],
-                expiry_date=data["expiry_date"],
+                expiry_date=data.get("expiry_date"),
                 reference=data["reference"],
                 target_price=data["target_price"],
                 api_key=data["apikey"],

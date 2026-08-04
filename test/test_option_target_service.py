@@ -296,3 +296,56 @@ def test_chain_snapshot_is_cached_between_calls():
         )
     assert len(calls) == 1
     _SNAPSHOT_CACHE.clear()
+
+
+def test_time_floor_does_not_distort_the_final_hour_of_expiry_day():
+    from services.option_target_service import MIN_TIME_YEARS
+
+    # 0.0001 years is 52.6 minutes and would clamp most of expiry-day trading.
+    # The Rust Black-76 core is stable to ~30 seconds, so the guard must be
+    # far smaller than a typical 0DTE holding period.
+    assert MIN_TIME_YEARS < 30 / (365 * 24 * 60)
+
+
+def test_compact_expiry_strips_dashes():
+    from services.option_target_service import _compact_expiry
+
+    assert _compact_expiry("04-AUG-26") == "04AUG26"
+
+
+def test_expiry_defaults_to_the_nearest_live_expiry():
+    expiries = (True, {"status": "success", "data": ["04-AUG-26", "11-AUG-26"]}, 200)
+    with (
+        patch("services.option_target_service.get_option_chain", _fake_chain()),
+        patch("services.option_target_service.get_expiry_dates", return_value=expiries),
+        patch("services.option_target_service._matched_future_symbol", return_value=None),
+        patch("services.option_target_service._vol_beta_samples", return_value=[]),
+    ):
+        ok, resp, _ = get_option_target(
+            underlying="NIFTY",
+            exchange="NFO",
+            expiry_date=None,
+            reference="SPOT",
+            target_price=24700.0,
+            api_key="k",
+        )
+    assert ok is True
+    assert resp["snapshot"]["expiry_date"] in ("04AUG26", "11AUG26")
+    assert any("defaulted" in w.lower() for w in resp["warnings"])
+
+
+def test_no_live_expiry_returns_404():
+    with patch(
+        "services.option_target_service.get_expiry_dates",
+        return_value=(True, {"status": "success", "data": []}, 200),
+    ):
+        ok, resp, code = get_option_target(
+            underlying="NIFTY",
+            exchange="NFO",
+            expiry_date=None,
+            reference="SPOT",
+            target_price=24700.0,
+            api_key="k",
+        )
+    assert ok is False
+    assert code == 404
