@@ -10,13 +10,19 @@ degenerate smile, vol-beta fallback, hold running past expiry, ...) is echoed
 back in `warnings` and the response body itself, so nothing is applied
 invisibly.
 
-Any per-request snapshot caching added here MUST be a BOUNDED `TTLCache`
-(`_SNAPSHOT_CACHE` below). An unbounded dict keyed by (symbol, expiry) would
-grow for the life of a Gunicorn worker that never restarts (`-w 1`, no
-scheduled recycle) - see CLAUDE.md's FD-hygiene invariant.
+The chain snapshot fetched from the broker is cached in `_SNAPSHOT_CACHE` for a
+3-second TTL, keyed on (underlying, exchange, expiry_date, strike_count). A
+single scenario tweak in the UI - moving the target price, changing the
+objective - re-issues the request, and the frontend also polls; without the
+cache each of those re-hits the broker chain endpoint, which is what caused
+observed rate-limit retries in production. Only successful chain fetches are
+cached. Any caching added here MUST stay a BOUNDED `TTLCache`: an unbounded
+dict keyed by (symbol, expiry) would grow for the life of a Gunicorn worker
+that never restarts (`-w 1`, no scheduled recycle) - see CLAUDE.md's
+FD-hygiene invariant.
 """
 
-import statistics
+from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
@@ -44,6 +50,10 @@ _SNAPSHOT_CACHE: TTLCache = TTLCache(maxsize=64, ttl=3)
 
 LADDER_STEPS = 15
 DEFAULT_STRIKE_COUNT = 12
+
+# Mirrors option_greeks_service.calculate_time_to_expiry: below this, seconds
+# to expiry become numerically unstable inside black76.implied_volatility/vega.
+MIN_TIME_YEARS = 0.0001
 
 EXPIRY_TIMES = {"MCX": (23, 30), "CDS": (12, 30)}
 DEFAULT_EXPIRY_TIME = (15, 30)
@@ -96,12 +106,20 @@ def parse_chain_quotes(chain_rows: list[dict[str, Any]]) -> dict[tuple[float, st
 
 
 def strike_step_of(strikes: list[float]) -> float:
-    """Modal gap between consecutive sorted unique strikes. 0 when undeterminable."""
+    """Modal gap between consecutive sorted unique strikes. 0 when undeterminable.
+
+    Ties break toward the smallest gap: real chains widen spacing away from
+    the ATM, so the tightest spacing is the one that matters for moneyness
+    labelling, and `statistics.mode` would otherwise pick whichever gap
+    happens to appear first in the input.
+    """
     ordered = sorted(set(strikes))
     if len(ordered) < 2:
         return 0.0
     gaps = [round(b - a, 4) for a, b in zip(ordered, ordered[1:], strict=False)]
-    return float(statistics.mode(gaps))
+    counts = Counter(gaps)
+    best = max(counts.values())
+    return float(min(gap for gap, n in counts.items() if n == best))
 
 
 def resolve_hold(hold_minutes: float | None, hold_days: float | None) -> float:
@@ -171,13 +189,20 @@ def _matched_future_symbol(base_symbol: str, expiry_date: str, exchange: str) ->
 def _expiry_datetime(expiry_date: str, exchange: str) -> datetime:
     """Parse DDMMMYY into an expiry datetime in IST.
 
-    Expiry times mirror `option_greeks_service` so the two pages agree.
+    Expiry times mirror `option_greeks_service` so the two pages agree. The
+    schema validates the DDMMMYY shape before this is ever called, but this
+    stays defensive so a direct call (tests, other callers) still fails with a
+    400-worthy `ValueError` instead of an `IndexError`/`KeyError` that would
+    otherwise fall through to a generic 500.
     """
-    day = int(expiry_date[:2])
-    month = MONTHS[expiry_date[2:5].upper()]
-    year = 2000 + int(expiry_date[5:7])
-    hour, minute = EXPIRY_TIMES.get(exchange.upper(), DEFAULT_EXPIRY_TIME)
-    return datetime(year, month, day, hour, minute, tzinfo=IST)
+    try:
+        day = int(expiry_date[:2])
+        month = MONTHS[expiry_date[2:5].upper()]
+        year = 2000 + int(expiry_date[5:7])
+        hour, minute = EXPIRY_TIMES.get(exchange.upper(), DEFAULT_EXPIRY_TIME)
+        return datetime(year, month, day, hour, minute, tzinfo=IST)
+    except (IndexError, KeyError, ValueError) as exc:
+        raise ValueError(f"Invalid expiry_date {expiry_date!r}; expected DDMMMYY") from exc
 
 
 def _vol_beta_samples(underlying: str, exchange: str, api_key: str) -> list[tuple[float, float]]:
@@ -226,13 +251,20 @@ def get_option_target(
 
         hold_min = resolve_hold(hold_minutes, hold_days)
 
-        ok, chain_resp, status = get_option_chain(
-            underlying=underlying,
-            exchange=exchange,
-            expiry_date=expiry_date,
-            strike_count=strike_count,
-            api_key=api_key,
-        )
+        cache_key = (underlying.upper(), exchange.upper(), expiry_date.upper(), strike_count)
+        cached = _SNAPSHOT_CACHE.get(cache_key)
+        if cached is not None:
+            ok, chain_resp, status = True, cached, 200
+        else:
+            ok, chain_resp, status = get_option_chain(
+                underlying=underlying,
+                exchange=exchange,
+                expiry_date=expiry_date,
+                strike_count=strike_count,
+                api_key=api_key,
+            )
+            if ok:
+                _SNAPSHOT_CACHE[cache_key] = chain_resp
         if not ok:
             return False, chain_resp, status
 
@@ -289,6 +321,16 @@ def get_option_target(
         )
         if t_now <= 0:
             return False, {"status": "error", "message": "Option has already expired"}, 400
+        if 0 < t_now < MIN_TIME_YEARS:
+            logger.info(
+                "Time to expiry below the numerical floor; clamping to %s years", MIN_TIME_YEARS
+            )
+            t_now = MIN_TIME_YEARS
+            warnings.append(
+                "Very close to expiry - time to expiry clamped to the numerical floor, "
+                "so Greeks and projections are indicative only."
+            )
+        t_target = min(t_target, t_now)
         if t_target <= 0:
             warnings.append("Hold runs past expiry - projected values are intrinsic only.")
 
@@ -438,7 +480,7 @@ def get_option_target(
             200,
         )
 
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         logger.warning("Validation error in option target: %s", exc)
         return False, {"status": "error", "message": str(exc)}, 400
     except Exception as exc:  # noqa: BLE001 - final backstop, must always return a response

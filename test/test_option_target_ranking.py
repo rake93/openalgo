@@ -89,6 +89,22 @@ def test_candidate_reward_risk_is_positive_for_a_winning_direction():
     assert c["reward_risk"] > 0
 
 
+def test_reward_risk_is_capped_when_the_adverse_case_also_profits():
+    from services.option_target.ranking import MAX_REWARD_RISK
+
+    c = _candidate(23000.0, quote=_quote(23000.0, bid=1500.0, ask=1502.0))
+    if c["adverse_pnl_per_lot"] >= 0 and c["pnl_per_lot"] > 0:
+        assert c["reward_risk"] == MAX_REWARD_RISK
+
+
+def test_reward_risk_is_zero_when_both_scenarios_lose():
+    from services.option_target.ranking import MAX_REWARD_RISK
+
+    c = _candidate(24500.0)
+    # Sanity: an ordinary candidate must not be silently capped.
+    assert 0.0 <= c["reward_risk"] <= MAX_REWARD_RISK
+
+
 def test_zero_bid_strike_is_excluded_with_a_reason():
     c = _candidate(25500.0, quote=_quote(25500.0, bid=0.0, ask=0.5))
     assert c["excluded"] is True

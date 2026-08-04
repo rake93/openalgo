@@ -5,12 +5,23 @@ from unittest.mock import patch
 import pytest
 
 from services.option_target_service import (
+    _SNAPSHOT_CACHE,
     build_ladder,
     get_option_target,
     parse_chain_quotes,
     resolve_hold,
     strike_step_of,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_snapshot_cache():
+    """Bounded TTLCache is module-level state; a stale entry from a previous
+    test must never leak into the next one and mask a fresh fetch."""
+    _SNAPSHOT_CACHE.clear()
+    yield
+    _SNAPSHOT_CACHE.clear()
+
 
 CHAIN_ROWS = [
     {
@@ -83,6 +94,13 @@ def test_strike_step_is_the_modal_gap():
 
 def test_strike_step_handles_a_single_strike():
     assert strike_step_of([24500.0]) == 0.0
+
+
+def test_strike_step_breaks_ties_deterministically():
+    widening = [24400.0, 24450.0, 24500.0, 24600.0, 24700.0]
+    narrowing = [24400.0, 24500.0, 24600.0, 24650.0, 24700.0]
+    assert strike_step_of(widening) == 50.0
+    assert strike_step_of(narrowing) == 50.0
 
 
 def test_resolve_hold_prefers_days_when_given():
@@ -204,6 +222,14 @@ def test_get_option_target_propagates_a_chain_failure():
     assert code == 500
 
 
+def test_get_option_target_rejects_a_malformed_vol_beta_with_400():
+    # A JSON array/object for vol_beta raises TypeError inside float(), not
+    # ValueError - it must still surface as a 400, not fall through to a 500.
+    ok, resp, code = _run(vol_beta=[1, 2])
+    assert ok is False
+    assert code == 400
+
+
 def test_get_option_target_rejects_a_non_positive_target():
     ok, resp, code = get_option_target(
         underlying="NIFTY",
@@ -226,3 +252,47 @@ def test_get_option_target_echoes_the_vol_beta_actually_used():
     _, resp, _ = _run()
     beta = resp["scenario"]["vol_beta"]
     assert "beta" in beta and "source" in beta
+
+
+def test_chain_snapshot_is_cached_between_calls():
+    _SNAPSHOT_CACHE.clear()
+    calls = []
+
+    def _counting_chain(underlying, exchange, expiry_date, strike_count, api_key):
+        calls.append(underlying)
+        return (
+            True,
+            {
+                "status": "success",
+                "underlying": underlying,
+                "underlying_ltp": 24507.10,
+                "expiry_date": expiry_date,
+                "atm_strike": 24500.0,
+                "chain": CHAIN_ROWS,
+            },
+            200,
+        )
+
+    with (
+        patch("services.option_target_service.get_option_chain", _counting_chain),
+        patch("services.option_target_service._matched_future_symbol", return_value=None),
+        patch("services.option_target_service._vol_beta_samples", return_value=[]),
+    ):
+        get_option_target(
+            underlying="NIFTY",
+            exchange="NFO",
+            expiry_date="11AUG26",
+            reference="SPOT",
+            target_price=24700.0,
+            api_key="k",
+        )
+        get_option_target(
+            underlying="NIFTY",
+            exchange="NFO",
+            expiry_date="11AUG26",
+            reference="SPOT",
+            target_price=24650.0,
+            api_key="k",
+        )
+    assert len(calls) == 1
+    _SNAPSHOT_CACHE.clear()

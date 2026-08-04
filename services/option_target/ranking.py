@@ -22,6 +22,7 @@ logger = get_logger(__name__)
 MIN_OI = 500
 MIN_VOLUME = 100
 MAX_SPREAD_PCT = 25.0
+MAX_REWARD_RISK = 999.0
 
 OBJECTIVES = ("max_pnl", "max_return", "max_rr", "balanced")
 
@@ -135,6 +136,16 @@ def build_candidate(
         exit_value=exit_value,
     )
 
+    if adverse_pnl_per_lot < 0:
+        reward_risk = min(pnl_per_lot / abs(adverse_pnl_per_lot), MAX_REWARD_RISK)
+    elif pnl_per_lot > 0:
+        # Adverse case is also profitable: no downside in this scenario pair.
+        # Capped rather than infinite so the value stays JSON-serialisable and
+        # sortable alongside ordinary ratios.
+        reward_risk = MAX_REWARD_RISK
+    else:
+        reward_risk = 0.0
+
     reason = _exclusion(quote)
     return {
         "strike": strike,
@@ -164,7 +175,7 @@ def build_candidate(
         "theta_cost_per_lot": theta_cost_per_lot,
         "adverse_premium": adverse,
         "adverse_pnl_per_lot": adverse_pnl_per_lot,
-        "reward_risk": (pnl_per_lot / abs(adverse_pnl_per_lot) if adverse_pnl_per_lot < 0 else 0.0),
+        "reward_risk": reward_risk,
         "attribution": {
             "delta": attribution.delta,
             "gamma": attribution.gamma,

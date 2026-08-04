@@ -251,7 +251,13 @@ class OptionTargetSchema(Schema):
     apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
     underlying = fields.Str(required=True)
     exchange = fields.Str(required=True, validate=validate.OneOf(VALID_EXCHANGES))
-    expiry_date = fields.Str(required=True)  # DDMMMYY, e.g. 11AUG26
+    expiry_date = fields.Str(
+        required=True,
+        validate=validate.Regexp(
+            r"^\d{2}[A-Z]{3}\d{2}$",
+            error="expiry_date must be DDMMMYY, e.g. 11AUG26 (not the dashed form)",
+        ),
+    )  # DDMMMYY, e.g. 11AUG26
     reference = fields.Str(
         required=False, load_default="FUT", validate=validate.OneOf(["FUT", "SPOT"])
     )
