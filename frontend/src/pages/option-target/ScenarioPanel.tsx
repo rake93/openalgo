@@ -28,6 +28,11 @@ interface Props {
   referenceNow: number
   scenario: Scenario | null
   onChange: (next: ScenarioState) => void
+  /** True when the selected exchange prices its options off a future with no
+   *  spot instrument at all (MCX and other commodity exchanges). Disables the
+   *  Spot option in the Reference selector rather than letting the user pick
+   *  a reference the backend will reject. */
+  spotDisabled?: boolean
 }
 
 const QUICK_SET_PERCENTS = [0.25, 0.5, 1] as const
@@ -59,7 +64,13 @@ function formatVolBetaLine(scenario: Scenario): string {
   }
 }
 
-export default function ScenarioPanel({ state, referenceNow, scenario, onChange }: Props) {
+export default function ScenarioPanel({
+  state,
+  referenceNow,
+  scenario,
+  onChange,
+  spotDisabled = false,
+}: Props) {
   const update = <K extends keyof ScenarioState>(key: K, value: ScenarioState[K]) => {
     onChange({ ...state, [key]: value })
   }
@@ -81,9 +92,17 @@ export default function ScenarioPanel({ state, referenceNow, scenario, onChange 
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="FUT">Futures</SelectItem>
-              <SelectItem value="SPOT">Spot</SelectItem>
+              <SelectItem value="SPOT" disabled={spotDisabled}>
+                Spot
+              </SelectItem>
             </SelectContent>
           </Select>
+          {spotDisabled && (
+            <p className="text-xs text-muted-foreground">
+              Commodity options are written on futures and have no spot instrument, so the reference
+              is locked to Futures.
+            </p>
+          )}
           {scenario && (
             <p className="text-xs text-muted-foreground">{formatForwardModeLine(scenario)}</p>
           )}

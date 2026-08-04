@@ -34,14 +34,31 @@ export interface Snapshot {
   expiry_date: string
   spot: number
   forward: number
-  basis: number
+  /** Forward minus spot. Null when the underlying has no spot instrument
+   *  (e.g. MCX) — see `parity_vs_underlying` for the equivalent number there. */
+  basis: number | null
+  /** Present when the pricing underlying is a future rather than spot (MCX
+   *  and other commodity exchanges) — see services/pricing_underlying.py. */
+  underlying_ref?: {
+    symbol: string
+    exchange: string
+    kind: 'SPOT' | 'FUTURE'
+    option_expiry: string | null
+    underlying_expiry: string | null
+    method: string
+  }
+  /** Discrepancy between the put-call-parity forward and the linked future.
+   *  Only meaningful (non-null) when underlying_ref.kind is 'FUTURE'. */
+  parity_vs_underlying?: number | null
   forward_source: string
   atm_strike: number
   strike_step: number
   atm_iv_pct: number
   days_to_expiry: number
   is_zero_dte: boolean
-  basis_plausible: boolean
+  /** Null when `basis` is null — the carry-bound check that produces this
+   *  has no spot to check carry against. */
+  basis_plausible: boolean | null
   market_open: boolean
   t_years: number
   matched_future: string | null

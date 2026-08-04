@@ -34,8 +34,11 @@ import type { Candidate, Objective, OptionTargetRequest } from '@/types/option-t
 
 const NEAREST_EXPIRY_VALUE = '__nearest__'
 
-const MCX_UNSUPPORTED_NOTE =
-  'Commodity options are not yet supported. MCX has no spot instrument - its options are written on futures with a different expiry - and the shared option chain service cannot resolve an underlying price for them. This is a platform limitation that also affects the Option Chain page, not a fault in this calculator.'
+// Mirrors services.pricing_underlying.FUTURES_UNDERLYING_EXCHANGES: exchanges
+// with no spot instrument at all, where options are written on a future.
+// Purely a UI-side "which reference is even meaningful" set - the backend
+// remains the sole owner of *which* future a given underlying resolves to.
+const FUTURES_UNDERLYING_EXCHANGES = new Set(['MCX', 'NCDEX', 'NCO'])
 
 const DEFAULT_SCENARIO: ScenarioState = {
   reference: 'FUT',
@@ -64,14 +67,16 @@ function formatDte(days: number): string {
 
 export default function OptionTargetCalculator() {
   const { apiKey } = useAuthStore()
-  const { toolsFnoExchanges, defaultFnoExchange, defaultUnderlyings } = useSupportedExchanges()
+  const { toolsFnoExchanges, defaultToolsFnoExchange, defaultUnderlyings } = useSupportedExchanges()
 
-  const [exchange, setExchange] = useState(defaultFnoExchange)
+  const [exchange, setExchange] = useState(defaultToolsFnoExchange)
   const [underlyings, setUnderlyings] = useState<string[]>(
-    defaultUnderlyings[defaultFnoExchange] || []
+    defaultUnderlyings[defaultToolsFnoExchange] || []
   )
   const [underlyingOpen, setUnderlyingOpen] = useState(false)
-  const [underlying, setUnderlying] = useState(defaultUnderlyings[defaultFnoExchange]?.[0] || '')
+  const [underlying, setUnderlying] = useState(
+    defaultUnderlyings[defaultToolsFnoExchange]?.[0] || ''
+  )
   const [expiries, setExpiries] = useState<string[]>([])
   const [expiry, setExpiry] = useState('')
   const [scenario, setScenario] = useState<ScenarioState>(DEFAULT_SCENARIO)
@@ -81,12 +86,27 @@ export default function OptionTargetCalculator() {
 
   const isDark = document.documentElement.classList.contains('dark')
 
-  // Re-sync exchange when broker capabilities load asynchronously.
+  // Re-sync exchange when broker capabilities load asynchronously. Resets to
+  // defaultToolsFnoExchange, not defaultFnoExchange -- the latter is the
+  // first of ALL F&O exchanges the broker supports and can itself be one
+  // this page excludes (CDS), which would set `exchange` to a value that
+  // isn't in `toolsFnoExchanges` and can never be selected in the dropdown.
   useEffect(() => {
     setExchange((prev) =>
-      prev && toolsFnoExchanges.some((ex) => ex.value === prev) ? prev : defaultFnoExchange
+      prev && toolsFnoExchanges.some((ex) => ex.value === prev) ? prev : defaultToolsFnoExchange
     )
-  }, [defaultFnoExchange, toolsFnoExchanges])
+  }, [defaultToolsFnoExchange, toolsFnoExchanges])
+
+  // Commodity exchanges have no spot instrument at all (see
+  // FUTURES_UNDERLYING_EXCHANGES above); the backend rejects a SPOT reference
+  // for them with 400. Force the reference to Futures on switching into one
+  // of these exchanges so the request is never sent with a reference the
+  // backend is guaranteed to reject.
+  useEffect(() => {
+    if (FUTURES_UNDERLYING_EXCHANGES.has(exchange)) {
+      setScenario((prev) => (prev.reference === 'SPOT' ? { ...prev, reference: 'FUT' } : prev))
+    }
+  }, [exchange])
 
   // Fetch underlyings when the exchange changes. Seed from the static
   // defaults first so the picker is never empty, then replace with the
@@ -309,18 +329,35 @@ export default function OptionTargetCalculator() {
                 <div className="flex flex-wrap items-center gap-2 pl-3 border-l border-border">
                   <Badge variant="secondary">Spot {formatPrice(snapshot.spot)}</Badge>
                   <Badge variant="secondary">Forward {formatPrice(snapshot.forward)}</Badge>
-                  <Badge
-                    variant={snapshot.basis_plausible ? 'secondary' : 'destructive'}
-                    className={snapshot.basis_plausible ? undefined : 'font-semibold'}
-                    title={
-                      snapshot.basis_plausible
-                        ? undefined
-                        : 'This basis is larger than carry over the time to expiry can explain. The at-the-money quotes driving put-call parity are probably stale or wide.'
-                    }
-                  >
-                    Basis {snapshot.basis >= 0 ? '+' : ''}
-                    {formatPrice(snapshot.basis)}
-                  </Badge>
+                  {snapshot.underlying_ref?.kind === 'FUTURE' ? (
+                    // No spot instrument exists for this underlying, so `basis` is
+                    // meaningless and the backend reports it as null. The carry-bound
+                    // plausibility styling doesn't apply either - there's no carry
+                    // bound against a non-existent spot - so this badge is always
+                    // plain, unlike the basis badge below.
+                    <Badge variant="secondary">
+                      Parity vs future{' '}
+                      {snapshot.parity_vs_underlying != null && snapshot.parity_vs_underlying >= 0
+                        ? '+'
+                        : ''}
+                      {snapshot.parity_vs_underlying != null
+                        ? formatPrice(snapshot.parity_vs_underlying)
+                        : '-'}
+                    </Badge>
+                  ) : (
+                    <Badge
+                      variant={snapshot.basis_plausible ? 'secondary' : 'destructive'}
+                      className={snapshot.basis_plausible ? undefined : 'font-semibold'}
+                      title={
+                        snapshot.basis_plausible
+                          ? undefined
+                          : 'This basis is larger than carry over the time to expiry can explain. The at-the-money quotes driving put-call parity are probably stale or wide.'
+                      }
+                    >
+                      Basis {snapshot.basis != null && snapshot.basis >= 0 ? '+' : ''}
+                      {snapshot.basis != null ? formatPrice(snapshot.basis) : '-'}
+                    </Badge>
+                  )}
                   <Badge variant="secondary">ATM {snapshot.atm_strike}</Badge>
                   <Badge variant="secondary">ATM IV {snapshot.atm_iv_pct.toFixed(1)}%</Badge>
                   <Badge variant="secondary">DTE {formatDte(snapshot.days_to_expiry)}</Badge>
@@ -369,12 +406,6 @@ export default function OptionTargetCalculator() {
         </CardContent>
       </Card>
 
-      {exchange === 'MCX' && (
-        <Alert variant="warning">
-          <AlertDescription>{MCX_UNSUPPORTED_NOTE}</AlertDescription>
-        </Alert>
-      )}
-
       {error && (
         <Alert variant="destructive">
           <AlertTitle>Error</AlertTitle>
@@ -394,6 +425,7 @@ export default function OptionTargetCalculator() {
           referenceNow={data?.scenario.reference_now ?? 0}
           scenario={data?.scenario ?? null}
           onChange={setScenario}
+          spotDisabled={FUTURES_UNDERLYING_EXCHANGES.has(exchange)}
         />
 
         <div className="space-y-4">
