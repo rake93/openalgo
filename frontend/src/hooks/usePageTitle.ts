@@ -39,6 +39,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/gex': 'GEX Dashboard',
   '/ivsmile': 'IV Smile',
   '/oiprofile': 'OI Profile',
+  '/optiontarget': 'Option Target Calculator',
   '/websocket/test': 'WebSocket Test',
   '/websocket/order': 'Order Stream',
   '/strategy': 'Strategies',
