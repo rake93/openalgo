@@ -1,7 +1,11 @@
 """Indicator alert engine — headless bar-close evaluation + delivery.
 
-Owns a single APScheduler `BackgroundScheduler` (mirrors flow/historify:
-one per-process singleton, its own jobstore table, started once — FD-safe).
+Owns a single APScheduler background scheduler (mirrors flow/historify: one
+per-process singleton, started once — FD-safe). Its schedule is held in memory,
+not in a jobstore table: the sweep is a fixed interval job re-registered from
+this module on every boot, so persisting it bought nothing while costing one
+write per sweep into `openalgo.db` — the same file the master-contract download
+locks for minutes at a time, which used to kill the scheduler thread.
 A periodic sweep evaluates every active `IndicatorAlert`: it groups alerts by
 symbol/exchange/timeframe, fetches history once per group, runs the compiled
 OpenScript IR, and when a condition fires on a newly-closed bar it delivers via
@@ -19,11 +23,10 @@ import os
 import threading
 from datetime import datetime
 
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from utils.logging import get_logger
+from utils.scheduler import ResilientBackgroundScheduler
 
 logger = get_logger(__name__)
 
@@ -70,12 +73,8 @@ class IndicatorAlertScheduler:
                     self._socketio = socketio
                 return
             self._socketio = socketio
-            db_url = os.getenv("DATABASE_URL", "sqlite:///db/openalgo.db")
-            jobstores = {
-                "default": SQLAlchemyJobStore(url=db_url, tablename="indicator_apscheduler_jobs")
-            }
-            self._scheduler = BackgroundScheduler(
-                jobstores=jobstores,
+            # Default (in-memory) jobstore on purpose — see the module docstring.
+            self._scheduler = ResilientBackgroundScheduler(
                 job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60},
             )
             self._scheduler.start()

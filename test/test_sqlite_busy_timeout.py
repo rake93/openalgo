@@ -30,6 +30,10 @@ from database.engine_factory import create_db_engine
 BUSY_TIMEOUT_MS = database.DEFAULT_BUSY_TIMEOUT_MS
 # What pysqlite gives you without the listener, and what proved too short.
 PYSQLITE_DEFAULT_MS = 5_000
+# A dhan master-contract download replacing 202,206 symtoken rows, measured on a
+# developer machine. The timeout has to outlast a write like this or the writers
+# behind it fail exactly as they did before the listener existed.
+OBSERVED_MASTER_CONTRACT_MS = 124_000
 
 
 @pytest.fixture
@@ -47,6 +51,8 @@ def test_busy_timeout_is_applied_to_every_sqlite_connection(db_url):
         # The point of the change: comfortably longer than pysqlite's default,
         # which a multi-second bulk insert blows straight through.
         assert timeout > PYSQLITE_DEFAULT_MS
+        # And longer than the write that actually blocks everyone else.
+        assert timeout > OBSERVED_MASTER_CONTRACT_MS
     finally:
         engine.dispose()
 
