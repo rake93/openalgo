@@ -3,6 +3,24 @@
 Deep ITM maximises rupees, far OTM maximises percentage return, and they are
 never the same strike. Rather than pick one and pretend it is "best", every
 metric is computed and the user chooses the objective.
+
+Ranked on live data, `max_return` and `max_rr` picked the furthest OTM strike
+every time: both percentage return and reward-to-risk rise monotonically as
+the premium shrinks toward zero, because a small premium caps the modelled
+loss while the payoff on a completed move is still large in relative terms.
+That is a lottery-ticket recommendation, not a considered one.
+
+Unconditional probability weighting does NOT fix this. Over the 45-90 minute
+horizons this tool targets, a 1% move is 3 to 9 standard deviations, so every
+strike gets a near-zero probability and the ranking degenerates to noise.
+Probability also answers the wrong question - the user is asserting a
+directional view ("if NIFTY reaches X"), not asking how likely that view is.
+
+Instead, `MOVE_SCENARIOS` (50%, 75%, 100% of the target move) asks "what if
+the move only partly happens". Each strike is projected at every fraction and
+`robust_pnl_per_lot` is their mean. A strike that only pays once the move
+fully completes is penalised relative to one that pays across the range, and
+`balanced` ranks on that mean rather than on the full-move return alone.
 """
 
 from typing import Any
@@ -23,8 +41,9 @@ MIN_OI = 500
 MIN_VOLUME = 100
 MAX_SPREAD_PCT = 25.0
 MAX_REWARD_RISK = 999.0
+MOVE_SCENARIOS = (0.5, 0.75, 1.0)
 
-OBJECTIVES = ("max_pnl", "max_return", "max_rr", "balanced")
+OBJECTIVES = ("max_pnl", "max_return", "max_rr", "balanced", "max_robust")
 
 
 def _label(strike: float, atm_strike: float, strike_step: float, option_type: str) -> str:
@@ -92,6 +111,20 @@ def build_candidate(
     }
     projected = project_strike(forward_target=forward_target, move_pct=move_pct, **common)
     adverse = project_strike(forward_target=forward_adverse, move_pct=-move_pct, **common)
+
+    # Partial-move robustness: same half-spread exit and entry cost as the
+    # full move, just stopped short of the target. See module docstring for
+    # why this replaces raw return/reward-risk as the balanced-score driver.
+    scenario_pnl: dict[str, float] = {}
+    for fraction in MOVE_SCENARIOS:
+        forward_partial = forward_now + (forward_target - forward_now) * fraction
+        premium_partial = project_strike(
+            forward_target=forward_partial, move_pct=move_pct * fraction, **common
+        )
+        exit_partial = max(premium_partial - quote.half_spread, 0.0)
+        pnl_partial = (exit_partial - entry_cost) * quote.lot_size
+        scenario_pnl[str(int(fraction * 100))] = pnl_partial
+    robust_pnl_per_lot = sum(scenario_pnl.values()) / len(scenario_pnl)
 
     iv_target = target_iv(
         strike=strike,
@@ -176,6 +209,8 @@ def build_candidate(
         "adverse_premium": adverse,
         "adverse_pnl_per_lot": adverse_pnl_per_lot,
         "reward_risk": reward_risk,
+        "scenario_pnl": scenario_pnl,
+        "robust_pnl_per_lot": robust_pnl_per_lot,
         "attribution": {
             "delta": attribution.delta,
             "gamma": attribution.gamma,
@@ -218,18 +253,19 @@ def rank_candidates(candidates: list[dict[str, Any]], objective: str) -> list[di
 
     if eligible:
         if objective == "balanced":
-            returns = _normalise([c["return_pct"] for c in eligible])
+            robust = _normalise([c["robust_pnl_per_lot"] for c in eligible])
             rr = _normalise([c["reward_risk"] for c in eligible])
             eff = _normalise([abs(c["effective_delta"]) for c in eligible])
-            for c, r, k, e in zip(eligible, returns, rr, eff, strict=True):
+            for c, r, k, e in zip(eligible, robust, rr, eff, strict=True):
                 penalty = min(c["spread_pct"], MAX_SPREAD_PCT) / MAX_SPREAD_PCT * 0.15
-                c["score"] = 0.4 * r + 0.4 * k + 0.2 * e - penalty
+                c["score"] = 0.5 * r + 0.3 * k + 0.2 * e - penalty
             key = "score"
         else:
             key = {
                 "max_pnl": "pnl_per_lot",
                 "max_return": "return_pct",
                 "max_rr": "reward_risk",
+                "max_robust": "robust_pnl_per_lot",
             }[objective]
             for c in eligible:
                 c["score"] = c[key]
@@ -238,16 +274,30 @@ def rank_candidates(candidates: list[dict[str, Any]], objective: str) -> list[di
         eligible.sort(key=lambda c: (-c[key], c["strike"]))
         best = eligible[0]
         best["recommended"] = True
-        best["recommend_reason"] = {
-            "max_pnl": f"Highest rupee P&L per lot at {best['return_pct']:.1f}% return",
-            "max_return": f"Highest return at {best['return_pct']:.1f}% on premium",
-            "max_rr": f"Best reward-to-risk at {best['reward_risk']:.2f}x",
-            "balanced": (
-                f"Best blend of {best['return_pct']:.1f}% return, "
-                f"{best['reward_risk']:.2f}x reward-to-risk and "
+        # A dict-literal-of-f-strings would evaluate every branch eagerly,
+        # so a candidate missing one objective's key (eg. a raw test fixture
+        # or a "max_pnl" run whose dict never carries robust_pnl_per_lot)
+        # would KeyError even though that branch was never selected.
+        # Branching keeps each format string lazy - evaluated only when its
+        # own objective is the one actually chosen.
+        if objective == "max_pnl":
+            reason = f"Highest rupee P&L per lot at {best['return_pct']:.1f}% return"
+        elif objective == "max_return":
+            reason = f"Highest return at {best['return_pct']:.1f}% on premium"
+        elif objective == "max_rr":
+            reason = f"Best reward-to-risk at {best['reward_risk']:.2f}x"
+        elif objective == "max_robust":
+            reason = (
+                f"Best average P&L across half, three-quarter and full move "
+                f"at {best['return_pct']:.1f}% full-move return"
+            )
+        else:
+            reason = (
+                f"Best blend of {best['robust_pnl_per_lot']:.0f} average P&L across "
+                f"partial moves, {best['reward_risk']:.2f}x reward-to-risk and "
                 f"{abs(best['effective_delta']):.2f} effective delta"
-            ),
-        }[objective]
+            )
+        best["recommend_reason"] = reason
 
     for c in excluded:
         c["score"] = float("-inf")

@@ -296,7 +296,7 @@ class OptionTargetSchema(Schema):
     objective = fields.Str(
         required=False,
         load_default="balanced",
-        validate=validate.OneOf(["balanced", "max_pnl", "max_return", "max_rr"]),
+        validate=validate.OneOf(["balanced", "max_pnl", "max_return", "max_rr", "max_robust"]),
     )
 
 

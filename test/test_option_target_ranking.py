@@ -1,6 +1,7 @@
 """Ranking and filtering tests for the Option Target Calculator."""
 
 import pytest
+from opengreeks import black76
 
 from services.option_target.models import SmileFit, StrikeQuote
 from services.option_target.ranking import build_candidate, rank_candidates
@@ -103,6 +104,83 @@ def test_reward_risk_is_zero_when_both_scenarios_lose():
     c = _candidate(24500.0)
     # Sanity: an ordinary candidate must not be silently capped.
     assert 0.0 <= c["reward_risk"] <= MAX_REWARD_RISK
+
+
+def test_candidate_reports_partial_move_scenarios():
+    c = _candidate(24500.0)
+    assert set(c["scenario_pnl"]) == {"50", "75", "100"}
+    assert c["scenario_pnl"]["100"] == pytest.approx(c["pnl_per_lot"])
+
+
+def test_partial_move_pnl_increases_with_move_completion_for_a_call():
+    c = _candidate(24500.0)
+    s = c["scenario_pnl"]
+    assert s["50"] < s["75"] < s["100"]
+
+
+def test_robust_pnl_is_the_mean_of_the_scenarios():
+    c = _candidate(24500.0)
+    s = c["scenario_pnl"]
+    assert c["robust_pnl_per_lot"] == pytest.approx((s["50"] + s["75"] + s["100"]) / 3)
+
+
+def _fairly_priced_quote(strike, opt_type="CE", forward=24500.0, t=0.02, iv=0.11):
+    """A strike-appropriate premium via Black-76, not `_quote`'s flat 100/101.
+
+    `_quote`'s default bid/ask ignores strike entirely, so every candidate
+    built from it is priced identically regardless of distance from the
+    money. That is fine for the structural tests above (labels, exclusion,
+    lot-size arithmetic) but hides the exact effect this module exists to
+    catch: a far OTM strike's premium collapsing toward zero, which is what
+    makes its percentage return balloon relative to a near strike. Confirmed
+    by hand before writing this fixture - with the flat quote, a 25000 strike
+    actually returns LESS than a 24450 strike (entry cost fixed at ~101
+    regardless of strike), the opposite of the real-market lottery-ticket
+    behaviour this test is meant to demonstrate.
+    """
+    flag = "c" if opt_type.upper() == "CE" else "p"
+    fair = black76.black(flag, forward, strike, t, 0.0, iv)
+    half = max(fair * 0.02, 0.01)
+    return _quote(strike, opt_type=opt_type, bid=max(fair - half, 0.01), ask=fair + half)
+
+
+def test_far_otm_is_penalised_by_partial_move_ranking():
+    # A far OTM strike wins on raw return but should lose on robustness,
+    # because a half-completed move leaves it worthless.
+    near = _candidate(24450.0, quote=_fairly_priced_quote(24450.0))
+    far = _candidate(25000.0, quote=_fairly_priced_quote(25000.0))
+    assert far["return_pct"] > near["return_pct"]
+    assert far["robust_pnl_per_lot"] < near["robust_pnl_per_lot"]
+
+
+def test_max_robust_objective_ranks_on_robust_pnl():
+    cands = [
+        {
+            "strike": 1.0,
+            "return_pct": 200.0,
+            "pnl_per_lot": 100.0,
+            "reward_risk": 3.0,
+            "effective_delta": 0.1,
+            "spread_pct": 1.0,
+            "robust_pnl_per_lot": 10.0,
+            "excluded": False,
+            "exclude_reason": "",
+        },
+        {
+            "strike": 2.0,
+            "return_pct": 40.0,
+            "pnl_per_lot": 500.0,
+            "reward_risk": 1.5,
+            "effective_delta": 0.6,
+            "spread_pct": 1.0,
+            "robust_pnl_per_lot": 400.0,
+            "excluded": False,
+            "exclude_reason": "",
+        },
+    ]
+    ranked = rank_candidates(cands, objective="max_robust")
+    assert ranked[0]["strike"] == 2.0
+    assert ranked[0]["recommended"] is True
 
 
 def test_zero_bid_strike_is_excluded_with_a_reason():
@@ -218,6 +296,7 @@ def test_ranking_is_stable_under_input_permutation():
             "reward_risk": 1.0,
             "effective_delta": 0.5,
             "spread_pct": 1.0,
+            "robust_pnl_per_lot": float(i),
             "excluded": False,
             "exclude_reason": "",
         }
@@ -237,6 +316,7 @@ def test_recommended_carries_a_reason():
             "reward_risk": 1.2,
             "effective_delta": 0.3,
             "spread_pct": 1.0,
+            "robust_pnl_per_lot": 250.0,
             "excluded": False,
             "exclude_reason": "",
         },
