@@ -48,11 +48,21 @@ function formatForwardModeLine(scenario: Scenario): string {
 }
 
 function formatVolBetaLine(scenario: Scenario): string {
-  const { beta, source, reason, r_squared: rSquared, samples } = scenario.vol_beta
+  const {
+    beta,
+    source,
+    reason,
+    r_squared: rSquared,
+    samples,
+    clamped_from: clampedFrom,
+  } = scenario.vol_beta
   const magnitude = `Using ${beta.toFixed(2)} vol pts per 1%`
+  const fit = `R² ${rSquared.toFixed(2)}, n=${samples}`
   switch (source) {
     case 'estimated':
-      return `${magnitude} (measured, R² ${rSquared.toFixed(2)}, n=${samples})`
+      return clampedFrom != null
+        ? `${magnitude} (measured ${clampedFrom.toFixed(2)}, clamped, ${fit})`
+        : `${magnitude} (measured, ${fit})`
     case 'fallback':
       return `${magnitude} (fallback: ${reason})`
     case 'preset':

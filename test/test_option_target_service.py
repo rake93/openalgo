@@ -586,3 +586,92 @@ def test_equity_snapshot_still_reports_a_spot_basis():
     assert snapshot["basis"] == pytest.approx(snapshot["forward"] - snapshot["spot"])
     assert isinstance(snapshot["basis_plausible"], bool)
     assert snapshot.get("parity_vs_underlying") is None
+
+
+# --- vol-beta wiring --------------------------------------------------------
+
+
+def _run_with_beta_samples(samples, **overrides):
+    kwargs = {
+        "underlying": "NIFTY",
+        "exchange": "NFO",
+        "expiry_date": "11AUG26",
+        "reference": "SPOT",
+        "target_price": 24700.0,
+        "api_key": "k",
+    }
+    kwargs.update(overrides)
+    with (
+        patch("services.option_target_service.get_option_chain", _fake_chain()),
+        patch("services.option_target_service._matched_future_symbol", return_value=None),
+        patch(
+            "services.option_target_service._vol_beta_samples", return_value=samples
+        ) as mock_samples,
+    ):
+        ok, resp, code = get_option_target(**kwargs)
+    return resp, mock_samples
+
+
+def _samples_for(beta):
+    return [(0.05 * i, 12.0 - beta * 0.05 * i) for i in range(40)]
+
+
+def test_auto_beta_samples_the_atm_straddle():
+    _, mock_samples = _run_with_beta_samples(_samples_for(1.5))
+    call_symbol, put_symbol, exchange = mock_samples.call_args.args
+    assert call_symbol.endswith("CE")
+    assert put_symbol.endswith("PE")
+    assert call_symbol[:-2] == put_symbol[:-2]
+    assert exchange == "NFO"
+
+
+def test_auto_beta_samples_at_the_atm_strike():
+    resp, mock_samples = _run_with_beta_samples(_samples_for(1.5))
+    assert mock_samples.call_args.kwargs["strike"] == resp["snapshot"]["atm_strike"]
+
+
+def test_auto_beta_reports_the_estimate():
+    resp, _ = _run_with_beta_samples(_samples_for(1.5))
+    beta = resp["scenario"]["vol_beta"]
+    assert beta["source"] == "estimated"
+    assert beta["beta"] == pytest.approx(1.5, abs=1e-6)
+    assert beta["clamped_from"] is None
+    assert not any("vol-beta" in w.lower() for w in resp["warnings"])
+
+
+def test_auto_beta_warns_and_clamps_an_implausible_estimate():
+    resp, _ = _run_with_beta_samples(_samples_for(3.0))
+    beta = resp["scenario"]["vol_beta"]
+    assert beta["beta"] == pytest.approx(2.0)
+    assert beta["clamped_from"] == pytest.approx(3.0, abs=0.01)
+    assert any("clamped" in w.lower() for w in resp["warnings"])
+
+
+def test_auto_beta_falls_back_and_warns_without_samples():
+    resp, _ = _run_with_beta_samples([])
+    beta = resp["scenario"]["vol_beta"]
+    assert beta["source"] == "fallback"
+    assert beta["beta"] == 0.8
+    assert any("vol-beta estimate unavailable" in w.lower() for w in resp["warnings"])
+
+
+def test_a_manual_beta_is_never_clamped():
+    # The user typed it; only an estimate can be wrong about itself.
+    resp, mock_samples = _run_with_beta_samples(_samples_for(3.0), vol_beta=5.0)
+    beta = resp["scenario"]["vol_beta"]
+    assert beta["source"] == "manual"
+    assert beta["beta"] == pytest.approx(5.0)
+    assert beta["clamped_from"] is None
+    mock_samples.assert_not_called()
+
+
+def test_a_preset_beta_skips_sampling():
+    resp, mock_samples = _run_with_beta_samples(_samples_for(1.5), vol_beta="panic")
+    assert resp["scenario"]["vol_beta"]["source"] == "preset"
+    assert resp["scenario"]["vol_beta"]["beta"] == pytest.approx(2.0)
+    mock_samples.assert_not_called()
+
+
+def test_auto_beta_passes_the_fitted_smile_for_the_moneyness_correction():
+    _, mock_samples = _run_with_beta_samples(_samples_for(1.5))
+    assert mock_samples.call_args.kwargs["fit"] is not None

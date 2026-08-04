@@ -31,14 +31,21 @@ from zoneinfo import ZoneInfo
 from cachetools import TTLCache
 
 from services.expiry_service import get_expiry_dates
+from services.history_service import get_history
 from services.option_chain_service import get_option_chain
 from services.option_target.daycount import year_fraction
 from services.option_target.forward import compute_forward, project_forward
-from services.option_target.models import StrikeQuote
+from services.option_target.models import SmileFit, StrikeQuote
 from services.option_target.projection import project_strike
 from services.option_target.ranking import build_candidate, rank_candidates
 from services.option_target.smile import calibrate_ivs, fit_smile, smile_iv
-from services.option_target.volbeta import PRESETS, estimate_vol_beta
+from services.option_target.volbeta import (
+    DEFAULT_WINDOW_MINUTES,
+    MAX_ESTIMATED_BETA,
+    PRESETS,
+    build_beta_samples,
+    estimate_vol_beta,
+)
 from services.option_target_sessions import build_session_provider
 from services.pricing_underlying import requires_futures_underlying
 from utils.logging import get_logger
@@ -49,6 +56,11 @@ IST = ZoneInfo("Asia/Kolkata")
 
 # Bounded on purpose - see module docstring.
 _SNAPSHOT_CACHE: TTLCache = TTLCache(maxsize=64, ttl=3)
+
+# The vol-beta regression spans two hours of 1-minute bars, so a longer TTL
+# than the chain's costs almost nothing in accuracy and saves two broker
+# history calls per scenario tweak. Bounded for the same reason as above.
+_BETA_BARS_CACHE: TTLCache = TTLCache(maxsize=32, ttl=60)
 
 LADDER_STEPS = 15
 DEFAULT_STRIKE_COUNT = 12
@@ -286,15 +298,98 @@ def _default_expiry(underlying: str, exchange: str, api_key: str) -> str | None:
     return None
 
 
-def _vol_beta_samples(underlying: str, exchange: str, api_key: str) -> list[tuple[float, float]]:
+def _one_minute_closes(symbol: str, exchange: str, day: str, api_key: str) -> dict[float, float]:
+    """Timestamp -> close for each TRADED minute of `day`.
+
+    Zero-volume bars are dropped. They are either post-close padding (the
+    broker repeats the last close out to the current time) or an untraded
+    minute; either way the close is stale, and a stale option price pinned
+    against a live one fabricates a forward that never existed.
+    """
+    ok, resp, _ = get_history(symbol, exchange, "1m", day, day, api_key=api_key)
+    if not ok:
+        logger.info("Vol-beta history unavailable for %s: %s", symbol, resp.get("message"))
+        return {}
+
+    closes: dict[float, float] = {}
+    for row in resp.get("data") or []:
+        try:
+            if float(row.get("volume") or 0) <= 0:
+                continue
+            closes[float(row["timestamp"])] = float(row["close"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return closes
+
+
+def _atm_straddle_bars(
+    call_symbol: str, put_symbol: str, exchange: str, api_key: str
+) -> list[tuple[datetime, float, float]]:
+    """Today's 1-minute (timestamp, call close, put close) bars for one strike.
+
+    Only minutes where BOTH legs traded survive: put-call parity needs the two
+    prices to be contemporaneous, and pairing a fresh quote with a stale one
+    moves the implied forward by the whole staleness.
+
+    Cached because the page refetches on every scenario tweak while the
+    regression itself spans two hours - a minute of extra staleness moves the
+    estimate far less than two broker calls per keystroke costs.
+    """
+    day = datetime.now(IST).strftime("%Y-%m-%d")
+    cache_key = (call_symbol, put_symbol, exchange, day)
+    cached = _BETA_BARS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    calls = _one_minute_closes(call_symbol, exchange, day, api_key)
+    # Skip the second call when the first found nothing; a failure is cached
+    # too, so a delisted or illiquid strike does not cost a broker round trip
+    # on every request.
+    puts = _one_minute_closes(put_symbol, exchange, day, api_key) if calls else {}
+
+    bars = [
+        (datetime.fromtimestamp(ts, IST), calls[ts], puts[ts])
+        for ts in sorted(calls.keys() & puts.keys())
+    ]
+    _BETA_BARS_CACHE[cache_key] = bars
+    return bars
+
+
+def _vol_beta_samples(
+    call_symbol: str,
+    put_symbol: str,
+    exchange: str,
+    *,
+    strike: float,
+    expiry: datetime,
+    rate: float,
+    fit: SmileFit | None,
+    api_key: str,
+    window_minutes: float = DEFAULT_WINDOW_MINUTES,
+) -> list[tuple[float, float]]:
     """(percent_return, atm_iv_vol_points) samples for beta estimation.
 
-    History plumbing is deliberately deferred - this always returns [].
-    `estimate_vol_beta` then falls back to the Normal preset and reports, via
-    its `source`/`reason` fields, that it did. A history-fetch failure must
-    never block a projection, so this stays a stub rather than a fallible call.
+    Sampled from the ATM straddle's own 1-minute history, so the forward comes
+    from put-call parity exactly as the live snapshot's does, and commodities -
+    which have no spot instrument - work unchanged.
+
+    A history failure must never block a projection: this returns [] on any
+    error, `estimate_vol_beta` then falls back to the Normal preset, and the
+    `source`/`reason` fields say so in the response.
     """
-    return []
+    try:
+        bars = _atm_straddle_bars(call_symbol, put_symbol, exchange, api_key)
+        return build_beta_samples(
+            bars,
+            strike=strike,
+            expiry=expiry,
+            rate=rate,
+            fit=fit,
+            window_minutes=window_minutes,
+        )
+    except Exception as exc:  # noqa: BLE001 - must never block a projection
+        logger.warning("Vol-beta sampling failed for %s: %s", call_symbol, exc)
+        return []
 
 
 def get_option_target(
@@ -531,7 +626,22 @@ def get_option_target(
             )
 
         if vol_beta == "auto":
-            beta_info = estimate_vol_beta(_vol_beta_samples(underlying, exchange, api_key))
+            atm_call = quotes.get((atm_strike, "CE"))
+            atm_put = quotes.get((atm_strike, "PE"))
+            beta_info = estimate_vol_beta(
+                _vol_beta_samples(
+                    atm_call.symbol,
+                    atm_put.symbol,
+                    exchange,
+                    strike=atm_strike,
+                    expiry=expiry,
+                    rate=rate,
+                    fit=fit,
+                    api_key=api_key,
+                )
+                if atm_call and atm_put
+                else []
+            )
         elif isinstance(vol_beta, str):
             beta_info = {
                 "beta": PRESETS.get(vol_beta, PRESETS["normal"]),
@@ -539,17 +649,28 @@ def get_option_target(
                 "samples": 0,
                 "source": "preset",
                 "reason": "",
+                "clamped_from": None,
             }
         else:
+            # A value the user typed is theirs to own - only an ESTIMATE is
+            # clamped, because only an estimate can be wrong about itself.
             beta_info = {
                 "beta": float(vol_beta),
                 "r_squared": 0.0,
                 "samples": 0,
                 "source": "manual",
                 "reason": "",
+                "clamped_from": None,
             }
         if beta_info["source"] == "fallback":
             warnings.append(f"Vol-beta estimate unavailable: {beta_info['reason']}")
+        elif beta_info["clamped_from"] is not None:
+            warnings.append(
+                f"Measured vol response was {beta_info['clamped_from']:+.2f} vol points per "
+                f"1 percent move, beyond the {MAX_ESTIMATED_BETA:.1f} the Panic preset allows. "
+                f"Clamped to {beta_info['beta']:+.2f} - a fit that extreme is more likely a "
+                f"narrow sample range than a real regime. Override it if you disagree."
+            )
 
         move_pct = fwd_target.move_pct
         forward_adverse = anchor.forward - (fwd_target.forward - anchor.forward)

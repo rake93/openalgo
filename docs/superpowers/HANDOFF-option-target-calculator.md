@@ -1,8 +1,8 @@
 # Option Target Calculator — Session Handoff
 
-**Written:** 2026-08-04 end of session
+**Written:** 2026-08-04 end of session, updated same day after session 2
 **Branch:** `feat/option-target-calculator` (base `d176bf068`)
-**State:** Feature complete and running live. 158 passed, 1 skipped. Working tree clean.
+**State:** Feature complete and running live. 196 passed, 1 skipped. Working tree clean.
 
 ---
 
@@ -16,9 +16,9 @@ git status --porcelain | grep -v frontend/dist   # expect empty
 uv run python -m pytest \
   test/test_option_target_math.py test/test_option_target_ranking.py \
   test/test_option_target_sessions.py test/test_option_target_service.py \
-  test/test_option_target_replay.py test/test_pricing_underlying.py \
-  test/test_option_chain_underlying.py -q
-# expect: 158 passed, 1 skipped
+  test/test_option_target_replay.py test/test_option_target_volbeta.py \
+  test/test_pricing_underlying.py test/test_option_chain_underlying.py -q
+# expect: 196 passed, 1 skipped
 ```
 
 **`uv run pytest` is broken on this machine** (`uv trampoline failed to
@@ -68,24 +68,32 @@ provider), `services/pricing_underlying.py` (shared, see below).
 
 ## 3. Open work, ranked
 
-### 3.1 Wire `_vol_beta_samples` (highest value)
+### 3.1 Wire `_vol_beta_samples` — DONE (2026-08-04, session 2)
 
-`services/option_target_service.py::_vol_beta_samples` returns `[]`. So
-`vol_beta: "auto"` always falls back to the Normal preset (0.8) and reports
-`"Vol-beta estimate unavailable: Only 0 samples, need 20"` in `warnings`.
+`vol_beta: "auto"` now estimates from the ATM straddle's own 1-minute history.
+Both legs of the ATM strike are fetched so put-call parity gives the forward
+per bar; the OTM leg is solved for IV with `t` recomputed each minute, and the
+fixed-strike IV is corrected back to at-the-money using the fitted smile.
 
-`services/option_target/volbeta.py::estimate_vol_beta` is complete and tested —
-only the history plumbing is missing. It needs
-`(percent_return, atm_iv_in_vol_points)` samples over a trailing window.
+Live on 2026-08-04: NIFTY n=121, R-squared 0.900; BANKNIFTY n=119, R-squared
+0.912. Both measured above the Panic preset (raw 2.89 and 2.10) and were
+clamped to 2.0 with a warning naming the raw value. That is still far closer to
+the replay's optimum than the old 0.8 fallback (1.17% MAE at 1.5 vs 3.60% at
+0.8).
 
-**Why it matters:** vol-level response is the single largest error term in the
-model. Measured realised beta on the backtested day was **~1.4**, not 0.8. The
-replay showed 3.60% MAE at beta 0.8 versus **1.17% at beta 1.5**.
+Decisions taken, both previously open in spec Section 11:
 
-Sketch: fetch 1-minute history for the underlying and the ATM strike over the
-trailing window, back out ATM IV per bar, pair with the percent return. Decide
-the window (the spec assumes 90 minutes) and how to behave before ~10:00 when
-the session is too young for 20 samples.
+- **Window: 120 minutes**, measured from the last bar, a maximum lookback and
+  not a minimum wait. It is the shortest window where the first-differenced
+  regression also clears the R-squared gate (1.99), so a shorter window's
+  hotter levels estimate cannot be separated from a shared time-of-day trend.
+- **No prior-session samples.** The existing gates already degrade correctly:
+  no estimate before 09:35, weak fit to ~09:45, clean from 10:00.
+
+Open caveat, documented in `docs/option-target-calculator.md`: beta is fitted
+over the moves the session actually made (a few tenths of a percent) and then
+applied to a target move that may be 1 percent or more. `r_squared` and
+`samples` are reported so the extrapolation is visible, but it is real.
 
 ### 3.2 Cross-expiry compare
 
@@ -151,6 +159,10 @@ frontend/dist` immediately before committing.
 | **No 52-minute time floor** | `option_greeks_service` floors t at 0.0001 yr as a py_vollib legacy. The Rust core is stable to 30 s; that floor overstates an ATM call by **23%** in the last hour of expiry day |
 | **Never emit non-finite floats** | `float("-inf")` serialises as `-Infinity`, which `JSON.parse` rejects, silently destroying a correct response. Guarded by `json.dumps(..., allow_nan=False)` |
 | Smile **falls back to sticky-strike above RMS 3.0** vol pts | Measured RMS: 0.024 (7d), 0.446 (73 min), 3.89 (18 min), 14.36 (7 min). Sliding a curve with c~1120 produced 200%+ IVs |
+| Beta window is **120 min**, not the spec's 90 | Shortest window where first differences also clear the R-squared gate (1.99). At 30/60/90 min differencing gives 0.22/0.22/0.29 and falls back, so a shorter window's hotter levels estimate cannot be told apart from a shared time-of-day trend |
+| Beta samples come from the **ATM straddle**, not the index plus one leg | Parity gives the per-bar forward from the same two prices, so it costs 2 history calls not 3, needs no futures series, and works on commodities, which have no spot |
+| **No prior-session samples** for a young session | The existing gates already degrade correctly: no estimate before 09:35, weak fit to ~09:45, clean from 10:00 (beta 1.60, R-squared 0.60). A 45-minute window is not worth new plumbing |
+| Estimated beta is **clamped at 2.0** | 2026-08-04 NIFTY regressed to 2.89 off a sample range only 0.18% wide; on a 1% target that adds 3 vol pts to a 10.8% ATM IV. The clamp also lands near the trend-free differenced estimate (1.99) |
 
 The replay harness is the regression gate. **Any change to the projection math
 must not worsen its MAE.** Recapture the fixture with
@@ -196,3 +208,13 @@ Vol Surface, Gamma Density and OI Tracker all work for commodities now.
    imported `database.symbol` first. Verify both orderings.
 4. **Run it on live data before believing it.** The ranking looked correct on
    fixtures and recommended lottery-ticket far-OTM strikes on a real chain.
+5. **`ruff check <dir> --fix` edits every file in the directory.** Running it
+   on `services/` auto-fixed 21 lint errors across 11 modules that had nothing
+   to do with the change, all silently staged into the working tree. Lint the
+   files you touched by name, and re-check `git status` afterwards. This is the
+   same hazard as Section 4's staging trap, from a different direction.
+6. **A module-level cache breaks test isolation before it breaks production.**
+   `_BETA_BARS_CACHE` is keyed on symbols, which every test in a file shares,
+   so one test's bars answered the next test's fetch and three assertions went
+   green against stale data. Both cache-holding test files now clear it in an
+   autouse fixture — copy that pattern for any cache added here.

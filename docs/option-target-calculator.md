@@ -205,7 +205,9 @@ exist, which is exactly the confusion this tool exists to remove.
   `reference_target`, `hold_minutes`, `day_count`, `iv_model`, `vol_shift`,
   `side`, `objective`, `lots`) plus derived values: `forward_target`,
   `forward_mode`, `move_pct`, `t_target_years`, and `vol_beta` as an object
-  (`beta`, `r_squared`, `samples`, `source`, `reason`).
+  (`beta`, `r_squared`, `samples`, `source`, `reason`, `clamped_from` — the raw
+  measured beta when it exceeded the Panic preset and was clamped back, else
+  `null`; see "How `vol_beta: \"auto\"` is measured" below).
 - **`candidates[]`** — one row per strike on the chosen side: `strike`,
   `option_type`, `symbol`, `label` (moneyness, e.g. `ATM`, `OTM2`), quote
   fields (`bid`, `ask`, `mid_now`, `spread_pct`, `entry_cost`), `iv_now_pct`,
@@ -221,22 +223,55 @@ exist, which is exactly the confusion this tool exists to remove.
   side of the current reference, for plotting a premium-vs-price chart.
 - **`warnings[]`** — plain-text strings for every assumption the engine made:
   expiry defaulted, forward fell back to spot, basis is modelled rather than
-  exact, smile is degenerate or fits poorly, vol-beta fell back to a preset,
-  hold runs past expiry, close to zero DTE, or the hold consumes most of the
-  remaining time to expiry.
+  exact, smile is degenerate or fits poorly, vol-beta fell back to a preset or
+  was clamped back from an implausible estimate, hold runs past expiry, close
+  to zero DTE, or the hold consumes most of the remaining time to expiry.
+
+## How `vol_beta: "auto"` is measured
+
+Beta is estimated from the session's own data rather than assumed, because it
+is the largest error term in the model and the realised value is not the 0.8
+that "normal" intuition suggests.
+
+**The sample.** The ATM straddle's own 1-minute history. Both legs of the same
+strike are fetched, so put-call parity gives the forward each bar's options
+were actually priced off — the same anchor the live snapshot uses. That costs
+two history calls instead of three, needs no futures series, and works on
+commodities, which have no spot instrument at all. Only minutes where **both**
+legs traded are kept: pairing a fresh quote against a stale one moves the
+implied forward by the whole staleness, and a zero-volume bar is either an
+untraded minute or the broker's post-close padding.
+
+**Per bar:** solve the out-of-the-money leg for implied vol, recomputing time to
+expiry each minute — hold `t` fixed and the session's own theta decay is read
+as a change in the vol level. The fixed strike's IV is then corrected back to
+at-the-money using the fitted smile, because a strike slides along the smile as
+the forward moves even at a constant vol level, and that drift is not beta.
+
+**The window is 120 minutes, measured back from the last bar** — a *maximum*
+lookback, not a minimum waiting period. A session younger than two hours uses
+everything it has since the open; the existing gates (20 samples, R-squared
+0.30) decide whether that is enough, and a young session simply falls back and
+says why. Measured on 2026-08-04 NIFTY: no estimate before 09:35, a weak fit
+until ~09:45, and clean estimates from 10:00 (beta 1.60, R-squared 0.60).
+Prior sessions are never appended — an overnight gap is not a 1-minute return.
+
+**An estimate beyond the Panic preset (2.0) is clamped**, and the raw value is
+reported in `scenario.vol_beta.clamped_from` plus a warning. Short windows on a
+quiet day measure a beta the sample range cannot support: the 2026-08-04 NIFTY
+session moved at most 0.18 percent over 90 minutes yet regressed to 2.98, which
+applied to a 1 percent target would add 3 vol points to a 10.8 percent ATM IV.
+The clamp also lands near the first-differenced estimate (1.99 at 120 minutes),
+which is the trend-free form and therefore the more conservative one. A preset
+or a manual value is never clamped — only an estimate can be wrong about itself.
+
+**Known caveat.** The regression is fitted over the moves the session actually
+made, typically a few tenths of a percent, and then applied to a target move
+that may be 1 percent or more. Beta is extrapolated beyond its sample range;
+`r_squared` and `samples` are reported so that extrapolation is visible.
 
 ## Known limitations
 
-- **`vol_beta: "auto"` does not actually estimate from session history yet.**
-  `services.option_target_service._vol_beta_samples` is a stub that always
-  returns an empty list, so `estimate_vol_beta` always falls back to the
-  Normal preset (0.8) and reports the fallback in `warnings` and in
-  `scenario.vol_beta.source`. Since vol-beta is the single largest error term
-  in the model (see the backtest table above) and the realised beta measured
-  on the backtested BANKNIFTY day was close to 1.4 — well above the 0.8
-  fallback — wiring actual session history (ATM IV and index level sampled at
-  1-minute intervals over a trailing window, regressed to a slope) into
-  `_vol_beta_samples` is the highest-value follow-up to this feature.
 - **Cross-expiry comparison and order placement are not implemented.** Both
   were discussed during design; neither exists in the current API or UI.
 - **The `trading` day-count session provider falls back to a static table

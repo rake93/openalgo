@@ -83,6 +83,12 @@ export interface VolBetaInfo {
   samples: number
   source: VolBetaSource
   reason: string
+  /**
+   * Raw measured beta when it exceeded the Panic preset and was clamped back,
+   * otherwise null. Only an estimate is ever clamped; a preset or a manual
+   * value is used as given.
+   */
+  clamped_from: number | null
 }
 
 export interface Scenario {
