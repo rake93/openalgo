@@ -12,6 +12,80 @@
 
 ---
 
+## Amendments during execution
+
+Code review found four defects in this plan's own dictated code. The committed
+implementation is correct; the Task 2, 4 and 5 code blocks below are superseded
+in the ways listed here. Read this section before treating those blocks as
+authoritative.
+
+**1. `compute_exposures` had to be split (Task 2, Task 4).** As originally
+written, `scan_zero_gamma` called `compute_exposures(forward=level)` at each of
+60 scan levels — and `compute_exposures` derives implied volatility from the
+premiums against whatever forward it is given. So each step re-inverted today's
+observed premium against a forward the market never traded at, producing a
+meaningless sigma that degenerates far from spot (the premium becomes
+unattainable, `safe_iv` returns `None`, and it falls back to an ATM volatility
+computed at the fake forward). Task 4's own docstring asserted the opposite.
+
+The fix splits the seam:
+
+```
+resolve_ivs(...)       invert once, at the REAL forward -> ResolvedIVs
+price_exposures(...)   gamma only, from pre-resolved IVs, at ANY forward
+compute_exposures(...) the two composed - unchanged signature and behaviour
+```
+
+`scan_zero_gamma` resolves once and re-prices 60 times. This also removed about
+5,500 redundant solver calls per request. Commit `1f5732b53`.
+
+The original tests could not catch it: their gamma double ignored its `sigma`
+argument. A recording double now pins it — measured 31 distinct sigmas before
+the fix, 1 after.
+
+**2. The scan returned the wrong crossing (Task 4).** It walked upward from 80%
+of the forward and returned the FIRST sign change, i.e. the lowest-priced
+crossing. A profile can flip several times; the regime boundary a trader means
+is the crossing adjacent to spot — which is why the empty case reads "no LOCAL
+cross". Now returns the crossing nearest the forward.
+
+**3. The priced-share threshold needed `<=`, not `<` (Task 5).** `3/5 == 0.6`
+is exactly True in IEEE754, so the strict form graded the 3-of-5 boundary case
+"good" and its own test failed. Fixed inline below, with the rationale kept as
+a code comment so nobody "tidies" it back.
+
+**4. Smaller corrections carried in the same commits.** Non-finite guards
+(a NaN first in a list wins BOTH walls, because every later comparison against
+it is False); `weight_by` now raises on an unknown value instead of silently
+reading as open interest; `Quality.may_draw` so the draw-or-not rule is not
+tribal knowledge in a docstring; and the quality notes rewritten as copy a
+trader reads in a panel rather than Black-76 solver vocabulary.
+
+**5. Task 11's draft primitive used an API that does not exist.** It called
+`priceScale.priceToCoordinate(...)`; the real method on `openalgo-charts`'
+`PriceScale` is **`priceToY(price): number`**, returning a plain number.
+
+The draft was also wrong about scaling. `PrimitiveRenderContext.plotWidth` and
+`plotHeight` are **unscaled CSS pixels** — the canvas backing store is not
+pre-scaled by device pixel ratio (see `pane.ts:paintBase`), so every draw call
+must multiply by `rc.dpr` itself. That is the pattern `price-line.ts`,
+`dom-ladder.ts` and `volume-profile-primitive.ts` all follow.
+
+As drafted, Task 11 would not have compiled, and had it compiled it would have
+rendered at the wrong scale on any HiDPI display. The shipped implementation was
+written against the library source instead. **Read
+`openalgo-charts/src/scale/price-scale.ts` and an existing primitive before
+writing a new one** — do not trust a signature quoted in a plan, including this
+one.
+
+**Testing lesson worth carrying forward.** Every one of these survived
+implementation and was caught in review. The implementers followed the plan
+faithfully — the defects were in the plan. Where a test double ignores an
+argument, it cannot pin that argument's behaviour; prefer doubles that record
+what they were called with.
+
+---
+
 ## Domain primer (read this first)
 
 You are unlikely to know this domain. Four facts you need:
@@ -1161,8 +1235,12 @@ from services.gex_levels.levels import Walls
 
 Verdict = Literal["good", "degraded", "unusable"]
 
-# Below this share of strikes yielding an invertible IV, the profile is being
-# driven by the fallback volatility rather than by the market.
+# At or below this share of strikes yielding an invertible IV, the profile is
+# being driven by the fallback volatility rather than by the market.
+#
+# The comparison below MUST be `<=`, not `<`. The 3-priced-of-5 boundary case
+# is exactly 0.6 in IEEE754 (`3/5 == 0.6` is True in Python), so a strict `<`
+# grades it "good" and the test for it fails.
 _MIN_PRICED_SHARE = 0.6
 
 
@@ -1219,7 +1297,7 @@ def assess_quality(
 
     degraded = False
 
-    if priced / used < _MIN_PRICED_SHARE:
+    if priced / used <= _MIN_PRICED_SHARE:
         degraded = True
         notes.append(
             f"Only {priced} of {used} strikes invert to an implied volatility; "
