@@ -385,3 +385,247 @@ def test_smile_iv_is_never_non_positive():
         a=-1.0, b=0.0, c=0.0, x_lo=-1.0, x_hi=1.0, rms=0.0, n_points=10, degenerate=False
     )
     assert smile_iv(fit, 0.0) > 0
+
+
+from services.option_target.projection import project_strike, target_iv
+
+
+def test_target_iv_smile_slide_uses_moneyness_at_target_forward():
+    fit = SmileFit(
+        a=0.11, b=-0.24, c=10.79, x_lo=-0.05, x_hi=0.05, rms=0.0005, n_points=25, degenerate=False
+    )
+    iv = target_iv(
+        strike=24500.0,
+        forward_target=24000.0,
+        iv_now=0.115,
+        fit=fit,
+        iv_model="smile_slide",
+        vol_beta=0.0,
+        move_pct=0.0,
+        vol_shift=0.0,
+    )
+    assert iv == pytest.approx(smile_iv(fit, math.log(24500.0 / 24000.0)))
+
+
+def test_target_iv_sticky_strike_keeps_the_strikes_own_iv():
+    fit = SmileFit(
+        a=0.11, b=-0.24, c=10.79, x_lo=-0.05, x_hi=0.05, rms=0.0005, n_points=25, degenerate=False
+    )
+    iv = target_iv(
+        strike=24500.0,
+        forward_target=24000.0,
+        iv_now=0.115,
+        fit=fit,
+        iv_model="sticky_strike",
+        vol_beta=0.0,
+        move_pct=0.0,
+        vol_shift=0.0,
+    )
+    assert iv == pytest.approx(0.115)
+
+
+def test_vol_beta_raises_iv_on_a_fall():
+    fit = SmileFit(
+        a=0.11, b=0.0, c=0.0, x_lo=-0.05, x_hi=0.05, rms=0.0, n_points=25, degenerate=False
+    )
+    iv = target_iv(
+        strike=24500.0,
+        forward_target=24500.0,
+        iv_now=0.11,
+        fit=fit,
+        iv_model="sticky_strike",
+        vol_beta=1.5,
+        move_pct=-0.502,
+        vol_shift=0.0,
+    )
+    # 0.11 + 1.5 * 0.502 / 100 = 0.11753
+    assert iv == pytest.approx(0.11753, abs=1e-5)
+
+
+def test_vol_beta_lowers_iv_on_a_rally():
+    fit = SmileFit(
+        a=0.11, b=0.0, c=0.0, x_lo=-0.05, x_hi=0.05, rms=0.0, n_points=25, degenerate=False
+    )
+    iv = target_iv(
+        strike=24500.0,
+        forward_target=24500.0,
+        iv_now=0.11,
+        fit=fit,
+        iv_model="sticky_strike",
+        vol_beta=1.5,
+        move_pct=+1.0,
+        vol_shift=0.0,
+    )
+    assert iv == pytest.approx(0.095, abs=1e-5)
+
+
+def test_manual_vol_shift_is_in_vol_points():
+    fit = SmileFit(
+        a=0.11, b=0.0, c=0.0, x_lo=-0.05, x_hi=0.05, rms=0.0, n_points=25, degenerate=False
+    )
+    iv = target_iv(
+        strike=24500.0,
+        forward_target=24500.0,
+        iv_now=0.11,
+        fit=fit,
+        iv_model="sticky_strike",
+        vol_beta=0.0,
+        move_pct=0.0,
+        vol_shift=2.0,
+    )
+    assert iv == pytest.approx(0.13)
+
+
+def test_target_iv_is_floored_positive():
+    fit = SmileFit(
+        a=0.11, b=0.0, c=0.0, x_lo=-0.05, x_hi=0.05, rms=0.0, n_points=25, degenerate=False
+    )
+    iv = target_iv(
+        strike=24500.0,
+        forward_target=24500.0,
+        iv_now=0.11,
+        fit=fit,
+        iv_model="sticky_strike",
+        vol_beta=0.0,
+        move_pct=0.0,
+        vol_shift=-99.0,
+    )
+    assert iv > 0
+
+
+def test_project_strike_call_premium_rises_with_forward():
+    fit = SmileFit(
+        a=0.11, b=0.0, c=0.0, x_lo=-0.5, x_hi=0.5, rms=0.0, n_points=25, degenerate=False
+    )
+    kwargs = {
+        "strike": 24500.0,
+        "option_type": "CE",
+        "t_target": 0.019,
+        "rate": 0.0,
+        "iv_now": 0.11,
+        "fit": fit,
+        "iv_model": "sticky_strike",
+        "vol_beta": 0.0,
+        "vol_shift": 0.0,
+    }
+    low = project_strike(forward_target=24400.0, move_pct=0.0, **kwargs)
+    high = project_strike(forward_target=24600.0, move_pct=0.0, **kwargs)
+    assert high > low
+
+
+def test_project_strike_put_premium_falls_with_forward():
+    fit = SmileFit(
+        a=0.11, b=0.0, c=0.0, x_lo=-0.5, x_hi=0.5, rms=0.0, n_points=25, degenerate=False
+    )
+    kwargs = {
+        "strike": 24500.0,
+        "option_type": "PE",
+        "t_target": 0.019,
+        "rate": 0.0,
+        "iv_now": 0.11,
+        "fit": fit,
+        "iv_model": "sticky_strike",
+        "vol_beta": 0.0,
+        "vol_shift": 0.0,
+    }
+    low = project_strike(forward_target=24400.0, move_pct=0.0, **kwargs)
+    high = project_strike(forward_target=24600.0, move_pct=0.0, **kwargs)
+    assert high < low
+
+
+def test_project_strike_returns_intrinsic_past_expiry():
+    fit = SmileFit(
+        a=0.11, b=0.0, c=0.0, x_lo=-0.5, x_hi=0.5, rms=0.0, n_points=25, degenerate=False
+    )
+    premium = project_strike(
+        strike=24500.0,
+        option_type="CE",
+        forward_target=24700.0,
+        t_target=0.0,
+        rate=0.0,
+        iv_now=0.11,
+        fit=fit,
+        iv_model="sticky_strike",
+        vol_beta=0.0,
+        move_pct=0.0,
+        vol_shift=0.0,
+    )
+    assert premium == pytest.approx(200.0)
+
+
+def test_project_strike_intrinsic_is_zero_when_out_of_the_money_at_expiry():
+    fit = SmileFit(
+        a=0.11, b=0.0, c=0.0, x_lo=-0.5, x_hi=0.5, rms=0.0, n_points=25, degenerate=False
+    )
+    premium = project_strike(
+        strike=24500.0,
+        option_type="CE",
+        forward_target=24300.0,
+        t_target=0.0,
+        rate=0.0,
+        iv_now=0.11,
+        fit=fit,
+        iv_model="sticky_strike",
+        vol_beta=0.0,
+        move_pct=0.0,
+        vol_shift=0.0,
+    )
+    assert premium == 0.0
+
+
+from services.option_target.projection import attribute_pnl
+
+
+def _attribution_case(forward_target, iv_target, entry_extra=0.0, exit_penalty=0.0):
+    strike, opt_type, rate = 24500.0, "CE", 0.0
+    forward_now, t_now, t_target, iv_now = 24500.0, 0.02, 0.019, 0.11
+    premium_now = black76.black("c", forward_now, strike, t_now, rate, iv_now)
+    premium_target = black76.black("c", forward_target, strike, t_target, rate, iv_target)
+    return attribute_pnl(
+        strike=strike,
+        option_type=opt_type,
+        forward_now=forward_now,
+        forward_target=forward_target,
+        t_now=t_now,
+        t_target=t_target,
+        rate=rate,
+        iv_now=iv_now,
+        iv_target=iv_target,
+        premium_now=premium_now,
+        premium_target=premium_target,
+        entry_cost=premium_now + entry_extra,
+        exit_value=premium_target - exit_penalty,
+    )
+
+
+def test_attribution_terms_sum_to_total():
+    a = _attribution_case(forward_target=24700.0, iv_target=0.11)
+    assert a.delta + a.gamma + a.theta + a.vega + a.spread + a.residual == pytest.approx(
+        a.total, abs=1e-9
+    )
+
+
+def test_attribution_delta_dominates_a_small_move():
+    a = _attribution_case(forward_target=24510.0, iv_target=0.11)
+    assert abs(a.delta) > abs(a.gamma)
+
+
+def test_attribution_theta_is_negative_for_a_long_option():
+    a = _attribution_case(forward_target=24500.0, iv_target=0.11)
+    assert a.theta < 0
+
+
+def test_attribution_vega_is_positive_when_vol_rises():
+    a = _attribution_case(forward_target=24500.0, iv_target=0.13)
+    assert a.vega > 0
+
+
+def test_attribution_spread_is_negative_when_crossing_the_book():
+    a = _attribution_case(forward_target=24700.0, iv_target=0.11, entry_extra=2.0, exit_penalty=2.0)
+    assert a.spread == pytest.approx(-4.0, abs=1e-9)
+
+
+def test_attribution_gamma_grows_with_the_square_of_the_move():
+    small = _attribution_case(forward_target=24600.0, iv_target=0.11)
+    large = _attribution_case(forward_target=24700.0, iv_target=0.11)
+    assert large.gamma == pytest.approx(4 * small.gamma, rel=0.05)
