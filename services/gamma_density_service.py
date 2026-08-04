@@ -24,9 +24,10 @@ Functions:
 """
 
 import math
-from datetime import datetime
 from typing import Any
 
+from services.gex_levels.blackscholes import atm_iv_from, safe_gamma, safe_iv
+from services.gex_levels.expiry import expiry_datetime as _expiry_datetime
 from services.option_chain_service import get_option_chain
 from services.option_greeks_service import (
     DEFAULT_INTEREST_RATES,
@@ -47,81 +48,6 @@ _DAYS_PER_YEAR = 365.0
 # A short horizon sharpens the ATM gamma peak - that is the "intraday gamma
 # wall" the convexity zone is meant to surface.
 _INTRADAY_T_YEARS = 1.0 / _DAYS_PER_YEAR
-
-# Fallback IV (decimal) used only if every strike's IV inversion fails
-# (e.g. a fully stale chain with no usable premiums). Keeps the curves drawable.
-_FALLBACK_IV = 0.15
-
-_MONTH_MAP = {
-    "JAN": 1,
-    "FEB": 2,
-    "MAR": 3,
-    "APR": 4,
-    "MAY": 5,
-    "JUN": 6,
-    "JUL": 7,
-    "AUG": 8,
-    "SEP": 9,
-    "OCT": 10,
-    "NOV": 11,
-    "DEC": 12,
-}
-
-
-def _expiry_datetime(expiry_date: str, exchange: str) -> datetime:
-    """
-    Build an expiry datetime from a DDMMMYY string and exchange.
-
-    Uses the same default expiry times as option_greeks_service.parse_option_symbol:
-    NFO/BFO 15:30, CDS 12:30, MCX 23:30.
-
-    Args:
-        expiry_date: Expiry in DDMMMYY format (e.g. 30JAN26)
-        exchange: Options exchange (NFO, BFO, CDS, MCX, ...)
-
-    Returns:
-        Naive datetime at the exchange close (interpreted as IST downstream)
-    """
-    day = int(expiry_date[:2])
-    month = _MONTH_MAP[expiry_date[2:5].upper()]
-    year = 2000 + int(expiry_date[5:7])
-
-    ex = exchange.upper()
-    if ex == "MCX":
-        hour, minute = 23, 30
-    elif ex == "CDS":
-        hour, minute = 12, 30
-    else:  # NFO, BFO, crypto, equity
-        hour, minute = 15, 30
-
-    return datetime(year, month, day, hour, minute)
-
-
-def _safe_iv(black76, price: float, F: float, K: float, r: float, t: float, flag: str) -> float | None:
-    """Black-76 implied volatility (decimal), or None if it cannot be inverted."""
-    if not price or price <= 0 or F <= 0 or K <= 0 or t <= 0:
-        return None
-    try:
-        # black76.implied_volatility(price, F, K, r, t, flag) -> decimal
-        iv = black76.implied_volatility(price, F, K, r, t, flag)
-        if iv is None or not math.isfinite(iv) or iv <= 0 or iv > 5:
-            return None
-        return iv
-    except Exception:
-        return None
-
-
-def _safe_gamma(black76, flag: str, F: float, K: float, t: float, r: float, sigma: float) -> float:
-    """Black-76 gamma, or 0.0 on any numerical failure."""
-    if not sigma or sigma <= 0 or F <= 0 or K <= 0 or t <= 0:
-        return 0.0
-    try:
-        g = black76.gamma(flag, F, K, t, r, sigma)
-        if g is None or not math.isfinite(g) or g < 0:
-            return 0.0
-        return g
-    except Exception:
-        return 0.0
 
 
 def calculate_gamma_density(
@@ -213,8 +139,6 @@ def calculate_gamma_density(
 
         # 3. Pass one: per-strike IV (CE / PE) + ATM IV
         strikes: list[dict[str, Any]] = []
-        valid_ivs: list[float] = []
-        atm_iv: float | None = None
 
         for item in full_chain:
             K = item.get("strike")
@@ -227,15 +151,11 @@ def calculate_gamma_density(
             ce_ltp = ce.get("ltp", 0) or 0
             pe_ltp = pe.get("ltp", 0) or 0
 
-            ce_iv = _safe_iv(black76, ce_ltp, F, K, r, t_years, "c")
-            pe_iv = _safe_iv(black76, pe_ltp, F, K, r, t_years, "p")
+            ce_iv = safe_iv(black76, ce_ltp, F, K, r, t_years, "c")
+            pe_iv = safe_iv(black76, pe_ltp, F, K, r, t_years, "p")
 
             side_ivs = [v for v in (ce_iv, pe_iv) if v is not None]
             strike_iv = sum(side_ivs) / len(side_ivs) if side_ivs else None
-            if strike_iv is not None:
-                valid_ivs.append(strike_iv)
-            if atm_strike is not None and K == atm_strike and strike_iv is not None:
-                atm_iv = strike_iv
 
             strikes.append(
                 {
@@ -248,16 +168,8 @@ def calculate_gamma_density(
                 }
             )
 
-        # ATM IV fallback: median of valid strike IVs, else a sane default.
-        if atm_iv is None:
-            if valid_ivs:
-                s = sorted(valid_ivs)
-                atm_iv = s[len(s) // 2]
-            else:
-                atm_iv = _FALLBACK_IV
-                logger.warning(
-                    f"No invertible IV for {underlying} {expiry_date}; using fallback IV {_FALLBACK_IV}"
-                )
+        # ATM IV, with median-of-valid then constant fallback.
+        atm_iv = atm_iv_from({s["strike"]: s["strike_iv"] for s in strikes}, atm_strike)
 
         # 4. Pass two: gamma at both horizons -> Γ×OI density
         density_chain: list[dict[str, Any]] = []
@@ -271,10 +183,10 @@ def calculate_gamma_density(
             ce_sigma = s["ce_iv"] or atm_iv
             pe_sigma = s["pe_iv"] or atm_iv
 
-            ce_g_exp = _safe_gamma(black76, "c", F, K, t_years, r, ce_sigma)
-            pe_g_exp = _safe_gamma(black76, "p", F, K, t_years, r, pe_sigma)
-            ce_g_intra = _safe_gamma(black76, "c", F, K, t_intraday, r, ce_sigma)
-            pe_g_intra = _safe_gamma(black76, "p", F, K, t_intraday, r, pe_sigma)
+            ce_g_exp = safe_gamma(black76, "c", F, K, t_years, r, ce_sigma)
+            pe_g_exp = safe_gamma(black76, "p", F, K, t_years, r, pe_sigma)
+            ce_g_intra = safe_gamma(black76, "c", F, K, t_intraday, r, ce_sigma)
+            pe_g_intra = safe_gamma(black76, "p", F, K, t_intraday, r, pe_sigma)
 
             density_expiry = ce_g_exp * s["ce_oi"] + pe_g_exp * s["pe_oi"]
             density_intraday = ce_g_intra * s["ce_oi"] + pe_g_intra * s["pe_oi"]
