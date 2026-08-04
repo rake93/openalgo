@@ -39,15 +39,40 @@ function extractErrorMessage(err: unknown): string {
 }
 
 /**
- * True when the body is not the JSON envelope this endpoint returns.
+ * Explain a body that is not the JSON envelope this endpoint returns, or null
+ * when the body looks fine.
  *
- * The usual cause is the SPA index.html served by the app's 404 fallthrough,
- * which arrives as HTTP 200 and so does not throw. That happens when the API
- * route is missing from the running process, typically because the server has
- * not been restarted since the namespace was added.
+ * Two very different faults present identically here, and guessing between
+ * them sends debugging the wrong way, so they are distinguished by shape:
+ *
+ * - A string starting with `<` is the SPA index.html served by the app's 404
+ *   fallthrough. It arrives as HTTP 200 and never throws, and means the API
+ *   route is missing from the running process.
+ * - Any other string means axios could not parse the body as JSON. Axios
+ *   silently hands back the raw text rather than throwing. The known cause is
+ *   a non-finite number: Python emits Infinity and NaN as bare tokens, which
+ *   JSON.parse rejects, discarding an otherwise correct response.
  */
-function isNotOurPayload(response: unknown): boolean {
-  return typeof response !== 'object' || response === null || !('status' in response)
+function describeBadPayload(response: unknown): string | null {
+  if (typeof response === 'string') {
+    if (response.trimStart().startsWith('<')) {
+      return (
+        'The projection endpoint returned HTML rather than JSON, which means the ' +
+        'API route is not registered in the running server. Restart it to pick up ' +
+        '/api/v1/optiontarget.'
+      )
+    }
+    return (
+      'The projection endpoint returned a body that is not valid JSON, so the ' +
+      'response could not be read. This usually means the server emitted a ' +
+      'non-finite number such as Infinity or NaN. If the server was recently ' +
+      'updated, restart it so the fix is loaded.'
+    )
+  }
+  if (typeof response !== 'object' || response === null || !('status' in response)) {
+    return 'The projection endpoint returned an unexpected response shape.'
+  }
+  return null
 }
 
 /**
@@ -85,12 +110,9 @@ export function useOptionTarget({
       const response = await optionTargetApi.project(apiKey, request)
       if (requestIdRef.current !== requestId) return // superseded by a newer request
 
-      if (isNotOurPayload(response)) {
-        setError(
-          'The projection endpoint returned a non-JSON response. The API route is ' +
-            'probably not registered in the running server - restart it to pick up ' +
-            '/api/v1/optiontarget.'
-        )
+      const badPayload = describeBadPayload(response)
+      if (badPayload) {
+        setError(badPayload)
         return
       }
 
