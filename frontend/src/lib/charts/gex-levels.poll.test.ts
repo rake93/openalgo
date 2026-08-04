@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GEXLevelsResponse } from '@/api/gex'
 import { GexLevelsManager } from './gex-levels'
+import { GexLevelsPrimitive } from './gex-levels-primitive'
 
 function make(
   instrument: { underlying: string; exchange: string } | null = {
@@ -145,5 +146,122 @@ describe('GexLevelsManager refresh loop', () => {
 
     expect(onSnapshot).not.toHaveBeenCalled()
     expect(manager.lastSnapshot?.call_wall).toBe(51000)
+  })
+})
+
+describe('GexLevelsManager primitive lifecycle', () => {
+  function chartDouble() {
+    return { addPrimitive: vi.fn(), removePrimitive: vi.fn() }
+  }
+
+  it('adds the primitive when the study is enabled', () => {
+    const chart = chartDouble()
+    const { manager } = make()
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    expect(chart.addPrimitive).toHaveBeenCalledTimes(1)
+  })
+
+  it('removes the primitive when the study is disabled', () => {
+    const chart = chartDouble()
+    const { manager } = make()
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    manager.setConfig({ enabled: false })
+    expect(chart.removePrimitive).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not add the primitive twice for repeated enables', () => {
+    const chart = chartDouble()
+    const { manager } = make()
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    manager.setConfig({ enabled: true })
+    expect(chart.addPrimitive).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-adds to a rebuilt chart without removing from the destroyed one', () => {
+    const first = chartDouble()
+    const second = chartDouble()
+    const { manager } = make()
+    manager.attachChart(first as never)
+    manager.setConfig({ enabled: true })
+    manager.attachChart(second as never)
+    expect(second.addPrimitive).toHaveBeenCalledTimes(1)
+    // The old chart is already destroyed - calling into it would throw.
+    expect(first.removePrimitive).not.toHaveBeenCalled()
+  })
+
+  it('survives a chart that throws on removePrimitive', () => {
+    const chart = {
+      addPrimitive: vi.fn(),
+      removePrimitive: vi.fn(() => {
+        throw new Error('chart already disposed')
+      }),
+    }
+    const { manager } = make()
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    expect(() => manager.setConfig({ enabled: false })).not.toThrow()
+  })
+
+  it('pushes a snapshot held before attachChart into the freshly created primitive', async () => {
+    const chart = chartDouble()
+    const { manager } = make()
+    const setDataSpy = vi.spyOn(GexLevelsPrimitive.prototype, 'setData')
+
+    // Enable and let the fetch resolve with no chart attached yet - e.g. the
+    // study was on before the chart finished mounting, or survived a rebuild
+    // that raced the poll response.
+    manager.setConfig({ enabled: true })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(manager.lastSnapshot).not.toBeNull()
+
+    manager.attachChart(chart as never)
+
+    // The primitive did not exist when the snapshot arrived, so the only way
+    // it can show it without waiting out a full refresh interval is if
+    // attachChart pushes the held snapshot into the freshly created primitive.
+    expect(setDataSpy).toHaveBeenCalledWith(manager.lastSnapshot)
+    setDataSpy.mockRestore()
+  })
+
+  it('applies the volume profile inset to the column', () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexLevelsPrimitive.prototype, 'setOptions')
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+      fetchLevels: vi.fn().mockResolvedValue({ status: 'success' }),
+      volumeProfileWidthOnSide: (side) => (side === 'right' ? 150 : 0),
+    })
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true, side: 'right' })
+    const primitive = chart.addPrimitive.mock.calls[0][0]
+    // The constructed primitive is a real GexLevelsPrimitive, and syncPrimitive
+    // always re-pushes options after creation - so the setOptions spy is the
+    // honest way to assert the inset actually reached the primitive, rather
+    // than just checking that some object was returned.
+    expect(primitive).toBeInstanceOf(GexLevelsPrimitive)
+    expect(setOptionsSpy).toHaveBeenCalledWith(expect.objectContaining({ columnInset: 150 }))
+    setOptionsSpy.mockRestore()
+  })
+
+  it('updates the inset on the existing primitive when the side flips', () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexLevelsPrimitive.prototype, 'setOptions')
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+      fetchLevels: vi.fn().mockResolvedValue({ status: 'success' }),
+      volumeProfileWidthOnSide: (side) => (side === 'right' ? 150 : 0),
+    })
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true, side: 'right' })
+    setOptionsSpy.mockClear()
+    manager.setConfig({ side: 'left' })
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ columnInset: 0 }))
+    setOptionsSpy.mockRestore()
   })
 })

@@ -12,12 +12,16 @@
  *
  * Mirrors `ProfileManager`: a settings object, `snapshot()` / `restore()` so
  * the study persists with the saved layout, and lifecycle torn down through
- * `dispose()`. The chart primitive that paints these levels, and the workspace
- * wiring that supplies `instrument()` and calls `instrumentChanged()`, are a
- * later task - this file stops at the manager.
+ * `dispose()`. This file also owns the `GexLevelsPrimitive` that paints these
+ * levels - `attachChart` / `syncPrimitive` mirror `ProfileManager.attachChart`
+ * / `rebuild()` exactly, including the "drop, don't remove" handling of a
+ * chart rebuild. The workspace wiring that supplies `instrument()` and calls
+ * `instrumentChanged()` is still a later task.
  */
 
+import type { Chart } from 'openalgo-charts'
 import type { GEXLevelsResponse, GEXWeightBy } from '@/api/gex'
+import { GexLevelsPrimitive, type GexLevelsPrimitiveOptions } from './gex-levels-primitive'
 
 export interface GexLevelsConfig {
   enabled: boolean
@@ -70,6 +74,14 @@ export interface GexLevelsCallbacks {
     signal: AbortSignal
   ): Promise<GEXLevelsResponse>
   onSnapshot?(snapshot: GEXLevelsResponse | null): void
+  /**
+   * Width in px of a volume profile anchored on the same side, if any. The
+   * manager does not know about Volume Profile itself - the workspace
+   * controller supplies this so the GEX bar column can step inward and clear
+   * it, mirroring `ProfileManager.volumeOptions()`'s handling of the Market
+   * Profile collision.
+   */
+  volumeProfileWidthOnSide?(side: 'left' | 'right'): number
 }
 
 export class GexLevelsManager {
@@ -80,6 +92,9 @@ export class GexLevelsManager {
   private timer: ReturnType<typeof setInterval> | null = null
   private controller: AbortController | null = null
   private disposed = false
+
+  private chart: Chart | null = null
+  private primitive: GexLevelsPrimitive | null = null
 
   /**
    * Bumped every time the charted instrument changes. Each outgoing request
@@ -124,6 +139,10 @@ export class GexLevelsManager {
     const prev = this.settings
     this.settings = { ...prev, ...patch }
     this.cb.onChange()
+    // Independent of the timer/enabled branching below: an options-only
+    // change (column width, side, which lines are shown) must reach the
+    // primitive immediately even while nothing about the refresh loop changes.
+    this.syncPrimitive()
 
     const enabledChanged = patch.enabled !== undefined && patch.enabled !== prev.enabled
     const intervalChanged =
@@ -165,6 +184,7 @@ export class GexLevelsManager {
     this.snapshotValue = null
     this.staleValue = false
     this.cb.onSnapshot?.(null)
+    this.primitive?.setData(null)
     if (this.settings.enabled) {
       this.restartTimer()
       this.fetchNow()
@@ -211,11 +231,101 @@ export class GexLevelsManager {
         this.snapshotValue = response
         this.staleValue = false
         this.cb.onSnapshot?.(response)
+        this.primitive?.setData(response)
       })
       .catch(() => {
         if (this.disposed || epoch !== this.epoch) return
         this.staleValue = true
       })
+  }
+
+  /* ── chart primitive ───────────────────────────────────────────────────── */
+
+  /**
+   * Bind to the current chart. Called on every chart rebuild.
+   *
+   * A rebuild has already DESTROYED the previous chart by the time this runs,
+   * so the old primitive handle is dropped rather than removed from it -
+   * calling `removePrimitive` on a chart that no longer exists is the same
+   * hazard `ProfileManager.attachChart` and `IndicatorHost.attachChart` guard
+   * against, and dropping the handle is the only side that can never throw.
+   */
+  attachChart(chart: Chart): void {
+    this.chart = chart
+    this.dropPrimitiveHandle()
+    this.syncPrimitive()
+    // A snapshot already held (the study stayed enabled across the rebuild)
+    // must reach the freshly created primitive immediately - otherwise the
+    // levels would blank out on every layout change and only reappear at the
+    // next poll, up to `refreshSeconds` later.
+    const primitive = this.primitive
+    const snapshot = this.snapshotValue
+    if (primitive && snapshot) primitive.setData(snapshot)
+  }
+
+  /**
+   * Drop the primitive handle for a chart that is already gone, without
+   * touching it.
+   *
+   * Split out of `attachChart` rather than inlined as `this.primitive = null`
+   * there for a type-level reason, not a style one: TypeScript's control flow
+   * analysis narrows `this.primitive` to the literal `null` type at an
+   * unconditional assignment site and does not re-widen it across the
+   * `syncPrimitive()` call that follows - even though that call reassigns the
+   * field - so reading `this.primitive` afterwards in the same function body
+   * type-checks as `never`. Moving the assignment behind its own function
+   * boundary keeps that narrowing from leaking into `attachChart`.
+   */
+  private dropPrimitiveHandle(): void {
+    this.primitive = null
+  }
+
+  /**
+   * Create, remove, or simply re-configure the primitive to match current
+   * settings. Called from `setConfig` (an options or enabled change) and from
+   * `attachChart` (a chart rebuild). Mirrors `ProfileManager.rebuild()`.
+   */
+  private syncPrimitive(): void {
+    const chart = this.chart
+    if (!chart) return
+
+    if (this.settings.enabled && !this.primitive) {
+      this.primitive = new GexLevelsPrimitive(this.primitiveOptions())
+      chart.addPrimitive(this.primitive, 0)
+    } else if (!this.settings.enabled && this.primitive) {
+      try {
+        chart.removePrimitive(this.primitive)
+      } catch {
+        // The chart may already be gone (a rebuild that tore down this exact
+        // chart instance without going through attachChart first); dropping
+        // the handle below matters more than the removal succeeding.
+      }
+      this.primitive = null
+    }
+
+    // Re-pushed unconditionally, not just at construction: an options change
+    // (column width, side, which lines are shown, or the volume-profile
+    // inset) while the study stays enabled must still take effect.
+    this.primitive?.setOptions(this.primitiveOptions())
+  }
+
+  private primitiveOptions(): Partial<GexLevelsPrimitiveOptions> {
+    const c = this.settings
+    return {
+      showBars: c.showBars,
+      showCallWall: c.showCallWall,
+      showPutWall: c.showPutWall,
+      showZeroGamma: c.showZeroGamma,
+      side: c.side,
+      columnWidth: c.columnWidth,
+      // Volume Profile anchors to the same edge at 150px by default; the bar
+      // column steps inward by that width so the two do not overlap. The
+      // manager does not know about Volume Profile itself, so this is left to
+      // an optional callback the workspace controller supplies - mirroring
+      // `ProfileManager.volumeOptions()`'s handling of the Market Profile
+      // collision.
+      columnInset: this.cb.volumeProfileWidthOnSide?.(c.side) ?? 0,
+    }
   }
 
   /* ── persistence ───────────────────────────────────────────────────────── */
@@ -240,5 +350,10 @@ export class GexLevelsManager {
     this.stopTimer()
     this.controller?.abort()
     this.controller = null
+    // Mirrors ProfileManager.dispose(): just drop the handles, do not call
+    // removePrimitive - dispose runs during workspace teardown, by which point
+    // the chart itself is already on its way out.
+    this.primitive = null
+    this.chart = null
   }
 }
