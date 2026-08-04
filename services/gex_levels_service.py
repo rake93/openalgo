@@ -236,7 +236,14 @@ def get_gex_levels(
                     "agreeing": sentiment.agreeing,
                     "participating": sentiment.participating,
                     "signals": [
-                        {"key": x.key, "label": x.label, "detail": x.detail, "bias": x.bias}
+                        {
+                            "key": x.key,
+                            "label": x.label,
+                            "detail": x.detail,
+                            "bias": x.bias,
+                            "why": x.why,
+                            "weight": x.weight,
+                        }
                         for x in sentiment.signals
                     ],
                 },

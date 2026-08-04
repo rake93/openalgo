@@ -36,9 +36,25 @@ function makeSentiment(overrides: Partial<GEXSentiment> = {}): GEXSentiment {
         label: 'Wall position',
         detail: 'Spot 24750 above the call wall 24700',
         bias: 'bullish',
+        why: 'Spot 24750 is above the call wall 24700',
+        weight: 2,
       },
-      { key: 'pcr', label: 'Put-call ratio', detail: 'PCR 1.34 by open interest', bias: 'bullish' },
-      { key: 'skew', label: 'IV skew', detail: 'puts 14.2% vs calls 12.4%', bias: 'neutral' },
+      {
+        key: 'pcr',
+        label: 'Put-call ratio',
+        detail: 'PCR 1.34 by open interest',
+        bias: 'bullish',
+        why: '1.34 is at or above the 1.20 bullish threshold',
+        weight: 1,
+      },
+      {
+        key: 'skew',
+        label: 'IV skew',
+        detail: 'puts 14.2% vs calls 12.4%',
+        bias: 'neutral',
+        why: '+0.8 vol points, inside the +/-1.5 band',
+        weight: 1,
+      },
     ],
     ...overrides,
   }
@@ -189,6 +205,53 @@ describe('GexDashboard', () => {
     const value = screen.getByText('Neutral 1/3')
     expect(value.className).not.toContain('emerald')
     expect(value.className).not.toContain('red')
+  })
+
+  it('makes the Sentiment value a tooltip trigger with a help cursor', () => {
+    render(
+      <GexDashboard
+        data={makeData({
+          sentiment: makeSentiment({ bias: 'neutral', agreeing: 3, participating: 3 }),
+        })}
+        stale={false}
+      />
+    )
+    const value = screen.getByText('Neutral 3/3')
+    // pointer-events-auto is load-bearing: the card's <aside> is
+    // pointer-events-none so it never steals a click meant for the chart, so
+    // hover would silently never fire on this row without the override.
+    expect(value.className).toContain('cursor-help')
+    expect(value.className).toContain('pointer-events-auto')
+    expect(value.getAttribute('data-slot')).toBe('tooltip-trigger')
+  })
+
+  it('reveals every signal detail and why on hover, plus the trailing count explanation', async () => {
+    // Radix's Tooltip.Content mounts twice once open: a visible popper-positioned
+    // copy, plus a visually-hidden `role="tooltip"` clone it wires to the trigger
+    // via aria-describedby for screen readers. Both carry identical children, so
+    // every string below legitimately has two matches - assert with findAllByText
+    // rather than the singular query, and require at least one hit.
+    const user = userEvent.setup()
+    render(
+      <GexDashboard
+        data={makeData({
+          sentiment: makeSentiment({ bias: 'neutral', agreeing: 3, participating: 3 }),
+        })}
+        stale={false}
+      />
+    )
+    await user.hover(screen.getByText('Neutral 3/3'))
+
+    expect(
+      (await screen.findAllByText('Spot 24750 is above the call wall 24700')).length
+    ).toBeGreaterThan(0)
+    expect(
+      screen.getAllByText('1.34 is at or above the 1.20 bullish threshold').length
+    ).toBeGreaterThan(0)
+    expect(screen.getAllByText('+0.8 vol points, inside the +/-1.5 band').length).toBeGreaterThan(0)
+    expect(
+      screen.getAllByText(/The count is how many signals agree with the verdict/).length
+    ).toBeGreaterThan(0)
   })
 
   it('does not crash and shows no Sentiment row when sentiment is absent (an older cached response)', () => {

@@ -298,3 +298,177 @@ def test_sentiment_is_independent_of_the_sign_of_net_gex():
 
     assert s_positive.bias == s_negative.bias
     assert s_positive.score == s_negative.score
+
+
+# ── why (threshold explanations) ─────────────────────────────────────────────
+
+
+def test_why_is_non_empty_for_every_wall_bias():
+    rows, exposures = _neutral_rows_and_exposures()
+    walls = _walls(call_wall=24700, put_wall=24500)
+
+    bullish = read_sentiment(exposures, walls, rows, spot=24750, forward=24600, weight_by="oi")
+    bearish = read_sentiment(exposures, walls, rows, spot=24450, forward=24600, weight_by="oi")
+    neutral_between = read_sentiment(
+        exposures, walls, rows, spot=24600, forward=24600, weight_by="oi"
+    )
+    neutral_pinned = read_sentiment(
+        exposures,
+        _walls(call_wall=24600, put_wall=24600),
+        rows,
+        spot=24600,
+        forward=24600,
+        weight_by="oi",
+    )
+    unavailable_wall = read_sentiment(
+        exposures,
+        Walls(call_wall=None, put_wall=24500.0, call_wall_at_edge=False, put_wall_at_edge=False),
+        rows,
+        spot=24600,
+        forward=24600,
+        weight_by="oi",
+    )
+    unavailable_spot = read_sentiment(
+        exposures, walls, rows, spot=None, forward=24600, weight_by="oi"
+    )
+
+    for s in (
+        bullish,
+        bearish,
+        neutral_between,
+        neutral_pinned,
+        unavailable_wall,
+        unavailable_spot,
+    ):
+        wall = next(x for x in s.signals if x.key == "walls")
+        assert wall.why.strip() != ""
+
+    assert "above the call wall" in next(x for x in bullish.signals if x.key == "walls").why
+    assert "below the put wall" in next(x for x in bearish.signals if x.key == "walls").why
+    assert "between the walls" in next(x for x in neutral_between.signals if x.key == "walls").why
+    assert "one strike" in next(x for x in neutral_pinned.signals if x.key == "walls").why
+    assert (
+        next(x for x in unavailable_wall.signals if x.key == "walls").why
+        == "Needs both walls and a spot price"
+    )
+    assert (
+        next(x for x in unavailable_spot.signals if x.key == "walls").why
+        == "Needs both walls and a spot price"
+    )
+
+
+def test_why_is_non_empty_for_every_pcr_bias():
+    _, exposures = _neutral_rows_and_exposures()
+    walls = _walls()
+
+    bullish = read_sentiment(
+        exposures,
+        walls,
+        [_row(24600, call_oi=1000, put_oi=1300)],
+        spot=24600,
+        forward=24600,
+        weight_by="oi",
+    )
+    bearish = read_sentiment(
+        exposures,
+        walls,
+        [_row(24600, call_oi=1300, put_oi=1000)],
+        spot=24600,
+        forward=24600,
+        weight_by="oi",
+    )
+    neutral = read_sentiment(
+        exposures,
+        walls,
+        [_row(24600, call_oi=1000, put_oi=1000)],
+        spot=24600,
+        forward=24600,
+        weight_by="oi",
+    )
+    unavailable = read_sentiment(
+        exposures,
+        walls,
+        [_row(24600, call_oi=0, put_oi=1000)],
+        spot=24600,
+        forward=24600,
+        weight_by="oi",
+    )
+
+    for s in (bullish, bearish, neutral, unavailable):
+        pcr = next(x for x in s.signals if x.key == "pcr")
+        assert pcr.why.strip() != ""
+
+    assert "1.20 bullish threshold" in next(x for x in bullish.signals if x.key == "pcr").why
+    assert "0.80 bearish threshold" in next(x for x in bearish.signals if x.key == "pcr").why
+    assert (
+        next(x for x in unavailable.signals if x.key == "pcr").why
+        == "No call open interest to divide by"
+    )
+
+
+def test_why_is_non_empty_for_every_skew_bias():
+    rows, _ = _neutral_rows_and_exposures()
+    walls = _walls()
+
+    bearish_exposures = [
+        _exposure(24400, put_iv=0.16, call_iv=0.16),
+        _exposure(24800, put_iv=0.12, call_iv=0.12),
+    ]
+    bullish_exposures = [
+        _exposure(24400, put_iv=0.12, call_iv=0.12),
+        _exposure(24800, put_iv=0.16, call_iv=0.16),
+    ]
+    neutral_exposures = [
+        _exposure(24400, put_iv=0.150, call_iv=0.150),
+        _exposure(24800, put_iv=0.151, call_iv=0.151),
+    ]
+    unavailable_exposures = [
+        _exposure(24400, put_iv=None, call_iv=None),
+        _exposure(24800, put_iv=0.16, call_iv=0.16),
+    ]
+
+    bearish = read_sentiment(
+        bearish_exposures, walls, rows, spot=24600, forward=24600, weight_by="oi"
+    )
+    bullish = read_sentiment(
+        bullish_exposures, walls, rows, spot=24600, forward=24600, weight_by="oi"
+    )
+    neutral = read_sentiment(
+        neutral_exposures, walls, rows, spot=24600, forward=24600, weight_by="oi"
+    )
+    unavailable = read_sentiment(
+        unavailable_exposures, walls, rows, spot=24600, forward=24600, weight_by="oi"
+    )
+    no_forward = read_sentiment(
+        neutral_exposures, walls, rows, spot=24600, forward=None, weight_by="oi"
+    )
+
+    for s in (bearish, bullish, neutral, unavailable, no_forward):
+        skew = next(x for x in s.signals if x.key == "skew")
+        assert skew.why.strip() != ""
+
+    assert "Puts richer" in next(x for x in bearish.signals if x.key == "skew").why
+    assert "Calls richer" in next(x for x in bullish.signals if x.key == "skew").why
+    assert "+/-1.5 band" in next(x for x in neutral.signals if x.key == "skew").why
+    assert (
+        next(x for x in unavailable.signals if x.key == "skew").why
+        == "One side has no invertible implied volatility"
+    )
+    assert (
+        next(x for x in no_forward.signals if x.key == "skew").why
+        == "One side has no invertible implied volatility"
+    )
+
+
+def test_pcr_near_miss_neutral_why_names_the_gap_to_the_nearer_threshold():
+    """The motivating example: PCR 0.81 against the 0.80 bearish threshold
+    reads neutral, but only by 0.01 - that margin is otherwise invisible on
+    the panel today."""
+    rows = [_row(24600, call_oi=100, put_oi=81)]  # 81 / 100 = 0.81
+    _, exposures = _neutral_rows_and_exposures()
+    s = read_sentiment(exposures, _walls(), rows, spot=24600, forward=24600, weight_by="oi")
+    pcr = next(x for x in s.signals if x.key == "pcr")
+
+    assert pcr.bias == "neutral"
+    assert "0.80" in pcr.why
+    assert "0.01" in pcr.why

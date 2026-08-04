@@ -209,6 +209,19 @@ def test_sentiment_bias_is_one_of_the_three_values_and_participation_is_bounded(
         assert signal["bias"] in ("bullish", "bearish", "neutral", "unavailable")
 
 
+def test_every_sentiment_signal_carries_all_five_fields():
+    """`why` and `weight` are what let the panel explain a verdict on hover -
+    a signal missing either would silently render an empty tooltip line."""
+    chain, forward = _patched()
+    with chain, forward:
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+
+    for signal in payload["sentiment"]["signals"]:
+        assert set(signal) == {"key", "label", "detail", "bias", "why", "weight"}
+        assert isinstance(signal["why"], str) and signal["why"].strip() != ""
+        assert isinstance(signal["weight"], (int, float))
+
+
 def test_the_strike_profile_is_returned_with_one_entry_per_strike():
     chain, forward = _patched()
     with chain, forward:

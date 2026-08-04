@@ -65,6 +65,11 @@ export interface GEXSentimentSignal {
   label: string
   detail: string
   bias: 'bullish' | 'bearish' | 'neutral' | 'unavailable'
+  /** Which threshold decided `bias`, and by how much - e.g. a PCR of 0.81 against
+   * the 0.80 bearish threshold reads neutral, but only by 0.01. */
+  why: string
+  /** Its share of the composite - walls counts double the other two signals. */
+  weight: number
 }
 
 export interface GEXSentiment {

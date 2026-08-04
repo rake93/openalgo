@@ -61,9 +61,13 @@ class SentimentSignal:
         label: Human-readable name shown in the panel.
         detail: One-line human-readable reading, e.g. "PCR 1.34 by open interest".
         bias: This signal's own verdict.
-        weight: Its share of the composite when it participates. Never sent
-            to the frontend - only agreeing/participating are, so the panel
-            cannot be tuned into a false sense of precision.
+        weight: Its share of the composite when it participates. Sent to the
+            frontend so a reader can see, e.g., that walls counts double.
+        why: One line stating which threshold decided `bias`, and by how
+            much - generated right beside the threshold it describes so the
+            two can never drift apart. e.g. a PCR of 0.81 against the 0.80
+            bearish threshold reads neutral, but only by 0.01; `why` is the
+            only place that margin is visible at all.
     """
 
     key: str
@@ -71,6 +75,7 @@ class SentimentSignal:
     detail: str
     bias: Bias
     weight: float
+    why: str
 
 
 @dataclass(frozen=True)
@@ -108,8 +113,10 @@ def _fmt_strike(value: float) -> str:
     return f"{value:.0f}" if value == int(value) else f"{value:.2f}"
 
 
-def _unavailable(key: str, label: str, weight: float, reason: str) -> SentimentSignal:
-    return SentimentSignal(key=key, label=label, detail=reason, bias="unavailable", weight=weight)
+def _unavailable(key: str, label: str, weight: float, reason: str, why: str) -> SentimentSignal:
+    return SentimentSignal(
+        key=key, label=label, detail=reason, bias="unavailable", weight=weight, why=why
+    )
 
 
 def _wall_signal(spot: float | None, walls: Walls) -> SentimentSignal:
@@ -127,15 +134,23 @@ def _wall_signal(spot: float | None, walls: Walls) -> SentimentSignal:
     range instead of a lean.
     """
     key, label, weight = "walls", "Wall position", 2.0
+    unavailable_why = "Needs both walls and a spot price"
     if walls.call_wall is None or walls.put_wall is None:
-        return _unavailable(key, label, weight, "Call wall or put wall unavailable")
+        return _unavailable(
+            key, label, weight, "Call wall or put wall unavailable", unavailable_why
+        )
     if spot is None or not math.isfinite(spot):
-        return _unavailable(key, label, weight, "Spot price unavailable")
+        return _unavailable(key, label, weight, "Spot price unavailable", unavailable_why)
 
     call_wall, put_wall = walls.call_wall, walls.put_wall
     if call_wall == put_wall:
         return SentimentSignal(
-            key, label, f"Both walls concentrated at {_fmt_strike(call_wall)}", "neutral", weight
+            key,
+            label,
+            f"Both walls concentrated at {_fmt_strike(call_wall)}",
+            "neutral",
+            weight,
+            "Both walls are on one strike, so there is no range to position within",
         )
 
     if spot > call_wall:
@@ -145,6 +160,7 @@ def _wall_signal(spot: float | None, walls: Walls) -> SentimentSignal:
             f"Spot {_fmt_strike(spot)} above the call wall {_fmt_strike(call_wall)}",
             "bullish",
             weight,
+            f"Spot {_fmt_strike(spot)} is above the call wall {_fmt_strike(call_wall)}",
         )
     if spot < put_wall:
         return SentimentSignal(
@@ -153,6 +169,7 @@ def _wall_signal(spot: float | None, walls: Walls) -> SentimentSignal:
             f"Spot {_fmt_strike(spot)} below the put wall {_fmt_strike(put_wall)}",
             "bearish",
             weight,
+            f"Spot {_fmt_strike(spot)} is below the put wall {_fmt_strike(put_wall)}",
         )
 
     lo, hi = min(call_wall, put_wall), max(call_wall, put_wall)
@@ -164,6 +181,7 @@ def _wall_signal(spot: float | None, walls: Walls) -> SentimentSignal:
         f"{_fmt_strike(call_wall)} ({pct:.0f}% of the way up)",
         "neutral",
         weight,
+        "Spot sits between the walls, so neither has given way",
     )
 
 
@@ -184,16 +202,35 @@ def _pcr_signal(rows: list[ChainRow], weight_by: WeightBy) -> SentimentSignal:
     put_total = sum(_finite(r.put_volume if use_volume else r.put_oi) for r in rows)
 
     if call_total <= 0:
-        return _unavailable(key, label, weight, "No call open interest or volume to form a ratio")
+        weighting = "volume" if use_volume else "open interest"
+        return _unavailable(
+            key,
+            label,
+            weight,
+            "No call open interest or volume to form a ratio",
+            f"No call {weighting} to divide by",
+        )
 
     pcr = put_total / call_total
     basis = "volume" if use_volume else "open interest"
     detail = f"PCR {pcr:.2f} by {basis}"
     if pcr >= _PCR_BULLISH:
-        return SentimentSignal(key, label, detail, "bullish", weight)
+        why = f"{pcr:.2f} is at or above the {_PCR_BULLISH:.2f} bullish threshold"
+        return SentimentSignal(key, label, detail, "bullish", weight, why)
     if pcr <= _PCR_BEARISH:
-        return SentimentSignal(key, label, detail, "bearish", weight)
-    return SentimentSignal(key, label, detail, "neutral", weight)
+        why = f"{pcr:.2f} is at or below the {_PCR_BEARISH:.2f} bearish threshold"
+        return SentimentSignal(key, label, detail, "bearish", weight, why)
+
+    # Name whichever threshold is nearer - that is the margin the reading was
+    # actually decided by, and it is otherwise invisible on the panel (e.g. a
+    # PCR of 0.81 reads neutral, but only 0.01 clear of the 0.80 threshold).
+    gap_to_bearish = pcr - _PCR_BEARISH
+    gap_to_bullish = _PCR_BULLISH - pcr
+    if gap_to_bearish <= gap_to_bullish:
+        why = f"{pcr:.2f} clears the {_PCR_BEARISH:.2f} bearish threshold by {gap_to_bearish:.2f}"
+    else:
+        why = f"{pcr:.2f} is {gap_to_bullish:.2f} below the {_PCR_BULLISH:.2f} bullish threshold"
+    return SentimentSignal(key, label, detail, "neutral", weight, why)
 
 
 def _skew_signal(exposures: list[StrikeExposure], forward: float | None) -> SentimentSignal:
@@ -206,13 +243,16 @@ def _skew_signal(exposures: list[StrikeExposure], forward: float | None) -> Sent
     this costs no extra solver calls.
     """
     key, label, weight = "skew", "IV skew", 1.0
+    unavailable_why = "One side has no invertible implied volatility"
     if forward is None or not math.isfinite(forward) or forward <= 0:
-        return _unavailable(key, label, weight, "Forward price unavailable")
+        return _unavailable(key, label, weight, "Forward price unavailable", unavailable_why)
 
     put_ivs = [e.put_iv for e in exposures if e.strike < forward and e.put_iv is not None]
     call_ivs = [e.call_iv for e in exposures if e.strike > forward and e.call_iv is not None]
     if not put_ivs or not call_ivs:
-        return _unavailable(key, label, weight, "No invertible implied volatility on one side")
+        return _unavailable(
+            key, label, weight, "No invertible implied volatility on one side", unavailable_why
+        )
 
     put_avg = sum(put_ivs) / len(put_ivs)
     call_avg = sum(call_ivs) / len(call_ivs)
@@ -220,10 +260,13 @@ def _skew_signal(exposures: list[StrikeExposure], forward: float | None) -> Sent
     detail = f"puts {put_avg * 100:.1f}% vs calls {call_avg * 100:.1f}%"
 
     if diff >= _SKEW_BAND:
-        return SentimentSignal(key, label, detail, "bearish", weight)
+        why = f"Puts richer by {diff:.1f} vol points, past the {_SKEW_BAND:.1f} point band"
+        return SentimentSignal(key, label, detail, "bearish", weight, why)
     if diff <= -_SKEW_BAND:
-        return SentimentSignal(key, label, detail, "bullish", weight)
-    return SentimentSignal(key, label, detail, "neutral", weight)
+        why = f"Calls richer by {abs(diff):.1f} vol points, past the {_SKEW_BAND:.1f} point band"
+        return SentimentSignal(key, label, detail, "bullish", weight, why)
+    why = f"{diff:+.1f} vol points, inside the +/-{_SKEW_BAND:.1f} band"
+    return SentimentSignal(key, label, detail, "neutral", weight, why)
 
 
 def read_sentiment(

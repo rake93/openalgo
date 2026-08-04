@@ -8,7 +8,8 @@
  * reading rather than recalculating.
  */
 
-import type { GEXLevelsResponse } from '@/api/gex'
+import type { GEXLevelsResponse, GEXSentimentSignal } from '@/api/gex'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 export interface GexDashboardProps {
@@ -46,6 +47,14 @@ function formatMoney(v: number | null | undefined): string {
 function formatPrice(v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return '—'
   return v.toLocaleString('en-IN', { maximumFractionDigits: 2 })
+}
+
+/** Same colour convention as the main rows: bullish green, bearish red,
+ * neutral/unavailable muted - never a fourth colour for the reader to learn. */
+function signalTone(bias: GEXSentimentSignal['bias']): string {
+  if (bias === 'bullish') return GREEN
+  if (bias === 'bearish') return RED
+  return 'text-muted-foreground'
 }
 
 function Row({
@@ -167,7 +176,46 @@ export function GexDashboard({ data, stale, onHide }: GexDashboardProps) {
         {sentiment && (
           <Row
             label="Sentiment"
-            value={`${sentimentLabel} ${sentiment.agreeing}/${sentiment.participating}`}
+            value={
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* The card is pointer-events-none (see the close button above) so
+                   * this trigger opts back in, the same way, or hover never fires.
+                   * The tone class is repeated here (Row's dd carries it too) because
+                   * this span, not the dd, is now the text-bearing leaf node. */}
+                  <span className={cn('pointer-events-auto cursor-help', sentimentTone)}>
+                    {sentimentLabel} {sentiment.agreeing}/{sentiment.participating}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="left"
+                  className="max-w-[280px] whitespace-normal px-3 py-2 text-left text-[11.5px] leading-snug"
+                >
+                  <p className="font-medium">Sentiment · {sentimentLabel}</p>
+                  <p className="text-background/70">
+                    score {sentiment.score >= 0 ? '+' : ''}
+                    {sentiment.score.toFixed(2)} · {sentiment.agreeing} of {sentiment.participating}{' '}
+                    agree
+                  </p>
+                  {sentiment.signals.map((s) => (
+                    <div key={s.key} className="mt-2">
+                      <p>
+                        <span className="font-medium">{s.label}</span>
+                        {' · '}
+                        <span className={signalTone(s.bias)}>{s.bias}</span>
+                        {` · weight ${s.weight}`}
+                      </p>
+                      <p>{s.detail}</p>
+                      <p className="text-background/70">{s.why}</p>
+                    </div>
+                  ))}
+                  <p className="mt-2 text-background/70">
+                    The count is how many signals agree with the verdict. A Neutral with a low count
+                    means signals cancelled rather than all reading flat.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            }
             tone={sentimentTone}
             emphasis
           />
