@@ -476,6 +476,16 @@ export class ChartWorkspaceController {
   }
 
   /**
+   * Whether the GEX Levels study can run for the charted instrument at all —
+   * the Studies panel disables the toggle when this is false. Kept as a thin
+   * public wrapper over the private {@link gexInstrument} so the symbol-parsing
+   * rule (no option's own chart, a future maps to its root) lives in one place.
+   */
+  get gexAvailable(): boolean {
+    return this.gexInstrument() !== null
+  }
+
+  /**
    * The app theme the canvas chrome tracks. `getTheme` carries the analyzer
    * palette as well as light/dark; `isDark` is the editor's simpler switch.
    */

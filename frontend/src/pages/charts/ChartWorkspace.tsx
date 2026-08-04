@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import type { GEXLevelsResponse } from '@/api/gex'
 import {
   type ChartLayoutRecord,
   type ChartLayoutState,
@@ -33,6 +34,7 @@ import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDi
 import { ChartTopBar } from '@/components/charts/workspace/ChartTopBar'
 import { DrawingProperties } from '@/components/charts/workspace/DrawingProperties'
 import { DrawingRail } from '@/components/charts/workspace/DrawingRail'
+import { GexDashboard } from '@/components/charts/workspace/GexDashboard'
 import { IndicatorPicker } from '@/components/charts/workspace/IndicatorPicker'
 import { Icon } from '@/components/charts/workspace/icons'
 import { LayoutMenu } from '@/components/charts/workspace/LayoutMenu'
@@ -52,6 +54,7 @@ import {
 } from '@/components/ui/dialog'
 import { DEFAULT_TRANSFORM_SETTINGS, type TransformSettings } from '@/lib/charts/chart-types'
 import { type Drawing, POSITION_TOOLS } from '@/lib/charts/drawing'
+import { DEFAULT_GEX_LEVELS_SETTINGS, type GexLevelsConfig } from '@/lib/charts/gex-levels'
 import type { IndicatorInstance } from '@/lib/charts/indicator-host'
 import type { LibraryIndicatorInstance } from '@/lib/charts/library-indicators'
 import type { ProfileHover, ProfileSettings } from '@/lib/charts/profiles'
@@ -151,6 +154,8 @@ export default function ChartWorkspace() {
 
   const [profiles, setProfiles] = useState<ProfileSettings>(DEFAULT_PROFILE_SETTINGS)
   const [profileHover, setProfileHover] = useState<ProfileHover | null>(null)
+  const [gex, setGex] = useState<GexLevelsConfig>(DEFAULT_GEX_LEVELS_SETTINGS)
+  const [gexSnapshot, setGexSnapshot] = useState<GEXLevelsResponse | null>(null)
   const [trading, setTrading] = useState<TradingViewState>(EMPTY_TRADING)
 
   const [dock, setDock] = useState<Dock>('none')
@@ -224,6 +229,7 @@ export default function ChartWorkspace() {
             },
             onTrading: setTrading,
             onProfileHover: setProfileHover,
+            onGexSnapshot: setGexSnapshot,
             onIndicatorSettings: (instanceId, source) => {
               if (source === 'engine') {
                 const inst = controllerRef.current?.indicators
@@ -323,6 +329,7 @@ export default function ChartWorkspace() {
     setVolumeMode(s.volumeMode)
     setGrid(s.grid)
     setProfiles(s.profiles)
+    setGex(s.gexLevels)
     setMarkers(s.markers)
     setBoxSize(c.currentBoxSize())
   }
@@ -700,6 +707,13 @@ export default function ChartWorkspace() {
             />
           )}
 
+          {gex.enabled && gex.showDashboard && (
+            <GexDashboard
+              data={gexSnapshot}
+              stale={controllerRef.current?.gexLevels.stale ?? false}
+            />
+          )}
+
           {!ready && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-muted-foreground">
               {status}
@@ -759,6 +773,13 @@ export default function ChartWorkspace() {
                   onFootprint={(patch) => {
                     controllerRef.current?.profiles.setFootprintConfig(patch)
                     setProfiles((s) => ({ ...s, footprint: { ...s.footprint, ...patch } }))
+                  }}
+                  gex={gex}
+                  gexNotes={gexSnapshot?.quality?.notes}
+                  gexAvailable={controllerRef.current?.gexAvailable}
+                  onGex={(patch) => {
+                    controllerRef.current?.gexLevels.setConfig(patch)
+                    setGex((s) => ({ ...s, ...patch }))
                   }}
                 />
               ) : dock === 'direction' ? (

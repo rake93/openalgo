@@ -13,6 +13,7 @@
  */
 
 import { Switch } from '@/components/ui/switch'
+import type { GexLevelsConfig } from '@/lib/charts/gex-levels'
 import type {
   FootprintConfig,
   MarketProfileConfig,
@@ -34,6 +35,12 @@ export interface StudiesPanelProps {
   onVolume(patch: Partial<VolumeProfileConfig>): void
   onMarket(patch: Partial<MarketProfileConfig>): void
   onFootprint(patch: Partial<FootprintConfig>): void
+  gex: GexLevelsConfig
+  /** Quality notes from the newest snapshot, shown under the settings. */
+  gexNotes?: string[]
+  /** False when the charted instrument has no option chain. */
+  gexAvailable?: boolean
+  onGex(patch: Partial<GexLevelsConfig>): void
 }
 
 export function StudiesPanel(p: StudiesPanelProps) {
@@ -384,6 +391,67 @@ export function StudiesPanel(p: StudiesPanelProps) {
               })}
             </div>
           </div>
+        </Section>
+
+        <Section
+          title="GEX levels"
+          subtitle="Dealer gamma walls and the flip"
+          on={p.gex.enabled}
+          disabled={p.gexAvailable === false}
+          onToggle={(v) => p.onGex({ enabled: v })}
+        >
+          {p.gexAvailable === false && (
+            <p className="rounded-md border border-border bg-muted/40 px-2.5 py-2 text-[11px] leading-snug text-muted-foreground">
+              GEX needs an underlying with a listed option chain. An option's own chart cannot show
+              it — its price axis is premium, not the underlying's price.
+            </p>
+          )}
+          <Field label="Weight by" hint="OI is the standing book; volume is today's flow">
+            <TinySelect
+              value={p.gex.weightBy}
+              onChange={(e) => p.onGex({ weightBy: e.target.value as GexLevelsConfig['weightBy'] })}
+            >
+              <option value="oi">Open interest</option>
+              <option value="volume">Volume</option>
+            </TinySelect>
+          </Field>
+          <Field label="Expiry" hint="Blank uses the nearest">
+            <TinyInput
+              type="text"
+              placeholder="Nearest"
+              value={p.gex.expiry}
+              onChange={(e) => p.onGex({ expiry: e.target.value.trim().toUpperCase() })}
+            />
+          </Field>
+          <Field label="Strike bars">
+            <TinySelect
+              value={p.gex.showBars ? 'show' : 'levels'}
+              onChange={(e) => p.onGex({ showBars: e.target.value === 'show' })}
+            >
+              <option value="show">Show</option>
+              <option value="levels">Levels only</option>
+            </TinySelect>
+          </Field>
+          <Field label="Refresh">
+            <TinySelect
+              value={String(p.gex.refreshSeconds)}
+              onChange={(e) => p.onGex({ refreshSeconds: Number(e.target.value) })}
+            >
+              <option value="15">15s</option>
+              <option value="30">30s</option>
+              <option value="60">60s</option>
+              <option value="120">120s</option>
+            </TinySelect>
+          </Field>
+          {p.gexNotes && p.gexNotes.length > 0 && (
+            <div className="space-y-0.5 pt-1">
+              {p.gexNotes.map((note) => (
+                <p key={note} className="text-[11px] leading-snug text-muted-foreground">
+                  {note}
+                </p>
+              ))}
+            </div>
+          )}
         </Section>
       </div>
 
