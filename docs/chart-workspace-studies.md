@@ -1,6 +1,6 @@
-# Studies: Volume Profile, Market Profile (TPO) and Order Flow
+# Studies: Volume Profile, Market Profile (TPO), Order Flow and GEX Levels
 
-Reference for the three market-structure studies in the `/charts` workspace —
+Reference for the four market-structure studies in the `/charts` workspace —
 what each one is, what data it can and cannot be built from, and the default
 values, which are tuned for **NSE index futures** and scale to everything else.
 
@@ -15,6 +15,7 @@ See [chart-workspace.md](chart-workspace.md) for the workspace as a whole.
 | Volume Profile | OHLCV bars | All loaded history | No — an index has no volume |
 | Market Profile (TPO) | OHLC bars (time at price) | All loaded history | Yes, but volume-weighted extras are empty |
 | Footprint / CVD | Live classified ticks | **Current session only** | No — an index has no order book |
+| GEX Levels | Live option chain, **not the chart's bars** | Live snapshot only | Yes — the chain is on the derivatives exchange |
 
 **Use the futures, not the index.** `NIFTY`/`BANKNIFTY` on `NSE_INDEX` are
 quote-only: no traded volume, no order book, no trading. For volume profile,
@@ -154,6 +155,122 @@ Also available as pure functions for custom overlays or alerts:
 
 ---
 
+## GEX Levels
+
+Where dealer gamma is concentrated, drawn on the price axis. Unlike the other
+three studies this is **not derived from the chart's bars at all** — it is a live
+option-chain snapshot for the charted instrument's *underlying*, refreshed on a
+timer.
+
+| Level | What it is | How it tends to behave |
+|---|---|---|
+| **Call Wall** | Strike with the largest positive dealer gamma | Rallies stall into it |
+| **Put Wall** | Strike with the largest negative dealer gamma | Declines find support at it |
+| **Zero-Gamma** | The price at which aggregate dealer gamma changes sign | Above it dealers stabilise, below it they amplify |
+
+**Regime**, in the dashboard, is the sign of net GEX:
+
+- **Suppressive** (positive) — dealers sell rallies and buy dips, so price pins.
+- **Amplifying** (negative) — dealers trade with the move, so it extends.
+
+Amplifying is **not bearish**. Negative gamma extends moves in *both* directions,
+which is why the dashboard says Suppressive/Amplifying rather than the
+bullish/bearish some products use. Reading it as a short signal during a
+gamma-driven squeeze upward is exactly the mistake that wording invites.
+
+### Zero-Gamma is a scan, and "No local cross" is normal
+
+Zero-Gamma is not the strike where a running total of per-strike GEX crosses
+zero. An option's gamma depends on where the underlying *is*, so the whole
+profile is rebuilt at 60 hypothetical prices spanning ±20% of the forward, and
+the sign change is interpolated. That is why the level lands **between** strikes.
+
+Two consequences worth knowing:
+
+- A profile can cross zero more than once. The level reported is the crossing
+  **nearest the forward** — the boundary of the regime price is currently in,
+  not the lowest-priced flip in the window.
+- When the profile is long gamma, or short gamma, across the entire scanned
+  range there is no crossing at all, and the dashboard reads **No local cross**.
+  That is an ordinary market state, not an error.
+
+Volatility is inverted **once, at the real forward**, and held fixed across the
+scan. Re-inverting at each hypothetical forward would ask what volatility makes
+today's premium consistent with a price the market never traded at — a
+meaningless quantity that degenerates far from spot.
+
+### Weight by open interest or volume
+
+| Weighting | What it measures |
+|---|---|
+| **Open interest** (default) | The full standing dealer book |
+| **Volume** | Today's traded flow only; empty at the open, builds through the session |
+
+Open interest is the default because NSE and BSE disseminate it **live** in the
+tick feed. The US argument for volume-weighted GEX — that official open interest
+is a prior-night snapshot that goes stale intraday — does not apply here.
+
+### What it works on
+
+| Charted instrument | GEX Levels |
+|---|---|
+| `NIFTY` on `NSE_INDEX`, `NIFTY28AUG26FUT` on `NFO` | Yes — deep, cash-settled, writer-dominated chains |
+| A single stock or its future | Yes, but expect a degraded verdict. Monthly expiry only and physically settled, so open interest unwinds fast into expiry |
+| An MCX future | Yes. Options are written on a future, which is what Black-76 already assumes. Crude is the only commodity with real depth |
+| An option itself (`NIFTY28AUG2624000CE`) | **No.** Its price axis is premium, not underlying price — an underlying-price level cannot be drawn on it, and the study is disabled |
+| Cash equity with no F&O, and anything on CDS | No chain to fetch |
+
+A futures **expiry rollover on the same root** does not refetch: the chain is
+keyed on the underlying plus the study's own expiry setting, not on the charted
+contract's expiry. Changing **timeframe** does not refetch either — GEX does not
+depend on it.
+
+Unlike the profiles, GEX levels have no time anchoring, so they also render on
+the movement-driven chart types (Renko, P&F, Kagi).
+
+### Prices come off the forward, never spot
+
+Black-76's `F` is the **per-expiry synthetic future**, not the cash index. Gamma
+peaks at the at-the-money *forward*, so pricing off spot displaces the entire
+profile and therefore both walls. The measured BANKNIFTY basis at 21 days is
+**+138.9 points** — far more than one strike.
+
+### Data status
+
+The chain is fetched **23 strikes each side of ATM**. That is a broker limit,
+not a preference: the multiquote open-interest bucket holds 100 symbols, and
+asking for more returns **empty OI rather than an error**.
+
+The `Data status` row reports how many of those strikes yielded a real implied
+volatility. The study degrades itself and says why when the chain is mostly
+unpriced, when the window sits entirely on one side of the forward, or when a
+wall lands on the window's edge — where it may be an artefact of where the
+window stopped rather than a real concentration.
+
+### Settings
+
+| Setting | Default | Why |
+|---|---|---|
+| Weight by | Open interest | Live in India; volume is the today's-flow read |
+| Expiry | Nearest | Front expiry dominates gamma |
+| Strike bars | Show | Turn off for a clean levels-and-dashboard view |
+| Refresh | 60 s | The cadence the reference products use |
+
+**The study never widens the price scale.** A 47-strike window spans far more
+than the visible range, so contributing to autoscale would drag the scale out
+and squash the candles. The bars clip to what is on screen instead, and a wall
+outside the visible range is drawn as a marker at the plot edge rather than
+silently vanishing.
+
+### Compared with the `/gex` tool
+
+The `/gex` Tools page and this study can show different **magnitudes** for the
+same chain: `/gex` prices off spot and omits the lot-size and notional factors,
+while the study prices off the per-expiry forward and reports currency per 1%
+move. The **strikes** the walls land on should agree.
+
+---
+
 ## Quick start on NSE index futures
 
 1. Load `NIFTY28JUL26FUT` (`NFO`) — press `Ctrl+K`.
@@ -163,6 +280,11 @@ Also available as pure functions for custom overlays or alerts:
 4. **Studies → Volume profile** on for visible-range volume at price.
 5. **Studies → Order flow** on during market hours and let it build; it starts
    empty by design.
+6. **Studies → GEX levels** on. Leave the defaults: open interest, nearest
+   expiry, strike bars shown, 60-second refresh. The walls appear as dashed
+   lines with the dashboard top-right. If it reads "No local cross", the chain
+   simply has no gamma flip within ±20% of the forward — that is a normal state,
+   not a failure.
 
 Everything you change is saved with the layout, per the persistence rules in
 [chart-workspace.md](chart-workspace.md).
