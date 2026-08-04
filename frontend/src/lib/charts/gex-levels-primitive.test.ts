@@ -1,0 +1,149 @@
+/**
+ * Pure geometry/formatting helpers behind the GEX Levels primitive. The
+ * primitive's `draw()` itself cannot be unit-tested - jsdom provides no
+ * canvas - so this only covers the parts extracted to take plain numbers and
+ * callbacks instead of a live chart.
+ */
+
+import { describe, expect, it } from 'vitest'
+import type { GEXStrikeLevel } from '@/api/gex'
+import {
+  computeGexBarGeometry,
+  computeGexLevelPlacement,
+  formatGexPrice,
+} from './gex-levels-primitive'
+
+describe('formatGexPrice', () => {
+  it('drops decimals for a whole-number price', () => {
+    expect(formatGexPrice(24800)).toBe('24800')
+  })
+
+  it('keeps two decimals for a fractional strike', () => {
+    expect(formatGexPrice(292.5)).toBe('292.50')
+  })
+
+  it('treats a float that lands on a whole number as whole', () => {
+    expect(formatGexPrice(1500.0)).toBe('1500')
+  })
+
+  it('rounds to two decimals rather than truncating', () => {
+    expect(formatGexPrice(100.126)).toBe('100.13')
+  })
+})
+
+describe('computeGexLevelPlacement', () => {
+  const plotHeight = 400
+  const inset = 12
+
+  it('reports on-screen when y falls inside the plot, including the edges', () => {
+    expect(computeGexLevelPlacement(0, plotHeight, inset)).toEqual({
+      onScreen: true,
+      y: 0,
+      direction: null,
+    })
+    expect(computeGexLevelPlacement(200, plotHeight, inset)).toEqual({
+      onScreen: true,
+      y: 200,
+      direction: null,
+    })
+    expect(computeGexLevelPlacement(plotHeight, plotHeight, inset)).toEqual({
+      onScreen: true,
+      y: plotHeight,
+      direction: null,
+    })
+  })
+
+  it('pins a level above the plot to the top edge inset, not the raw y', () => {
+    expect(computeGexLevelPlacement(-500, plotHeight, inset)).toEqual({
+      onScreen: false,
+      y: inset,
+      direction: 'above',
+    })
+  })
+
+  it('pins a level below the plot to the bottom edge inset', () => {
+    expect(computeGexLevelPlacement(900, plotHeight, inset)).toEqual({
+      onScreen: false,
+      y: plotHeight - inset,
+      direction: 'below',
+    })
+  })
+
+  it('never lets the inset push the stub past the opposite edge on a tiny pane', () => {
+    // plotHeight smaller than 2*inset: the bottom stub must not go negative.
+    const placement = computeGexLevelPlacement(900, 10, inset)
+    expect(placement.y).toBeGreaterThanOrEqual(inset)
+  })
+})
+
+function strike(strikePrice: number, netGex: number): GEXStrikeLevel {
+  return {
+    strike: strikePrice,
+    call_gex: Math.max(netGex, 0),
+    put_gex: Math.max(-netGex, 0),
+    net_gex: netGex,
+  }
+}
+
+/** A linear price->y map: higher price -> smaller y, like the real (non-inverted) PriceScale. */
+function linearPriceToY(price: number): number {
+  const min = 24_000
+  const max = 25_000
+  const plotHeight = 400
+  const r = (price - min) / (max - min)
+  return plotHeight * (1 - r)
+}
+
+describe('computeGexBarGeometry', () => {
+  it('returns nothing when every strike falls outside the visible range', () => {
+    const strikes = [strike(10_000, 500), strike(10_050, -300)]
+    const { bars, rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    expect(bars).toEqual([])
+    expect(rowHeight).toBe(0)
+  })
+
+  it('clips to the visible strikes only, ignoring off-screen ones for both drawing and peak scaling', () => {
+    const strikes = [
+      strike(10_000, 9999), // off-screen, must not win the peak or appear in bars
+      strike(24_200, 100),
+      strike(24_400, -50),
+    ]
+    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    expect(bars.map((b) => b.strike)).toEqual([24_200, 24_400])
+    // Peak is 100 (the larger of the two visible strikes), so the full-size
+    // bar is exactly columnWidth, not scaled down by the off-screen 9999.
+    expect(bars.find((b) => b.strike === 24_200)?.length).toBe(120)
+  })
+
+  it('does not divide by zero when every visible strike has net_gex 0', () => {
+    const strikes = [strike(24_200, 0), strike(24_400, 0)]
+    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    expect(bars).toHaveLength(2)
+    for (const b of bars) {
+      expect(b.length).toBe(0)
+      expect(Number.isNaN(b.length)).toBe(false)
+    }
+  })
+
+  it('assigns sign correctly: net_gex >= 0 is positive, negative is not', () => {
+    const strikes = [strike(24_200, 0), strike(24_400, -1)]
+    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    expect(bars.find((b) => b.strike === 24_200)?.positive).toBe(true)
+    expect(bars.find((b) => b.strike === 24_400)?.positive).toBe(false)
+  })
+
+  it('falls back to a default row height for a single strike, without NaN', () => {
+    const strikes = [strike(24_200, 50)]
+    const { bars, rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    expect(bars).toHaveLength(1)
+    expect(rowHeight).toBeGreaterThan(0)
+    expect(Number.isNaN(rowHeight)).toBe(false)
+  })
+
+  it('caps row height so bars cannot grow into an overlapping smear when zoomed in', () => {
+    // Strikes 400 price-units apart map to a huge pixel gap on this scale.
+    const strikes = [strike(24_200, 10), strike(24_600, -10)]
+    const { rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    expect(rowHeight).toBeLessThanOrEqual(14)
+  })
+})
