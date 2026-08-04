@@ -161,3 +161,90 @@ def test_strike_quote_spread_pct_is_zero_without_a_book():
         lot_size=65,
     )
     assert q.spread_pct == 0.0
+
+
+from services.option_target.forward import compute_forward, project_forward
+
+
+def _quote(strike, opt_type, bid, ask, ltp=None):
+    return StrikeQuote(
+        strike=strike,
+        option_type=opt_type,
+        symbol=f"BANKNIFTY25AUG26{int(strike)}{opt_type}",
+        ltp=ltp if ltp is not None else (bid + ask) / 2,
+        bid=bid,
+        ask=ask,
+        oi=1000,
+        volume=100,
+        lot_size=35,
+    )
+
+
+def test_compute_forward_uses_put_call_parity():
+    quotes = {
+        (57800.0, "CE"): _quote(57800.0, "CE", 700.0, 720.0),
+        (57800.0, "PE"): _quote(57800.0, "PE", 570.0, 590.0),
+    }
+    anchor = compute_forward(quotes, atm_strike=57800.0, spot=57794.90)
+    # 57800 + 710 - 580 = 57930
+    assert anchor.forward == pytest.approx(57930.0)
+    assert anchor.source == "parity"
+    assert anchor.basis == pytest.approx(135.1, abs=0.01)
+
+
+def test_compute_forward_falls_back_to_spot_when_atm_leg_missing():
+    quotes = {(57800.0, "CE"): _quote(57800.0, "CE", 700.0, 720.0)}
+    anchor = compute_forward(quotes, atm_strike=57800.0, spot=57794.90)
+    assert anchor.forward == 57794.90
+    assert anchor.source == "spot_fallback"
+
+
+def test_project_forward_exact_mode_shifts_one_to_one():
+    anchor = ForwardAnchor(forward=57933.85, spot=57794.90, atm_strike=57800.0, source="parity")
+    t = project_forward(
+        anchor,
+        reference="FUT",
+        reference_now=57933.85,
+        reference_target=57643.85,
+        matched_future=True,
+    )
+    assert t.mode == "exact"
+    assert t.forward == pytest.approx(57643.85)
+
+
+def test_project_forward_basis_mode_shifts_proportionally():
+    anchor = ForwardAnchor(forward=57933.85, spot=57794.90, atm_strike=57800.0, source="parity")
+    t = project_forward(
+        anchor,
+        reference="SPOT",
+        reference_now=57794.90,
+        reference_target=57504.90,
+        matched_future=False,
+    )
+    assert t.mode == "basis_modelled"
+    # 57933.85 * (57504.90 / 57794.90)
+    assert t.forward == pytest.approx(57643.15, abs=0.5)
+
+
+def test_project_forward_move_pct():
+    anchor = ForwardAnchor(forward=57933.85, spot=57794.90, atm_strike=57800.0, source="parity")
+    t = project_forward(
+        anchor,
+        reference="SPOT",
+        reference_now=57794.90,
+        reference_target=57504.90,
+        matched_future=False,
+    )
+    assert t.move_pct == pytest.approx(-0.5018, abs=0.001)
+
+
+def test_project_forward_rejects_non_positive_reference():
+    anchor = ForwardAnchor(forward=100.0, spot=100.0, atm_strike=100.0, source="parity")
+    with pytest.raises(ValueError, match="must be positive"):
+        project_forward(
+            anchor,
+            reference="SPOT",
+            reference_now=0.0,
+            reference_target=90.0,
+            matched_future=False,
+        )
