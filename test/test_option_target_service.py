@@ -371,3 +371,46 @@ def test_excluded_candidates_carry_a_json_safe_score():
     for candidate in resp["candidates"]:
         if candidate["excluded"]:
             assert candidate["score"] is None
+
+
+def test_poor_smile_fit_falls_back_to_sticky_strike():
+    from services.option_target.models import SmileFit
+
+    bad_fit = SmileFit(
+        a=1.25, b=3.46, c=1120.0, x_lo=-0.026, x_hi=0.023, rms=0.1436, n_points=25, degenerate=False
+    )
+    with (
+        patch("services.option_target_service.get_option_chain", _fake_chain()),
+        patch("services.option_target_service._matched_future_symbol", return_value=None),
+        patch("services.option_target_service._vol_beta_samples", return_value=[]),
+        patch("services.option_target_service.fit_smile", return_value=bad_fit),
+    ):
+        _, resp, _ = get_option_target(
+            underlying="NIFTY",
+            exchange="NFO",
+            expiry_date="11AUG26",
+            reference="SPOT",
+            target_price=24700.0,
+            api_key="k",
+            iv_model="smile_slide",
+        )
+    assert resp["scenario"]["iv_model"] == "sticky_strike"
+    assert resp["scenario"]["iv_model_requested"] == "smile_slide"
+    assert resp["scenario"]["iv_model_overridden"] is True
+    assert any("too poor to slide" in w.lower() for w in resp["warnings"])
+
+
+def test_good_smile_fit_is_not_overridden():
+    _, resp, _ = _run(iv_model="smile_slide")
+    assert resp["scenario"]["iv_model_overridden"] is False
+    assert resp["scenario"]["iv_model"] == "smile_slide"
+
+
+def test_scenario_always_reports_the_requested_model():
+    _, resp, _ = _run(iv_model="sticky_strike")
+    assert resp["scenario"]["iv_model_requested"] == "sticky_strike"
+
+
+def test_snapshot_reports_basis_plausibility():
+    _, resp, _ = _run()
+    assert isinstance(resp["snapshot"]["basis_plausible"], bool)

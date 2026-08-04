@@ -68,6 +68,12 @@ MIN_TIME_YEARS = 1e-6
 # far-OTM strike can lose value even on a favourable underlying move.
 ZERO_DTE_DAYS = 1.0
 
+# Percent of spot the parity-implied basis may plausibly reach with under a
+# day to expiry. Cost-of-carry over a few minutes at even 10% annual is a
+# few hundredths of a point on NIFTY; anything larger is stale or wide
+# at-the-money quotes feeding put-call parity, not carry.
+ZERO_DTE_MAX_BASIS_PCT = 0.15
+
 # Hold duration, as a fraction of the remaining time to expiry, above which
 # the projection is consuming most of the option's remaining life.
 HOLD_FRACTION_WARN = 0.5
@@ -75,6 +81,14 @@ HOLD_FRACTION_WARN = 0.5
 # Measured smile RMS: 0.024 vol points at 7 DTE, 0.625 at 0DTE. Above this,
 # the fitted smile - and every IV/premium projected from it - is unreliable.
 MAX_SMILE_RMS_VOL_PTS = 1.0
+
+# Measured smile RMS by horizon: 0.024 vol pts at 7 days, 0.446 at 73 minutes,
+# 3.89 at 18 minutes, 14.36 at 7 minutes. Above this, sliding the fitted smile
+# with the forward (smile_slide) produces tens-of-vol-point jumps and strikes
+# priced at implausible IVs - the fit itself has broken down, not just gotten
+# noisier. Sits between the last usable 0DTE case (0.446) and the first
+# degenerate one (3.89).
+SMILE_UNRELIABLE_VOL_PTS = 3.0
 
 EXPIRY_TIMES = {"MCX": (23, 30), "CDS": (12, 30)}
 DEFAULT_EXPIRY_TIME = (15, 30)
@@ -390,9 +404,26 @@ def get_option_target(
             )
         t_target = min(t_target, t_now)
         if t_target <= 0:
-            warnings.append("Hold runs past expiry - projected values are intrinsic only.")
+            warnings.insert(
+                0,
+                f"The {hold_min:.0f} minute hold exceeds the {t_now * 365 * 24 * 60:.1f} minutes "
+                f"remaining to expiry. Every projection below is the value AT expiry, so all "
+                f"out-of-the-money strikes show a total loss.",
+            )
 
         days_to_expiry = t_now * 365
+        basis_plausible = True
+        if (
+            days_to_expiry < ZERO_DTE_DAYS
+            and abs(anchor.basis) > spot * ZERO_DTE_MAX_BASIS_PCT / 100
+        ):
+            basis_plausible = False
+            warnings.append(
+                f"Forward sits {anchor.basis:+.1f} points from spot with under a day to expiry, "
+                f"where carry cannot justify more than a fraction of a point. The at-the-money "
+                f"quotes driving put-call parity are probably stale or wide, and every "
+                f"projection inherits that error."
+            )
         if days_to_expiry < ZERO_DTE_DAYS:
             warnings.append(
                 f"Expiry is {days_to_expiry * 24:.1f} hours away. Theta dominates at this range - "
@@ -418,6 +449,21 @@ def get_option_target(
             warnings.append(
                 f"Volatility smile fits poorly (RMS {fit.rms * 100:.2f} vol points). "
                 f"Projected implied vols, and therefore projected premiums, are less reliable."
+            )
+
+        effective_iv_model = iv_model
+        iv_model_overridden = False
+        if (
+            iv_model == "smile_slide"
+            and not fit.degenerate
+            and fit.rms * 100 > SMILE_UNRELIABLE_VOL_PTS
+        ):
+            effective_iv_model = "sticky_strike"
+            iv_model_overridden = True
+            warnings.append(
+                f"Smile fit is too poor to slide (RMS {fit.rms * 100:.2f} vol points, above "
+                f"{SMILE_UNRELIABLE_VOL_PTS}). Falling back to sticky-strike implied vols; "
+                f"projected premiums no longer assume the smile shape travels with the forward."
             )
 
         if vol_beta == "auto":
@@ -458,7 +504,7 @@ def get_option_target(
                 t_target=t_target,
                 rate=rate,
                 fit=fit,
-                iv_model=iv_model,
+                iv_model=effective_iv_model,
                 vol_beta=beta_info["beta"],
                 move_pct=move_pct,
                 vol_shift=vol_shift,
@@ -491,7 +537,7 @@ def get_option_target(
                     rate=rate,
                     iv_now=best["iv_now_pct"] / 100,
                     fit=fit,
-                    iv_model=iv_model,
+                    iv_model=effective_iv_model,
                     vol_beta=beta_info["beta"],
                     move_pct=ft.move_pct,
                     vol_shift=vol_shift,
@@ -518,6 +564,7 @@ def get_option_target(
                     "atm_iv_pct": smile_iv(fit, 0.0) * 100,
                     "days_to_expiry": days_to_expiry,
                     "is_zero_dte": days_to_expiry < ZERO_DTE_DAYS,
+                    "basis_plausible": basis_plausible,
                     "t_years": t_now,
                     "matched_future": matched,
                     "lot_size": next(iter(quotes.values())).lot_size if quotes else 0,
@@ -543,7 +590,9 @@ def get_option_target(
                     "hold_minutes": hold_min,
                     "day_count": day_count,
                     "t_target_years": t_target,
-                    "iv_model": iv_model,
+                    "iv_model": effective_iv_model,
+                    "iv_model_requested": iv_model,
+                    "iv_model_overridden": iv_model_overridden,
                     "vol_beta": beta_info,
                     "vol_shift": vol_shift,
                     "side": chosen,
