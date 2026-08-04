@@ -1,6 +1,7 @@
 """Per-strike signed dealer gamma exposure."""
 
 import json
+import math
 
 import pytest
 
@@ -182,3 +183,99 @@ def test_an_unpriced_strike_contributes_zero_rather_than_being_dropped():
     )
     assert len(out) == 1
     assert out[0].net_gex == 0.0
+
+
+def test_the_fallback_volatility_reaches_gamma_for_an_unpriced_leg():
+    """The headline behaviour: an unpriced leg is priced, not zeroed.
+
+    The existing unpriced test uses zero weight, so it would pass even if the
+    fallback never reached safe_gamma. This one carries real open interest.
+    """
+    rows = [
+        ChainRow(
+            strike=24600.0,
+            call_price=120.0,
+            put_price=0.0,
+            call_oi=5000,
+            put_oi=5000,
+            call_volume=0,
+            put_volume=0,
+            lot_size=75,
+        )
+    ]
+    out = compute_exposures(
+        _FlatGamma(),
+        rows,
+        forward=24600.0,
+        t_years=0.02,
+        r=0.065,
+        atm_strike=24600.0,
+        weight_by="oi",
+    )
+    assert out[0].put_iv is None
+    assert out[0].put_gex < 0, "the unpriced put contributed nothing"
+
+
+def test_one_leg_inverting_does_not_suppress_the_other():
+    rows = [
+        ChainRow(
+            strike=24600.0,
+            call_price=120.0,
+            put_price=0.0,
+            call_oi=1000,
+            put_oi=1000,
+            call_volume=0,
+            put_volume=0,
+            lot_size=75,
+        )
+    ]
+    out = compute_exposures(
+        _FlatGamma(),
+        rows,
+        forward=24600.0,
+        t_years=0.02,
+        r=0.065,
+        atm_strike=24600.0,
+        weight_by="oi",
+    )
+    assert out[0].call_iv is not None
+    assert out[0].put_iv is None
+
+
+def test_an_unknown_weighting_is_rejected():
+    with pytest.raises(ValueError, match="weight_by"):
+        compute_exposures(
+            _FlatGamma(),
+            _rows(),
+            forward=24600.0,
+            t_years=0.02,
+            r=0.065,
+            atm_strike=24600.0,
+            weight_by="delta",
+        )
+
+
+def test_a_non_finite_weight_contributes_nothing():
+    rows = [
+        ChainRow(
+            strike=24600.0,
+            call_price=120.0,
+            put_price=80.0,
+            call_oi=float("nan"),
+            put_oi=1000,
+            call_volume=0,
+            put_volume=0,
+            lot_size=75,
+        )
+    ]
+    out = compute_exposures(
+        _FlatGamma(),
+        rows,
+        forward=24600.0,
+        t_years=0.02,
+        r=0.065,
+        atm_strike=24600.0,
+        weight_by="oi",
+    )
+    assert out[0].call_gex == 0.0
+    assert math.isfinite(out[0].net_gex)

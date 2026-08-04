@@ -58,3 +58,25 @@ def test_walls_report_whether_they_sit_at_the_window_edge():
         _exposure(24900, 0.0),
     ]
     assert find_walls(interior).call_wall_at_edge is False
+
+
+def test_a_wall_in_the_window_interior_is_found_by_value():
+    """A positional implementation returning first/last would pass most of this
+    suite. This pins the wall's VALUE when the true extreme is interior."""
+    rows = [
+        _exposure(24400, 5.0),
+        _exposure(24500, -80.0),
+        _exposure(24600, 120.0),
+        _exposure(24700, 3.0),
+    ]
+    walls = find_walls(rows)
+    assert walls.call_wall == 24600
+    assert walls.put_wall == 24500
+
+
+def test_a_non_finite_net_gex_cannot_win_a_wall():
+    """NaN first in the list poisons max/min - it wins BOTH walls unguarded."""
+    rows = [_exposure(24400, float("nan")), _exposure(24500, -80.0), _exposure(24600, 120.0)]
+    walls = find_walls(rows)
+    assert walls.call_wall == 24600
+    assert walls.put_wall == 24500

@@ -5,9 +5,16 @@ Walls are the signed extremes of the per-strike profile. Zero-Gamma is not a
 strike at all - see `scan_zero_gamma`.
 """
 
+import math
 from dataclasses import dataclass
 
-from services.gex_levels.exposure import ChainRow, StrikeExposure, WeightBy, compute_exposures
+from services.gex_levels.exposure import (
+    ChainRow,
+    StrikeExposure,
+    WeightBy,
+    price_exposures,
+    resolve_ivs,
+)
 
 
 @dataclass(frozen=True)
@@ -32,17 +39,25 @@ def find_walls(exposures: list[StrikeExposure]) -> Walls:
     it may be a real concentration, or it may simply be where the window stopped.
     The quality gate turns that flag into a user-visible caveat.
 
+    Strikes with a non-finite net GEX are excluded from the ranking before
+    max/min ever see them. NaN does not merely lose a comparison, it corrupts
+    the result order-dependently: a NaN in first position wins BOTH walls,
+    because every later `x > nan` is False, while a NaN anywhere else is
+    silently ignored. The edge flags still measure against the full window.
+
     Args:
         exposures: Per-strike exposures, ascending by strike.
 
     Returns:
-        Walls, with None levels when there is nothing to rank.
+        Walls, with None levels when there is nothing finite to rank - which
+        includes the empty case.
     """
-    if not exposures:
+    rankable = [e for e in exposures if math.isfinite(e.net_gex)]
+    if not rankable:
         return Walls(call_wall=None, put_wall=None, call_wall_at_edge=False, put_wall_at_edge=False)
 
-    call = max(exposures, key=lambda e: e.net_gex)
-    put = min(exposures, key=lambda e: e.net_gex)
+    call = max(rankable, key=lambda e: e.net_gex)
+    put = min(rankable, key=lambda e: e.net_gex)
     edges = {exposures[0].strike, exposures[-1].strike}
 
     return Walls(
@@ -105,6 +120,17 @@ def scan_zero_gamma(
     if not rows or forward <= 0 or t_years <= 0:
         return None
 
+    # Resolved ONCE, at the real forward, and then held fixed for every sample
+    # below. Only F may vary across the scan.
+    ivs = resolve_ivs(
+        black76,
+        rows,
+        forward=forward,
+        t_years=t_years,
+        r=r,
+        atm_strike=atm_strike,
+    )
+
     lo = forward * (1.0 - SCAN_RANGE_PCT)
     hi = forward * (1.0 + SCAN_RANGE_PCT)
     step = (hi - lo) / (SCAN_STEPS - 1)
@@ -116,13 +142,13 @@ def scan_zero_gamma(
         level = lo + step * i
         total = sum(
             e.net_gex
-            for e in compute_exposures(
+            for e in price_exposures(
                 black76,
                 rows,
+                ivs,
                 forward=level,
                 t_years=t_years,
                 r=r,
-                atm_strike=atm_strike,
                 weight_by=weight_by,
             )
         )

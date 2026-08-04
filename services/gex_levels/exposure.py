@@ -15,6 +15,7 @@ factor is constant across strikes, so it moves neither the walls nor the
 zero-gamma level relative to an unscaled profile - it converts units only.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
@@ -55,64 +56,149 @@ class StrikeExposure:
     put_iv: float | None
 
 
-def compute_exposures(
+@dataclass(frozen=True)
+class ResolvedIVs:
+    """
+    Per-leg implied volatilities, inverted once at the real forward.
+
+    Held separately from pricing because the zero-gamma scan re-prices the same
+    chain at many hypothetical forwards, and the volatility must NOT move with
+    them: the premiums these were inverted from were quoted at today's forward.
+
+    Attributes:
+        call: Strike to its call IV (decimal), or None where it did not invert.
+        put: Strike to its put IV (decimal), or None where it did not invert.
+        fallback: The chain-wide volatility to price a leg that did not invert.
+            Never None - `atm_iv_from` always yields a number.
+    """
+
+    call: dict[float, float | None]
+    put: dict[float, float | None]
+    fallback: float
+
+
+def resolve_ivs(
     black76,
     rows: list[ChainRow],
     forward: float,
     t_years: float,
     r: float,
     atm_strike: float | None,
-    weight_by: WeightBy,
-) -> list[StrikeExposure]:
+) -> ResolvedIVs:
     """
-    Signed GEX for every strike, ascending.
+    Invert both legs of every strike, and derive the chain-wide fallback.
 
-    Two passes, because a strike whose own premium will not invert must still
-    be priced - with the chain's ATM volatility - rather than dropped. Dropping
-    it would move the walls by removing real open interest from the profile.
+    This is the expensive half of the calculation - two Black-76 solver calls
+    per strike - and the half that is only ever valid at the real forward. It
+    is a separate function so that `scan_zero_gamma` can run it exactly once
+    and then re-price the resulting surface at sixty hypothetical forwards.
+
+    A leg that will not invert stays None here rather than being filled in with
+    the fallback, because the quality gate distinguishes an observed IV from a
+    substituted one. Substitution happens at pricing time.
 
     Args:
         black76: The opengreeks.black76 module.
         rows: Chain rows, any order.
-        forward: Per-expiry forward price (F). Never spot.
+        forward: The REAL per-expiry forward price (F) the premiums were quoted
+            at. Never spot, and never a hypothetical scan level.
         t_years: Time to expiry in years.
         r: Risk-free rate as a decimal.
         atm_strike: ATM strike, for the IV fallback.
-        weight_by: 'oi' for the standing book, 'volume' for today's flow.
 
     Returns:
-        One StrikeExposure per input row, sorted by strike ascending.
+        ResolvedIVs, keyed by strike.
     """
-    ordered = sorted(rows, key=lambda row: row.strike)
-
     per_strike_iv: dict[float, float | None] = {}
     call_ivs: dict[float, float | None] = {}
     put_ivs: dict[float, float | None] = {}
-    for row in ordered:
+
+    for row in rows:
         call_iv = safe_iv(black76, row.call_price, forward, row.strike, r, t_years, "c")
         put_iv = safe_iv(black76, row.put_price, forward, row.strike, r, t_years, "p")
         call_ivs[row.strike] = call_iv
         put_ivs[row.strike] = put_iv
         sides = [v for v in (call_iv, put_iv) if v is not None]
+        # At the same strike and forward, put-call parity puts the two legs
+        # within noise of each other, so their mean is a more stable estimate
+        # of that strike's volatility than either leg alone.
         per_strike_iv[row.strike] = sum(sides) / len(sides) if sides else None
 
-    fallback_iv = atm_iv_from(per_strike_iv, atm_strike)
-    notional = forward * forward * _ONE_PERCENT
+    return ResolvedIVs(
+        call=call_ivs,
+        put=put_ivs,
+        fallback=atm_iv_from(per_strike_iv, atm_strike),
+    )
+
+
+def price_exposures(
+    black76,
+    rows: list[ChainRow],
+    ivs: ResolvedIVs,
+    forward: float,
+    t_years: float,
+    r: float,
+    weight_by: WeightBy,
+) -> list[StrikeExposure]:
+    """
+    Signed GEX at `forward`, using PRE-RESOLVED volatilities.
+
+    `forward` is what gamma is evaluated at and may be hypothetical; `ivs` must
+    have been resolved at the real forward. That asymmetry is the whole point of
+    the seam. Gamma genuinely depends on where the underlying sits, so the scan
+    has to move F. Implied volatility does not: it was inverted out of premiums
+    the market quoted at one particular forward, and re-deriving it against a
+    price the market never traded at yields a number with no meaning - and, far
+    enough away, no solution at all.
+
+    A strike whose own premium would not invert is still priced, with the
+    chain's fallback volatility, rather than dropped. Dropping it would move the
+    walls by removing real open interest from the profile.
+
+    Args:
+        black76: The opengreeks.black76 module.
+        rows: Chain rows, any order.
+        ivs: Volatilities from `resolve_ivs`, inverted at the real forward.
+        forward: The price to evaluate gamma at. May be hypothetical.
+        t_years: Time to expiry in years.
+        r: Risk-free rate as a decimal.
+        weight_by: 'oi' for the standing book, 'volume' for today's flow.
+
+    Returns:
+        One StrikeExposure per input row, sorted by strike ascending. The sort
+        is a precondition of `find_walls`, which reads the first and last
+        entries to decide whether a wall sits at the window edge.
+
+    Raises:
+        ValueError: If `weight_by` is neither 'oi' nor 'volume'. An unrecognised
+            weighting must never quietly read as open interest - it would change
+            the meaning of the whole study with no signal to the caller.
+    """
+    if weight_by not in ("oi", "volume"):
+        raise ValueError(f"weight_by must be 'oi' or 'volume', got {weight_by!r}")
+
+    ordered = sorted(rows, key=lambda row: row.strike)
+    use_volume = weight_by == "volume"
+
+    # Converts unit gamma into currency delta change per 1% move. A non-finite
+    # forward yields no exposure rather than a profile of NaN.
+    scale_per_percent = forward * forward * _ONE_PERCENT if math.isfinite(forward) else 0.0
 
     out: list[StrikeExposure] = []
     for row in ordered:
-        call_iv = call_ivs[row.strike]
-        put_iv = put_ivs[row.strike]
-        call_weight = row.call_volume if weight_by == "volume" else row.call_oi
-        put_weight = row.put_volume if weight_by == "volume" else row.put_oi
+        call_iv = ivs.call.get(row.strike)
+        put_iv = ivs.put.get(row.strike)
+        call_weight = _finite(row.call_volume if use_volume else row.call_oi)
+        put_weight = _finite(row.put_volume if use_volume else row.put_oi)
 
-        call_gamma = safe_gamma(
-            black76, "c", forward, row.strike, t_years, r, call_iv or fallback_iv
-        )
-        put_gamma = safe_gamma(black76, "p", forward, row.strike, t_years, r, put_iv or fallback_iv)
+        call_sigma = call_iv if call_iv is not None else ivs.fallback
+        put_sigma = put_iv if put_iv is not None else ivs.fallback
 
-        call_gex = DEALER_CALL_SIGN * call_gamma * call_weight * row.lot_size * notional
-        put_gex = DEALER_PUT_SIGN * put_gamma * put_weight * row.lot_size * notional
+        call_gamma = safe_gamma(black76, "c", forward, row.strike, t_years, r, call_sigma)
+        put_gamma = safe_gamma(black76, "p", forward, row.strike, t_years, r, put_sigma)
+
+        call_gex = DEALER_CALL_SIGN * call_gamma * call_weight * row.lot_size * scale_per_percent
+        put_gex = DEALER_PUT_SIGN * put_gamma * put_weight * row.lot_size * scale_per_percent
 
         out.append(
             StrikeExposure(
@@ -125,3 +211,65 @@ def compute_exposures(
             )
         )
     return out
+
+
+def compute_exposures(
+    black76,
+    rows: list[ChainRow],
+    forward: float,
+    t_years: float,
+    r: float,
+    atm_strike: float | None,
+    weight_by: WeightBy,
+) -> list[StrikeExposure]:
+    """
+    Resolve and price at the same forward - the single-shot path.
+
+    This is what every caller wants except the zero-gamma scan, which needs to
+    resolve once and price many times; see `price_exposures` for why the two
+    halves must not share a forward there.
+
+    Args:
+        black76: The opengreeks.black76 module.
+        rows: Chain rows, any order.
+        forward: Per-expiry forward price (F). Never spot.
+        t_years: Time to expiry in years.
+        r: Risk-free rate as a decimal.
+        atm_strike: ATM strike, for the IV fallback.
+        weight_by: 'oi' for the standing book, 'volume' for today's flow.
+
+    Returns:
+        One StrikeExposure per input row, sorted by strike ascending.
+
+    Raises:
+        ValueError: If `weight_by` is neither 'oi' nor 'volume'.
+    """
+    ivs = resolve_ivs(
+        black76,
+        rows,
+        forward=forward,
+        t_years=t_years,
+        r=r,
+        atm_strike=atm_strike,
+    )
+    return price_exposures(
+        black76,
+        rows,
+        ivs,
+        forward=forward,
+        t_years=t_years,
+        r=r,
+        weight_by=weight_by,
+    )
+
+
+def _finite(weight: float) -> float:
+    """
+    A weight of NaN or infinity is treated as no position at all.
+
+    Broker adapters do emit NaN open interest, and a null field read as a float
+    arrives the same way. One such strike would otherwise turn the entire net
+    profile into NaN, which silently takes both walls and the zero-gamma level
+    with it.
+    """
+    return weight if math.isfinite(weight) else 0.0

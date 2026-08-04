@@ -152,3 +152,37 @@ def test_the_level_lies_inside_the_scan_range():
         weight_by="oi",
     )
     assert forward * 0.8 <= level <= forward * 1.2
+
+
+class _RecordingGamma:
+    """Records every sigma it is priced with, to prove the scan holds them fixed."""
+
+    def __init__(self):
+        self.sigmas = []
+
+    def implied_volatility(self, price, F, K, r, t, flag):
+        # A forward-dependent IV, so re-inverting at a hypothetical forward
+        # would produce a DIFFERENT sigma and the assertion below would fail.
+        return 0.10 + (F / 1_000_000.0)
+
+    def gamma(self, flag, F, K, t, r, sigma):
+        self.sigmas.append(sigma)
+        return 1.0 / (1.0 + abs(F - K))
+
+
+def test_the_scan_holds_volatility_fixed_at_the_real_forward():
+    fake = _RecordingGamma()
+    scan_zero_gamma(
+        fake,
+        _split_chain(),
+        forward=24500.0,
+        t_years=0.02,
+        r=0.065,
+        atm_strike=24500.0,
+        weight_by="oi",
+    )
+    assert fake.sigmas, "the scan priced nothing"
+    # Every sigma must be one resolved at the REAL forward, not at a scan level.
+    assert len(set(fake.sigmas)) <= 2, (
+        f"volatility moved with the scan: {sorted(set(fake.sigmas))[:5]}"
+    )
