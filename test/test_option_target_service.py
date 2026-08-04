@@ -1,6 +1,6 @@
 """Orchestration tests. The broker layer is stubbed; the math is real."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -141,24 +141,57 @@ def test_build_ladder_calls_the_projector_per_level():
     assert len(calls) == 3
 
 
-def _fake_chain(success=True):
+def _fake_chain(success=True, underlying_ref=None):
     def _call(underlying, exchange, expiry_date, strike_count, api_key):
         if not success:
             return False, {"status": "error", "message": "boom"}, 500
-        return (
-            True,
-            {
-                "status": "success",
-                "underlying": underlying,
-                "underlying_ltp": 24507.10,
-                "expiry_date": expiry_date,
-                "atm_strike": 24500.0,
-                "chain": CHAIN_ROWS,
-            },
-            200,
-        )
+        resp = {
+            "status": "success",
+            "underlying": underlying,
+            "underlying_ltp": 24507.10,
+            "expiry_date": expiry_date,
+            "atm_strike": 24500.0,
+            "chain": CHAIN_ROWS,
+        }
+        if underlying_ref is not None:
+            resp["underlying_ref"] = underlying_ref
+        return True, resp, 200
 
     return _call
+
+
+# A commodity underlying_ref as services.pricing_underlying.resolve_pricing_underlying
+# would build it for CRUDEOIL/MCX - the linked future is the pricing instrument,
+# there is no spot leg at all.
+COMMODITY_FUTURE_REF = {
+    "symbol": "CRUDEOIL19AUG26FUT",
+    "exchange": "MCX",
+    "kind": "FUTURE",
+    "option_expiry": "17AUG26",
+    "underlying_expiry": "19-AUG-26",
+    "method": "linked_future_nearest_on_or_after_option_expiry",
+}
+
+
+def _run_commodity(**overrides):
+    kwargs = {
+        "underlying": "CRUDEOIL",
+        "exchange": "MCX",
+        "expiry_date": "17AUG26",
+        "reference": "FUT",
+        "target_price": 24700.0,
+        "api_key": "k",
+    }
+    kwargs.update(overrides)
+    with (
+        patch(
+            "services.option_target_service.get_option_chain",
+            _fake_chain(underlying_ref=COMMODITY_FUTURE_REF),
+        ),
+        patch("services.option_target_service._matched_future_symbol", return_value=None),
+        patch("services.option_target_service._vol_beta_samples", return_value=[]),
+    ):
+        return get_option_target(**kwargs)
 
 
 def _patches(chain_ok=True):
@@ -483,3 +516,73 @@ def test_market_closed_adds_a_stale_quote_warning():
             api_key="k",
         )
     assert any("market is closed" in w.lower() for w in resp["warnings"])
+
+
+def test_spot_reference_is_rejected_for_a_commodity():
+    # MCX has no spot instrument at all - its options are written on a future.
+    # This must be rejected before the chain is even fetched, so no broker
+    # patches are needed here.
+    ok, resp, code = get_option_target(
+        underlying="CRUDEOIL",
+        exchange="MCX",
+        expiry_date="17AUG26",
+        reference="SPOT",
+        target_price=7550.0,
+        api_key="k",
+    )
+    assert ok is False
+    assert code == 400
+    assert "spot instrument" in resp["message"].lower()
+
+
+def test_commodity_uses_exact_forward_mode_via_the_linked_future():
+    mock_matched = MagicMock(return_value=None)
+    with (
+        patch(
+            "services.option_target_service.get_option_chain",
+            _fake_chain(underlying_ref=COMMODITY_FUTURE_REF),
+        ),
+        patch("services.option_target_service._matched_future_symbol", mock_matched),
+        patch("services.option_target_service._vol_beta_samples", return_value=[]),
+    ):
+        ok, resp, code = get_option_target(
+            underlying="CRUDEOIL",
+            exchange="MCX",
+            expiry_date="17AUG26",
+            reference="FUT",
+            target_price=24700.0,
+            api_key="k",
+        )
+    assert ok is True
+    assert code == 200
+    assert resp["scenario"]["forward_mode"] == "exact"
+    # The resolver already identified the linked future (underlying_ref); a
+    # same-expiry DB lookup must never be re-issued for a commodity exchange.
+    mock_matched.assert_not_called()
+
+
+def test_commodity_snapshot_reports_no_spot_basis():
+    _, resp, _ = _run_commodity()
+    assert resp["snapshot"]["basis"] is None
+    assert resp["snapshot"]["basis_plausible"] is None
+
+
+def test_commodity_snapshot_reports_parity_versus_the_linked_future():
+    _, resp, _ = _run_commodity()
+    snapshot = resp["snapshot"]
+    assert snapshot["parity_vs_underlying"] is not None
+    assert snapshot["parity_vs_underlying"] == pytest.approx(snapshot["forward"] - snapshot["spot"])
+    assert snapshot["underlying_ref"]["kind"] == "FUTURE"
+    assert snapshot["underlying_ref"]["symbol"] == "CRUDEOIL19AUG26FUT"
+
+
+def test_equity_snapshot_still_reports_a_spot_basis():
+    # Regression guard: NFO/BFO (no underlying_ref block simulated, same as
+    # every pre-existing test in this file) must keep today's spot-basis
+    # behaviour unchanged.
+    _, resp, _ = _run()
+    snapshot = resp["snapshot"]
+    assert snapshot["basis"] is not None
+    assert snapshot["basis"] == pytest.approx(snapshot["forward"] - snapshot["spot"])
+    assert isinstance(snapshot["basis_plausible"], bool)
+    assert snapshot.get("parity_vs_underlying") is None

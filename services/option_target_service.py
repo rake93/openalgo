@@ -40,6 +40,7 @@ from services.option_target.ranking import build_candidate, rank_candidates
 from services.option_target.smile import calibrate_ivs, fit_smile, smile_iv
 from services.option_target.volbeta import PRESETS, estimate_vol_beta
 from services.option_target_sessions import build_session_provider
+from services.pricing_underlying import requires_futures_underlying
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -330,6 +331,19 @@ def get_option_target(
         if target_price is None or target_price <= 0:
             return False, {"status": "error", "message": "target_price must be positive"}, 400
 
+        if requires_futures_underlying(exchange) and reference.upper() == "SPOT":
+            return (
+                False,
+                {
+                    "status": "error",
+                    "message": (
+                        f"{exchange.upper()} has no spot instrument - its options are written on "
+                        f"futures. Use reference FUT and target the linked futures contract."
+                    ),
+                },
+                400,
+            )
+
         if not expiry_date:
             expiry_date = _default_expiry(underlying, exchange, api_key)
             if not expiry_date:
@@ -367,18 +381,38 @@ def get_option_target(
         if not rows or spot <= 0 or atm_strike <= 0:
             return False, {"status": "error", "message": "Chain snapshot incomplete"}, 502
 
+        # A missing/None block (older response shape, or a resolver failure inside
+        # get_option_chain) degrades to SPOT so downstream logic never has to
+        # special-case "no block at all" separately from "resolved to SPOT".
+        underlying_ref = chain_resp.get("underlying_ref")
+        ref_kind = (underlying_ref or {}).get("kind", "SPOT")
+
         quotes = parse_chain_quotes(rows)
         strikes = sorted({s for s, _ in quotes})
         step = strike_step_of(strikes)
 
         anchor = compute_forward(quotes, atm_strike=atm_strike, spot=spot)
         if anchor.source == "spot_fallback":
-            warnings.append(
-                "ATM call/put quotes unavailable - forward fell back to spot, "
-                "so projections carry the full basis as error."
-            )
+            if requires_futures_underlying(exchange):
+                warnings.append(
+                    "ATM call/put quotes unavailable - forward fell back to the linked "
+                    "future, so projections carry the full basis as error."
+                )
+            else:
+                warnings.append(
+                    "ATM call/put quotes unavailable - forward fell back to spot, "
+                    "so projections carry the full basis as error."
+                )
 
-        matched = _matched_future_symbol(underlying, expiry_date, exchange)
+        # On MCX/NCDEX/NCO the resolver has already identified the exact contract
+        # the option settles against (the linked future - see underlying_ref), so
+        # that IS the matched future; re-querying via _matched_future_symbol would
+        # look for a future sharing the option's own expiry, which never exists on
+        # those exchanges. NFO/BFO keep the original same-expiry DB lookup.
+        if requires_futures_underlying(exchange) and ref_kind == "FUTURE":
+            matched = (underlying_ref or {}).get("symbol")
+        else:
+            matched = _matched_future_symbol(underlying, expiry_date, exchange)
         ref = reference.upper()
         ref_now = (
             reference_price
@@ -444,7 +478,9 @@ def get_option_target(
         quote_tolerance = spot * BASIS_QUOTE_TOLERANCE_PCT / 100
         max_plausible_basis = carry_bound + quote_tolerance
         basis_plausible = abs(anchor.basis) <= max_plausible_basis
-        if not basis_plausible:
+        # A carry bound is measured against spot; MCX/NCDEX/NCO have no spot, so
+        # the check - and the warning it would produce - is meaningless there.
+        if ref_kind != "FUTURE" and not basis_plausible:
             warnings.append(
                 f"Forward sits {anchor.basis:+.1f} points from spot, beyond the "
                 f"{max_plausible_basis:.1f} points that carry over "
@@ -585,14 +621,23 @@ def get_option_target(
                     "expiry_date": expiry_date,
                     "spot": spot,
                     "forward": anchor.forward,
-                    "basis": anchor.basis,
+                    # No spot instrument exists on MCX/NCDEX/NCO (see
+                    # services.pricing_underlying), so `basis = forward - spot`
+                    # would silently mean "forward minus linked future" there.
+                    # Report None instead and surface the real, useful number -
+                    # parity forward vs. the linked future - separately.
+                    "basis": None if ref_kind == "FUTURE" else anchor.basis,
+                    "parity_vs_underlying": anchor.basis if ref_kind == "FUTURE" else None,
+                    "underlying_ref": underlying_ref,
                     "forward_source": anchor.source,
                     "atm_strike": atm_strike,
                     "strike_step": step,
                     "atm_iv_pct": smile_iv(fit, 0.0) * 100,
                     "days_to_expiry": days_to_expiry,
                     "is_zero_dte": days_to_expiry < ZERO_DTE_DAYS,
-                    "basis_plausible": basis_plausible,
+                    # The carry-bound check is meaningless with no spot to check
+                    # carry against; see the ref_kind guard on the warning above.
+                    "basis_plausible": None if ref_kind == "FUTURE" else basis_plausible,
                     "market_open": market_open,
                     "t_years": t_now,
                     "matched_future": matched,
