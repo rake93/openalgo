@@ -1,11 +1,17 @@
 """Orchestration: chain fetch to assembled payload. The chain is stubbed."""
 
 import json
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
 from services.gex_levels_service import STRIKE_COUNT, get_gex_levels
+
+# Derived, never hardcoded. A fixed date silently expires: once it is past,
+# calculate_time_to_expiry returns 0, safe_gamma returns 0.0 for every leg,
+# and the magnitude assertions below start comparing zero to zero.
+EXPIRY = (datetime.now() + timedelta(days=30)).strftime("%d%b%y").upper()
 
 
 def _chain_response():
@@ -16,14 +22,14 @@ def _chain_response():
             {
                 "strike": float(strike),
                 "ce": {
-                    "symbol": f"NIFTY11AUG26{strike}CE",
+                    "symbol": f"NIFTY{EXPIRY}{strike}CE",
                     "ltp": 120.0,
                     "oi": 100000,
                     "volume": 5000,
                     "lotsize": 75,
                 },
                 "pe": {
-                    "symbol": f"NIFTY11AUG26{strike}PE",
+                    "symbol": f"NIFTY{EXPIRY}{strike}PE",
                     "ltp": 110.0,
                     "oi": 90000,
                     "volume": 4000,
@@ -68,7 +74,7 @@ def test_get_option_chain_is_actually_called_with_strike_count():
         ) as fetch,
         patch("services.gex_levels_service._resolve_forward_price", return_value=24610.0),
     ):
-        get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     fetch.assert_called_once()
     assert fetch.call_args.kwargs["strike_count"] == STRIKE_COUNT
@@ -77,7 +83,7 @@ def test_get_option_chain_is_actually_called_with_strike_count():
 def test_a_successful_call_returns_levels_and_a_quality_verdict():
     chain, forward = _patched()
     with chain, forward:
-        ok, payload, status = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        ok, payload, status = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     assert ok is True
     assert status == 200
@@ -94,7 +100,7 @@ def test_the_payload_carries_may_draw_explicitly():
     TypeScript and would suppress every good snapshot."""
     chain, forward = _patched()
     with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     assert "may_draw" in payload["quality"]
     assert isinstance(payload["quality"]["may_draw"], bool)
@@ -104,7 +110,7 @@ def test_the_payload_never_contains_a_non_finite_float():
     """float('inf') serialises as Infinity, which JSON.parse rejects outright."""
     chain, forward = _patched()
     with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     json.dumps(payload, allow_nan=False)
 
@@ -112,7 +118,7 @@ def test_the_payload_never_contains_a_non_finite_float():
 def test_it_falls_back_to_spot_when_the_forward_cannot_be_resolved():
     chain, forward = _patched(forward=None)
     with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     assert payload["forward_price"] == 24590.0
 
@@ -120,7 +126,7 @@ def test_it_falls_back_to_spot_when_the_forward_cannot_be_resolved():
 def test_a_chain_failure_is_passed_through():
     failure = {"status": "error", "message": "No strikes"}
     with patch("services.gex_levels_service.get_option_chain", return_value=(False, failure, 404)):
-        ok, payload, status = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        ok, payload, status = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     assert ok is False
     assert status == 404
@@ -129,10 +135,10 @@ def test_a_chain_failure_is_passed_through():
 def test_volume_weighting_produces_a_different_profile_than_oi():
     chain, forward = _patched()
     with chain, forward:
-        _, by_oi, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, by_oi, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
     chain, forward = _patched()
     with chain, forward:
-        _, by_vol, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="volume")
+        _, by_vol, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="volume")
 
     assert by_oi["net_gex"] != by_vol["net_gex"]
     assert by_vol["weight_by"] == "volume"
@@ -141,7 +147,7 @@ def test_volume_weighting_produces_a_different_profile_than_oi():
 def test_regime_follows_the_sign_of_net_gex():
     chain, forward = _patched()
     with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     expected = "suppressive" if payload["net_gex"] >= 0 else "amplifying"
     assert payload["regime"] == expected
@@ -151,7 +157,7 @@ def test_an_unknown_weighting_is_rejected_before_any_broker_call():
     """price_exposures raises on a bad weighting; the service must not have
     already spent a chain fetch to discover that."""
     with patch("services.gex_levels_service.get_option_chain") as fetch:
-        ok, payload, status = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="delta")
+        ok, payload, status = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="delta")
     assert ok is False
     assert status == 400
     fetch.assert_not_called()
@@ -167,7 +173,7 @@ def test_the_payload_carries_every_field_the_frontend_reads():
     """
     chain, forward = _patched()
     with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     for key in (
         "status",
@@ -200,7 +206,7 @@ def test_sentiment_bias_is_one_of_the_three_values_and_participation_is_bounded(
     exist, or the panel would claim more agreement than the data supports."""
     chain, forward = _patched()
     with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     sentiment = payload["sentiment"]
     assert sentiment["bias"] in ("bullish", "bearish", "neutral")
@@ -214,7 +220,7 @@ def test_every_sentiment_signal_carries_all_five_fields():
     a signal missing either would silently render an empty tooltip line."""
     chain, forward = _patched()
     with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     for signal in payload["sentiment"]["signals"]:
         assert set(signal) == {"key", "label", "detail", "bias", "why", "weight"}
@@ -225,7 +231,7 @@ def test_every_sentiment_signal_carries_all_five_fields():
 def test_the_strike_profile_is_returned_with_one_entry_per_strike():
     chain, forward = _patched()
     with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     assert len(payload["strikes"]) == payload["quality"]["strikes_used"]
     for row in payload["strikes"]:
@@ -237,7 +243,7 @@ def test_the_totals_agree_with_the_per_strike_profile():
     and the bars would tell the reader two different stories."""
     chain, forward = _patched()
     with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", "11AUG26", "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
     assert payload["total_call_gex"] == pytest.approx(
         sum(r["call_gex"] for r in payload["strikes"]), rel=1e-6
