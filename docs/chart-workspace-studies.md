@@ -178,6 +178,35 @@ which is why the dashboard says Suppressive/Amplifying rather than the
 bullish/bearish some products use. Reading it as a short signal during a
 gamma-driven squeeze upward is exactly the mistake that wording invites.
 
+### Sentiment is a separate read, and answers a different question
+
+Below Regime sits **Sentiment** — Bullish, Bearish or Neutral. It is *not* the
+sign of net GEX. It is a composite of three genuinely directional signals, built
+the way `direction.ts` builds its market-direction verdict:
+
+| Signal | Weight | Reads |
+|---|---|---|
+| **Wall position** | 2 | Spot above the call wall is bullish (price broke the largest positive-gamma strike and dealers must chase); below the put wall is bearish; between them is neutral — pinned |
+| **Put-call ratio** | 1 | On the selected weighting. Above 1.2 bullish, below 0.8 bearish. High PCR means put writers dominate, which supports the market |
+| **IV skew** | 1 | Puts richer than calls by more than 1.5 vol points is bearish (downside protection bid); the reverse is bullish |
+
+Each signal reports **unavailable** independently and drops out of the composite
+entirely — a missing input never reads as a zero. The verdict carries how many
+signals agreed out of how many participated, shown as `Bullish 2/3`, so a
+one-signal read can never display as a unanimous one.
+
+**Regime and Sentiment will often disagree, and that is correct.** A live NIFTY
+reading during development showed Regime *suppressive* (net gamma positive, so
+price pins) while Sentiment read *neutral* with PCR leaning bearish. One is about
+whether moves get damped or extended; the other is about which way. Neither is
+derived from the other, and nothing in the code passes `net_gex` to the sentiment
+calculation at all.
+
+Deliberately not inferred: **where** between the walls spot sits. "Pinned between
+the walls" is the honest read; calling proximity to the put wall bullish is a
+weaker claim than a gamma profile supports. The detail line still tells you the
+position so you can make that call yourself.
+
 ### Zero-Gamma is a scan, and "No local cross" is normal
 
 Zero-Gamma is not the strike where a running total of per-strike GEX crosses
@@ -234,6 +263,23 @@ Black-76's `F` is the **per-expiry synthetic future**, not the cash index. Gamma
 peaks at the at-the-money *forward*, so pricing off spot displaces the entire
 profile and therefore both walls. The measured BANKNIFTY basis at 21 days is
 **+138.9 points** — far more than one strike.
+
+### Open interest arrives in units, not lots
+
+The textbook GEX formula multiplies by the contract multiplier, because open
+interest is conventionally quoted in **contracts**. The broker feed here reports
+it in **units** — already multiplied by the lot size. Verified across a live
+NIFTY chain: all 188 open-interest and volume values were exact multiples of the
+lot size.
+
+So there is deliberately **no lot factor** in the exposure calculation. Adding
+one back inflates every figure by the lot size — 65x on NIFTY, which put net GEX
+at 547,006 Cr against a true 8,415 Cr. If you are comparing against a published
+GEX figure and yours is off by exactly a lot size, this is why.
+
+Worth knowing: this scaling affects **magnitudes only**. A uniform factor cannot
+move an argmax or a zero crossing, so Call Wall, Put Wall, Zero-Gamma and the
+regime are identical either way.
 
 ### Data status
 
