@@ -22,6 +22,16 @@ import type { Candidate, Objective, OptionTargetRequest } from '@/types/option-t
 
 const NEAREST_EXPIRY_VALUE = '__nearest__'
 
+const EXCHANGE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'NFO', label: 'NFO (NSE F&O)' },
+  { value: 'BFO', label: 'BFO (BSE F&O)' },
+  { value: 'MCX', label: 'MCX (Commodity)' },
+  { value: 'CDS', label: 'CDS (Currency)' },
+]
+
+const MCX_UNSUPPORTED_NOTE =
+  'Commodity options are not yet supported. MCX has no spot instrument - its options are written on futures with a different expiry - and the shared option chain service cannot resolve an underlying price for them. This is a platform limitation that also affects the Option Chain page, not a fault in this calculator.'
+
 const DEFAULT_SCENARIO: ScenarioState = {
   reference: 'FUT',
   targetPrice: '',
@@ -52,6 +62,7 @@ export default function OptionTargetCalculator() {
 
   const [underlyingInput, setUnderlyingInput] = useState('NIFTY')
   const [underlying, setUnderlying] = useState('NIFTY')
+  const [exchange, setExchange] = useState('NFO')
   const [expiries, setExpiries] = useState<string[]>([])
   const [expiry, setExpiry] = useState('')
   const [scenario, setScenario] = useState<ScenarioState>(DEFAULT_SCENARIO)
@@ -61,20 +72,23 @@ export default function OptionTargetCalculator() {
 
   const isDark = document.documentElement.classList.contains('dark')
 
-  // Fetch expiries when underlying changes; leave expiry '' so the backend
-  // resolves the nearest live expiry until the user picks one explicitly.
+  // Fetch expiries when underlying or exchange changes; leave expiry '' so the
+  // backend resolves the nearest live expiry until the user picks one
+  // explicitly. Resetting expiry/expiries here also guarantees a stale expiry
+  // from a previously selected exchange can never be submitted.
   useEffect(() => {
+    setExpiry('')
+    setExpiries([])
+    setSelected(null)
+
     if (!apiKey || !underlying) {
-      setExpiries([])
       return
     }
-    setExpiry('')
-    setSelected(null)
 
     let cancelled = false
     const fetchExpiries = async () => {
       try {
-        const response = await optionTargetApi.getExpiries(apiKey, underlying, 'NFO', 'options')
+        const response = await optionTargetApi.getExpiries(apiKey, underlying, exchange, 'options')
         if (cancelled) return
         if (response.status === 'success' && response.data.length > 0) {
           setExpiries(response.data.map(toCompactExpiry))
@@ -89,7 +103,7 @@ export default function OptionTargetCalculator() {
     return () => {
       cancelled = true
     }
-  }, [apiKey, underlying])
+  }, [apiKey, underlying, exchange])
 
   // A new expiry selection can leave a previously selected strike orphaned.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only expiry should retrigger this reset
@@ -117,7 +131,7 @@ export default function OptionTargetCalculator() {
     const req: OptionTargetRequest = {
       apikey: apiKey,
       underlying,
-      exchange: 'NFO',
+      exchange,
       target_price: parsedTarget,
       reference: scenario.reference,
       iv_model: scenario.ivModel,
@@ -144,7 +158,7 @@ export default function OptionTargetCalculator() {
     }
 
     return req
-  }, [apiKey, underlying, expiry, scenario, objective])
+  }, [apiKey, underlying, exchange, expiry, scenario, objective])
 
   const { data, error, isLoading, updatedAt, refetch } = useOptionTarget({
     apiKey,
@@ -191,6 +205,21 @@ export default function OptionTargetCalculator() {
                   placeholder="NIFTY"
                   className="w-28 uppercase"
                 />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label className="text-xs text-muted-foreground">Exchange</Label>
+                <Select value={exchange} onValueChange={setExchange}>
+                  <SelectTrigger className="w-[150px]">
+                    <SelectValue placeholder="Exchange" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {EXCHANGE_OPTIONS.map((ex) => (
+                      <SelectItem key={ex.value} value={ex.value}>
+                        {ex.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="flex flex-col gap-1">
                 <Label className="text-xs text-muted-foreground">Expiry</Label>
@@ -275,6 +304,12 @@ export default function OptionTargetCalculator() {
           </div>
         </CardContent>
       </Card>
+
+      {exchange === 'MCX' && (
+        <Alert variant="warning">
+          <AlertDescription>{MCX_UNSUPPORTED_NOTE}</AlertDescription>
+        </Alert>
+      )}
 
       {error && (
         <Alert variant="destructive">
