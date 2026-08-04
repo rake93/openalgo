@@ -12,7 +12,10 @@ Session hours are per-exchange. An MCX contract trades 09:00-23:55, nearly
 two and a half times the NSE equity session, so assuming NSE hours everywhere
 undercounts MCX market time by 58 percent and CDS by 22 percent. The table
 below was verified against the platform's own market-timings API rather than
-recalled from memory.
+recalled from memory. It covers the NORMAL session for each exchange and is
+the OFFLINE FALLBACK: it cannot express a special session (for example the
+evening-only MCX session held on some equity holidays), because that varies
+day to day and this table is static.
 
 Whichever convention is chosen must be applied to BOTH the time-to-expiry used
 for IV calibration and the time used for repricing. Mixing conventions corrupts
@@ -23,8 +26,19 @@ which transitively reaches `services.market_calendar_service` for the exchange
 holiday list. That call degrades to weekends-only (never raises) when the
 holiday feed is unavailable, so this module stays usable in tests and offline.
 This is the one place the option_target package is not strictly dependency-free.
+
+Callers that need special-session accuracy pass `session_provider`: a callable
+`date -> ((open_h, open_m), (close_h, close_m)) | None` that this module treats
+as AUTHORITATIVE for `trading` mode, taking priority over both the static table
+and `is_trading_day`. `None` means the market was shut that day. This module
+never builds one itself (that would be IO, and this module is pure) — see
+`services.option_target_sessions.build_session_provider` for a provider backed
+by the platform's live market-timings service, with validation against the
+seeded data's known corruption.
 """
 
+from collections.abc import Callable
+from datetime import date as date_type
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -79,19 +93,22 @@ def session_minutes_for(exchange: str) -> int:
     return (close_h * 60 + close_m) - (open_h * 60 + open_m)
 
 
-def _session_bounds(day: datetime, exchange: str) -> tuple[datetime, datetime]:
-    (open_h, open_m), (close_h, close_m) = session_for(exchange)
-    return (
-        day.replace(hour=open_h, minute=open_m, second=0, microsecond=0),
-        day.replace(hour=close_h, minute=close_m, second=0, microsecond=0),
-    )
+def _session_minutes_on(
+    day: datetime,
+    start: datetime,
+    end: datetime,
+    session_bounds: tuple[tuple[int, int], tuple[int, int]],
+) -> float:
+    """Market minutes elapsed on `day` within [start, end], for the given session bounds.
 
-
-def _session_minutes_on(day: datetime, start: datetime, end: datetime, exchange: str) -> float:
-    """Market minutes elapsed on `day` within the window [start, end]."""
-    if not is_trading_day(day.date()):
-        return 0.0
-    open_at, close_at = _session_bounds(day, exchange)
+    `session_bounds` is the ((open_h, open_m), (close_h, close_m)) already
+    resolved for this specific day by the caller — this function does no
+    lookup of its own, so it works identically whether the bounds came from
+    the static table or a `session_provider`.
+    """
+    (open_h, open_m), (close_h, close_m) = session_bounds
+    open_at = day.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+    close_at = day.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
     lo = max(start, open_at)
     hi = min(end, close_at)
     if hi <= lo:
@@ -104,11 +121,22 @@ def year_fraction(
     end: datetime,
     day_count: str = "calendar",
     exchange: str = DEFAULT_EXCHANGE,
+    session_provider: Callable[[date_type], tuple[tuple[int, int], tuple[int, int]] | None]
+    | None = None,
 ) -> float:
     """Time from `start` to `end` in years under the given convention.
 
     `exchange` selects the session hours and is ignored for `calendar`.
     Returns 0.0 when `end` is at or before `start`.
+
+    `session_provider`, when given, is authoritative for `trading` mode: for
+    each calendar day in the range it is called with that day's `date` and
+    must return either the session bounds to use for that day (overriding
+    both the static table and `is_trading_day`) or `None` to mean the market
+    was shut. A day's minutes are always normalised against that day's OWN
+    session length, not a fixed constant — a special session's length can
+    differ from the exchange's normal session, and dividing by the wrong
+    length silently mis-states the fraction of the day that traded.
     """
     if day_count not in ("calendar", "trading"):
         raise ValueError(f"Unknown day_count: {day_count!r}. Use 'calendar' or 'trading'.")
@@ -119,11 +147,29 @@ def year_fraction(
     if day_count == "calendar":
         return (end - start).total_seconds() / (365 * 86400)
 
-    session_minutes = session_minutes_for(exchange)
-    minutes = 0.0
+    day_fractions = 0.0
     day = start.replace(hour=0, minute=0, second=0, microsecond=0)
     last = end.replace(hour=0, minute=0, second=0, microsecond=0)
     while day <= last:
-        minutes += _session_minutes_on(day, start, end, exchange)
+        if session_provider is not None:
+            bounds = session_provider(day.date())
+        elif is_trading_day(day.date()):
+            bounds = session_for(exchange)
+        else:
+            bounds = None
+
+        if bounds is None:
+            day += timedelta(days=1)
+            continue
+
+        (open_h, open_m), (close_h, close_m) = bounds
+        session_length = (close_h * 60 + close_m) - (open_h * 60 + open_m)
+        if session_length <= 0:
+            day += timedelta(days=1)
+            continue
+
+        minutes_on_day = _session_minutes_on(day, start, end, bounds)
+        day_fractions += minutes_on_day / session_length
         day += timedelta(days=1)
-    return (minutes / session_minutes) / TRADING_DAYS_PER_YEAR
+
+    return day_fractions / TRADING_DAYS_PER_YEAR

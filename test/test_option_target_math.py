@@ -683,3 +683,49 @@ def test_exchange_is_ignored_for_calendar_day_count():
 def test_sessions_table_covers_the_supported_exchanges():
     for exchange in ("NSE", "BSE", "NFO", "BFO", "CDS", "BCD", "MCX", "NCO"):
         assert exchange in SESSIONS
+
+
+def test_session_provider_overrides_the_static_table():
+    # Provider says this Tuesday ran an evening-only session, 17:00-23:55.
+    def provider(day):
+        return ((17, 0), (23, 55))
+
+    start = datetime(2026, 8, 4, 17, 0, tzinfo=IST)
+    end = datetime(2026, 8, 4, 23, 55, tzinfo=IST)
+    assert year_fraction(
+        start, end, "trading", exchange="MCX", session_provider=provider
+    ) == pytest.approx(1 / 252, rel=1e-6)
+
+
+def test_session_provider_returning_none_means_market_shut():
+    def provider(day):
+        return None
+
+    start = datetime(2026, 8, 4, 9, 0, tzinfo=IST)
+    end = datetime(2026, 8, 4, 23, 55, tzinfo=IST)
+    assert year_fraction(start, end, "trading", exchange="MCX", session_provider=provider) == 0.0
+
+
+def test_session_provider_is_authoritative_over_the_holiday_calendar():
+    # A Sunday. The static path would count zero; the provider says it traded.
+    def provider(day):
+        return ((9, 15), (15, 30))
+
+    start = datetime(2026, 8, 9, 9, 15, tzinfo=IST)
+    end = datetime(2026, 8, 9, 15, 30, tzinfo=IST)
+    assert year_fraction(start, end, "trading", exchange="NFO") == 0.0
+    assert year_fraction(
+        start, end, "trading", exchange="NFO", session_provider=provider
+    ) == pytest.approx(1 / 252, rel=1e-6)
+
+
+def test_session_provider_normalises_partial_days_against_its_own_session():
+    # Half of a 17:00-23:55 session (415 min) is 207.5 min.
+    def provider(day):
+        return ((17, 0), (23, 55))
+
+    start = datetime(2026, 8, 4, 17, 0, tzinfo=IST)
+    end = datetime(2026, 8, 4, 20, 27, 30, tzinfo=IST)
+    assert year_fraction(
+        start, end, "trading", exchange="MCX", session_provider=provider
+    ) == pytest.approx(0.5 / 252, rel=1e-6)
