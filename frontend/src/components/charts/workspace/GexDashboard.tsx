@@ -15,6 +15,12 @@ export interface GexDashboardProps {
   data: GEXLevelsResponse | null
   /** The newest refresh failed; what is shown is the previous snapshot. */
   stale: boolean
+  /**
+   * Dismiss the card. The study keeps running and its levels stay on the
+   * chart - this hides the readout only, and the Studies panel switches it
+   * back on. Omit to render no close control.
+   */
+  onHide?(): void
 }
 
 const GREEN = 'text-emerald-600 dark:text-emerald-400'
@@ -69,7 +75,7 @@ function Row({
   )
 }
 
-export function GexDashboard({ data, stale }: GexDashboardProps) {
+export function GexDashboard({ data, stale, onHide }: GexDashboardProps) {
   if (!data || data.status !== 'success') return null
 
   const regime = data.regime
@@ -119,10 +125,32 @@ export function GexDashboard({ data, stale }: GexDashboardProps) {
 
   return (
     <aside className="pointer-events-none absolute right-2 top-2 z-20 w-[216px] rounded-md border border-border bg-popover/90 text-[11.5px] leading-snug shadow-lg backdrop-blur">
-      <div className="border-b border-border px-2.5 py-1.5">
-        <span className="font-medium text-foreground">
+      <div className="flex items-center gap-2 border-b border-border px-2.5 py-1.5">
+        <span className="min-w-0 flex-1 truncate font-medium text-foreground">
           GEX Levels{data.underlying ? ` · ${data.underlying}` : ''}
         </span>
+        {onHide && (
+          // The card is pointer-events-none so it never swallows a click meant
+          // for the chart underneath. The close control is the one part that
+          // has to take clicks, so it opts back in.
+          <button
+            type="button"
+            onClick={onHide}
+            aria-label="Hide the GEX Levels card"
+            title="Hide - the levels stay on the chart"
+            className="pointer-events-auto -mr-1 grid h-4 w-4 shrink-0 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden="true">
+              <path
+                d="M4 4l8 8M12 4l-8 8"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                fill="none"
+              />
+            </svg>
+          </button>
+        )}
       </div>
 
       {stale && (

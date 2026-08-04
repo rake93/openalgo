@@ -6,7 +6,8 @@
  */
 
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
 import type { GEXLevelsResponse, GEXQuality, GEXSentiment } from '@/api/gex'
 import { GexDashboard } from './GexDashboard'
 
@@ -206,5 +207,19 @@ describe('GexDashboard', () => {
       <GexDashboard data={makeData({ status: 'error', message: 'boom' })} stale={false} />
     )
     expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe('GexDashboard hide control', () => {
+  it('renders no close control when onHide is omitted', () => {
+    render(<GexDashboard data={makeData()} stale={false} />)
+    expect(screen.queryByLabelText(/hide the gex levels card/i)).not.toBeInTheDocument()
+  })
+
+  it('calls onHide when the close control is pressed', async () => {
+    const onHide = vi.fn()
+    render(<GexDashboard data={makeData()} stale={false} onHide={onHide} />)
+    await userEvent.click(screen.getByLabelText(/hide the gex levels card/i))
+    expect(onHide).toHaveBeenCalledTimes(1)
   })
 })

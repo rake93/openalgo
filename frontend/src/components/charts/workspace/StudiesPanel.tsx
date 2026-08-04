@@ -432,6 +432,15 @@ export function StudiesPanel(p: StudiesPanelProps) {
               <option value="levels">Levels only</option>
             </TinySelect>
           </Field>
+          <Field label="Readout card" hint="The numbers panel over the chart">
+            <TinySelect
+              value={p.gex.showDashboard ? 'show' : 'hide'}
+              onChange={(e) => p.onGex({ showDashboard: e.target.value === 'show' })}
+            >
+              <option value="show">Show</option>
+              <option value="hide">Hide</option>
+            </TinySelect>
+          </Field>
           <Field label="Refresh">
             <TinySelect
               value={String(p.gex.refreshSeconds)}
@@ -524,4 +533,3 @@ function Check({
     </label>
   )
 }
-

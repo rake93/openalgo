@@ -26,12 +26,11 @@ import {
   updateLayout,
 } from '@/api/indicators'
 import { DataWindow } from '@/components/charts/DataWindow'
+import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
 import { InspectorPanel } from '@/components/charts/InspectorPanel'
 import { ProfilePanel } from '@/components/charts/ProfilePanel'
-import { useInspectorPin } from '@/lib/charts/use-inspector-pin'
-import { DirectionPanel } from '@/components/charts/workspace/DirectionPanel'
-import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
 import { ChartTopBar } from '@/components/charts/workspace/ChartTopBar'
+import { DirectionPanel } from '@/components/charts/workspace/DirectionPanel'
 import { DrawingProperties } from '@/components/charts/workspace/DrawingProperties'
 import { DrawingRail } from '@/components/charts/workspace/DrawingRail'
 import { GexDashboard } from '@/components/charts/workspace/GexDashboard'
@@ -60,6 +59,7 @@ import type { LibraryIndicatorInstance } from '@/lib/charts/library-indicators'
 import type { ProfileHover, ProfileSettings } from '@/lib/charts/profiles'
 import { DEFAULT_PROFILE_SETTINGS } from '@/lib/charts/profiles'
 import type { CtxItem, OrderSide, OrderType, TradingViewState } from '@/lib/charts/trading-layer'
+import { useInspectorPin } from '@/lib/charts/use-inspector-pin'
 import {
   ChartWorkspaceController,
   type CrosshairData,
@@ -711,6 +711,10 @@ export default function ChartWorkspace() {
             <GexDashboard
               data={gexSnapshot}
               stale={controllerRef.current?.gexLevels.stale ?? false}
+              onHide={() => {
+                controllerRef.current?.gexLevels.setConfig({ showDashboard: false })
+                setGex((s) => ({ ...s, showDashboard: false }))
+              }}
             />
           )}
 
