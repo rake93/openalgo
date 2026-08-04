@@ -41,6 +41,8 @@ export interface Snapshot {
   atm_iv_pct: number
   days_to_expiry: number
   is_zero_dte: boolean
+  basis_plausible: boolean
+  market_open: boolean
   t_years: number
   matched_future: string | null
   lot_size: number

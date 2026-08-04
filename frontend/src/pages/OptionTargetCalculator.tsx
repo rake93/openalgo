@@ -216,7 +216,15 @@ export default function OptionTargetCalculator() {
                 <div className="flex flex-wrap items-center gap-2 pl-3 border-l border-border">
                   <Badge variant="secondary">Spot {formatPrice(snapshot.spot)}</Badge>
                   <Badge variant="secondary">Forward {formatPrice(snapshot.forward)}</Badge>
-                  <Badge variant="secondary">
+                  <Badge
+                    variant={snapshot.basis_plausible ? 'secondary' : 'destructive'}
+                    className={snapshot.basis_plausible ? undefined : 'font-semibold'}
+                    title={
+                      snapshot.basis_plausible
+                        ? undefined
+                        : 'This basis is larger than carry over the time to expiry can explain. The at-the-money quotes driving put-call parity are probably stale or wide.'
+                    }
+                  >
                     Basis {snapshot.basis >= 0 ? '+' : ''}
                     {formatPrice(snapshot.basis)}
                   </Badge>
@@ -231,6 +239,11 @@ export default function OptionTargetCalculator() {
                   {snapshot.is_zero_dte && (
                     <Badge variant="destructive" className="font-semibold">
                       0DTE
+                    </Badge>
+                  )}
+                  {!snapshot.market_open && (
+                    <Badge variant="outline" className="font-semibold">
+                      Market closed
                     </Badge>
                   )}
                 </div>
