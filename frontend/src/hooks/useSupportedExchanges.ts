@@ -65,12 +65,12 @@ export function useSupportedExchanges() {
       .map((e) => ({ value: e, label: e }))
 
     // Exchanges shown inside /tools pages (Strategy Builder, Option Chain,
-    // OI Tracker, Straddle Chart, Custom Straddle etc.). MCX and CDS are
-    // temporarily excluded — the option chain + quotes plumbing doesn't
-    // fully support them yet. CRYPTO is retained for crypto-only brokers.
-    const toolsFnoExchanges: ExchangeOption[] = fnoExchanges.filter(
-      (e) => e.value !== 'MCX' && e.value !== 'CDS'
-    )
+    // OI Tracker, Straddle Chart, Custom Straddle etc.). MCX now resolves
+    // through the shared pricing-underlying resolver (linked-future pricing),
+    // so it is fully supported here. CDS stays excluded — this broker's
+    // master carries no CDS option expiries at all, not a plumbing gap.
+    // CRYPTO is retained for crypto-only brokers.
+    const toolsFnoExchanges: ExchangeOption[] = fnoExchanges.filter((e) => e.value !== 'CDS')
 
     // Defaults
     const defaultExchange = tradingExchanges[0]?.value ?? (isCrypto ? 'CRYPTO' : 'NSE')

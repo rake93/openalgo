@@ -54,7 +54,16 @@ from sqlalchemy.engine import Engine
 # outlast the master-contract bulk insert, which is by far the longest write in
 # the process; everything else finishes in milliseconds. Override with
 # SQLITE_BUSY_TIMEOUT_MS on unusually slow storage.
-DEFAULT_BUSY_TIMEOUT_MS = 60_000
+#
+# 60s was the first value here and proved too short: a dhan master-contract
+# download replacing 202,206 symtoken rows was measured at 124s end to end
+# (master_contract_status.download_duration_seconds), and writers arriving in
+# that window still failed - the session-expiry token revoke, active_sessions
+# last_seen, and the APScheduler jobstores. Raised to 180s, which keeps the
+# wait under the 300s gunicorn worker timeout. This is a shock absorber, not a
+# licence to hold the write lock that long: brokers should commit the
+# master-contract replace in batches so the lock is released continuously.
+DEFAULT_BUSY_TIMEOUT_MS = 180_000
 
 
 def _busy_timeout_ms():

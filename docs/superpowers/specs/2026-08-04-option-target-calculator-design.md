@@ -486,10 +486,25 @@ Run the `fd-audit` skill before considering the work done.
 
 1. Route and tool name — `/optiontarget`, "Option Target Calculator".
 2. Default strike window — 12 each side of ATM.
-3. Vol-beta trailing window — spec assumes 90 minutes. Shorter reacts faster to
-   a regime change; longer is more stable.
-4. Whether the vol-beta estimator should also run on prior sessions' data when
-   the current session is too young (before ~10:00) to give 20 samples.
+3. ~~Vol-beta trailing window — spec assumes 90 minutes.~~ **Resolved:
+   120 minutes**, measured back from the last bar, as a maximum lookback rather
+   than a minimum wait. 120 is the shortest window where the first-differenced
+   regression also clears the R-squared 0.30 gate (1.99 on 2026-08-04 NIFTY);
+   at 30/60/90 minutes differencing returns 0.22/0.22/0.29 and falls back, so
+   a shorter window's higher levels estimate cannot be distinguished from a
+   shared time-of-day trend.
+4. ~~Whether the vol-beta estimator should also run on prior sessions' data.~~
+   **Resolved: no.** Measured on 2026-08-04 NIFTY, the existing gates already
+   degrade correctly on their own — "Only 11 samples" at 09:25, a weak fit
+   until ~09:45, and clean estimates from 10:00 (beta 1.60, R-squared 0.60).
+   That is a 45-minute window, not a gap worth new plumbing, and an overnight
+   return is not a 1-minute return.
+
+Added during implementation, not in the original spec: an estimate beyond the
+Panic preset is **clamped to 2.0** with the raw value reported. Both NIFTY and
+BANKNIFTY clamped on 2026-08-04 (raw 2.89 and 2.10), so the clamp binds on an
+ordinary day — which is the point. The sample range that produced 2.89 was
+0.18 percent wide.
 
 ## 12. Validation assets
 

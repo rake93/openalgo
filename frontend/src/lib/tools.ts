@@ -132,4 +132,11 @@ export const tools: Tool[] = [
     href: '/arbitrage',
     color: 'bg-green-600',
   },
+  {
+    title: 'Option Target Calculator',
+    description:
+      'Project what every strike will be worth at your futures or spot target, ranked by rupee P&L, percentage return, reward-to-risk or partial-move robustness',
+    href: '/optiontarget',
+    color: 'bg-purple-500',
+  },
 ]

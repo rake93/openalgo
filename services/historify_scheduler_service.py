@@ -15,6 +15,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from utils.logging import get_logger
+from utils.scheduler import ResilientBackgroundScheduler
 
 logger = get_logger(__name__)
 
@@ -57,7 +58,10 @@ class HistorifyScheduler:
                         url=db_url, tablename="historify_apscheduler_jobs"
                     )
                 }
-                self._scheduler = BackgroundScheduler(
+                # Resilient because this jobstore shares openalgo.db with the
+                # master-contract download, whose write lock used to kill the
+                # scheduler thread (schedules are also restored below).
+                self._scheduler = ResilientBackgroundScheduler(
                     jobstores=jobstores,
                     job_defaults={
                         "coalesce": True,

@@ -297,6 +297,12 @@ def react_arbitrage():
     return serve_react_app()
 
 
+# Option Target Calculator - project strike outcomes at a futures/spot target
+@react_bp.route("/optiontarget")
+def react_optiontarget():
+    return serve_react_app()
+
+
 # WebSocket market data test page
 @react_bp.route("/websocket/test")
 def react_websocket_test():

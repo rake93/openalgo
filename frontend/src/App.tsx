@@ -79,6 +79,7 @@ const GEXDashboard = lazy(() => import('@/pages/GEXDashboard'))
 const IVSmile = lazy(() => import('@/pages/IVSmile'))
 const OIProfile = lazy(() => import('@/pages/OIProfile'))
 const Arbitrage = lazy(() => import('@/pages/Arbitrage'))
+const OptionTargetCalculator = lazy(() => import('@/pages/OptionTargetCalculator'))
 const StrategyBuilder = lazy(() => import('@/pages/StrategyBuilder'))
 const StrategyPortfolio = lazy(() => import('@/pages/StrategyPortfolio'))
 
@@ -210,10 +211,7 @@ function App() {
                   element={<Navigate to="/portfolio-backtester" replace />}
                 />
                 <Route path="/sip-backtester" element={<SipBacktester />} />
-                <Route
-                  path="/sip-backtester/results"
-                  element={<SipBacktesterResults />}
-                />
+                <Route path="/sip-backtester/results" element={<SipBacktesterResults />} />
                 <Route path="/portfolio-analyzer" element={<PortfolioAnalyzer />} />
                 <Route path="/gocharting" element={<GoCharting />} />
                 <Route path="/pnl-tracker" element={<PnLTracker />} />
@@ -236,6 +234,7 @@ function App() {
                 <Route path="/ivsmile" element={<IVSmile />} />
                 <Route path="/oiprofile" element={<OIProfile />} />
                 <Route path="/arbitrage" element={<Arbitrage />} />
+                <Route path="/optiontarget" element={<OptionTargetCalculator />} />
                 <Route path="/strategybuilder" element={<StrategyBuilder />} />
                 <Route path="/strategybuilder/portfolio" element={<StrategyPortfolio />} />
                 {/* Legacy /tools/strategy paths — redirect to the new route. */}

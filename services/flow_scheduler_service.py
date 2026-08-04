@@ -17,6 +17,8 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from utils.scheduler import ResilientBackgroundScheduler
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,10 +53,14 @@ class FlowScheduler:
             self._api_key = api_key
 
             try:
+                # Persistent by necessity: a user's workflow schedule exists
+                # nowhere else, so it has to survive a restart. Resilient because
+                # that jobstore shares openalgo.db with the master-contract
+                # download, whose write lock used to kill the scheduler thread.
                 jobstores = {
                     "default": SQLAlchemyJobStore(url=db_url, tablename="flow_apscheduler_jobs")
                 }
-                self._scheduler = BackgroundScheduler(
+                self._scheduler = ResilientBackgroundScheduler(
                     jobstores=jobstores,
                     job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60},
                 )

@@ -40,6 +40,7 @@ need → drill into the specific file. Don't load everything at once.
 |---|---|
 | Chart Workspace (`/charts`) — chart types, indicators, drawings, profiles, order flow, on-chart trading | [chart-workspace.md](chart-workspace.md) |
 | Scalping Terminal (`/scalping`) | [scalping/PRD.md](scalping/PRD.md) |
+| Option Target Calculator (`/optiontarget`) — project strike premiums to a futures/spot target, ranking and API contract | [option-target-calculator.md](option-target-calculator.md) |
 | Scanner architecture | [scanner-architecture.md](scanner-architecture.md) |
 | WhatsApp alerts | [whatsapp.md](whatsapp.md) |
 | Telegram chart rendering | [telegram-chart-rendering.md](telegram-chart-rendering.md) |
