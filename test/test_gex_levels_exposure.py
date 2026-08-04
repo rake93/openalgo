@@ -423,3 +423,62 @@ def test_the_walls_do_not_move_when_the_lot_size_changes():
     assert walls_75.put_wall == walls_150.put_wall
     assert walls_75.call_wall_at_edge == walls_150.call_wall_at_edge
     assert walls_75.put_wall_at_edge == walls_150.put_wall_at_edge
+
+
+def test_the_gammas_are_carried_through_to_the_exposure():
+    """The `/gex` Tools page displays gamma per strike, so `price_exposures`
+    must surface the values `safe_gamma` returned rather than discarding them
+    after the multiplication. A silently-zero gamma column would read as a
+    dead chain on a page whose GEX numbers are non-zero."""
+    gamma = 0.00042
+    rows = _rows()
+    out = compute_exposures(
+        _FlatGamma(gamma=gamma),
+        rows,
+        forward=24600.0,
+        t_years=0.02,
+        r=0.065,
+        atm_strike=24600.0,
+        weight_by="oi",
+    )
+
+    for exposure in out:
+        assert exposure.call_gamma == gamma
+        assert exposure.put_gamma == gamma
+
+    # And they are genuinely the gammas the exposure was built from: with a
+    # flat gamma the call leg is exactly gamma * oi * F^2 * 0.01.
+    scale = 24600.0 * 24600.0 * 0.01
+    by_strike = {row.strike: row for row in rows}
+    for exposure in out:
+        row = by_strike[exposure.strike]
+        assert exposure.call_gex == pytest.approx(exposure.call_gamma * row.call_oi * scale)
+        assert exposure.put_gex == pytest.approx(-exposure.put_gamma * row.put_oi * scale)
+
+
+def test_a_gamma_that_cannot_be_computed_is_reported_as_zero_not_omitted():
+    """safe_gamma fails to 0.0 rather than raising; that zero must reach the
+    payload, because the page's gamma column is read positionally against the
+    strike list."""
+
+    class _Broken:
+        def implied_volatility(self, price, F, K, r, t, flag):
+            return 0.20
+
+        def gamma(self, flag, F, K, t, r, sigma):
+            raise ValueError("solver diverged")
+
+    out = compute_exposures(
+        _Broken(),
+        _rows(),
+        forward=24600.0,
+        t_years=0.02,
+        r=0.065,
+        atm_strike=24600.0,
+        weight_by="oi",
+    )
+
+    for exposure in out:
+        assert exposure.call_gamma == 0.0
+        assert exposure.put_gamma == 0.0
+        assert exposure.net_gex == 0.0

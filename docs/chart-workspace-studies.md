@@ -310,10 +310,23 @@ silently vanishing.
 
 ### Compared with the `/gex` tool
 
-The `/gex` Tools page and this study can show different **magnitudes** for the
-same chain: `/gex` prices off spot and omits the lot-size and notional factors,
-while the study prices off the per-expiry forward and reports currency per 1%
-move. The **strikes** the walls land on should agree.
+The `/gex` Tools page and this study now **agree**. Both run the same maths in
+`services/gex_levels/exposure.py` over the same chain: gamma priced off the
+per-expiry forward, weighted by raw open interest with no lot factor, reported
+as currency per 1% move, with calls positive and puts negative.
+
+The one thing that still differs is the **window**. `/gex` fetches 45 strikes
+each side of ATM and the study fetches 23, so the two totals differ by the
+contribution of the outer strikes `/gex` sees and the study does not. On a
+measured NIFTY chain that was 8,170 Cr against 8,415 Cr — the 44 extra strikes
+contributed −246 Cr — while every strike in the 47-strike overlap matched
+exactly. Compare like for like by comparing per-strike values, not totals.
+
+They used to disagree, and if you are reading an older screenshot or a
+comparison written before 2026-08-05, that is why: `/gex` priced Black-76 off
+spot rather than the forward, which displaced the walls by the cash-future
+basis, and it multiplied open interest by the lot size, which this broker has
+already applied — inflating every figure by 65x on NIFTY.
 
 ---
 

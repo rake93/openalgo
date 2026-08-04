@@ -54,7 +54,15 @@ class ChainRow:
 
 @dataclass(frozen=True)
 class StrikeExposure:
-    """Signed gamma exposure at one strike, in currency per 1% move."""
+    """
+    Signed gamma exposure at one strike, in currency per 1% move.
+
+    `call_gamma` and `put_gamma` are the raw Black-76 gammas the exposure was
+    built from, carried through because the `/gex` Tools page displays them per
+    strike. They default to 0.0 so that the many places which build a
+    StrikeExposure to exercise the level, quality and sentiment logic - none of
+    which reads gamma - do not have to supply one.
+    """
 
     strike: float
     call_gex: float
@@ -62,6 +70,8 @@ class StrikeExposure:
     net_gex: float
     call_iv: float | None
     put_iv: float | None
+    call_gamma: float = 0.0
+    put_gamma: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -237,6 +247,8 @@ def price_exposures(
                 net_gex=call_gex + put_gex,
                 call_iv=call_iv,
                 put_iv=put_iv,
+                call_gamma=call_gamma,
+                put_gamma=put_gamma,
             )
         )
     return out

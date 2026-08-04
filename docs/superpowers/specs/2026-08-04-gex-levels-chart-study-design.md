@@ -434,63 +434,89 @@ These are choices, not oversights. Do not "fix" them on sight.
 
 ---
 
-## 11. Backlog: migrate the `/tools` options pages onto the shared module
+## 11. Migrating the `/tools` options pages onto the shared module
 
-**Status:** deferred, not scheduled. Raised 2026-08-05 after the chart study
-shipped. **This is the only deferred item with a known correctness consequence**
-rather than a missing capability, so it is written up in enough detail to pick up
-cold.
+**Status:** `/gex` **done** 2026-08-05. Gamma Density and the remaining Tools
+pages are still open — see "What is left" below.
 
-### What is wrong today
+### What was wrong
 
-`services/gex_service.py`, which backs the `/gex` Tools page, carries three
-defects the chart study fixed by construction. They were found while building it
-and confirmed against a live chain:
+`services/gex_service.py`, which backs the `/gex` Tools page, carried three
+defects the chart study fixed by construction. They were found while building
+it and confirmed against a live chain:
 
-1. **Open interest is multiplied by the lot size.** The broker reports OI and
+1. **Open interest was multiplied by the lot size.** The broker reports OI and
    volume in **units**, already lot-multiplied — verified across 188 live NIFTY
-   values, every one an exact multiple of 65. The extra factor inflates every
-   figure by the lot size. On NIFTY that is 65x.
-2. **Black-76 is priced off spot, not the per-expiry forward.** Gamma peaks at
+   values, every one an exact multiple of 65. The extra factor inflated every
+   figure by the lot size. On NIFTY that is 65x. Independent corroboration:
+   `GEXDashboard.tsx` *divides* OI by the lot size to display lots, so the page
+   author already knew the units.
+2. **Black-76 was priced off spot, not the per-expiry forward.** Gamma peaks at
    the ATM-*forward* strike. The measured BANKNIFTY 21-day basis is +138.9
-   points, which is more than one strike — so the walls land in the wrong place,
-   not merely at the wrong scale.
-3. **`strike_count=45`** — 91 strikes, 182 symbols, well past the 100-symbol
-   Fyers multiquote OI bucket that `oi_tracker_service.py:142` documents.
-   Exceeding it returns **empty open interest rather than an error**.
+   points, which is more than one strike — so the walls landed in the wrong
+   place, not merely at the wrong scale.
+3. **`calculate_greeks` was called once per strike** — up to 182 service calls
+   for a 45-strike chain, each one re-parsing the option symbol and recomputing
+   time to expiry.
 
-Point 3 has never been confirmed to bite in practice; the generic multiquote path
-may absorb it. **Verify before assuming it is broken.** Points 1 and 2 are
-certain.
+### What was changed
 
-`services/gamma_density_service.py` is largely unaffected: it already resolves
-the forward, and it deliberately omits the lot factor because Γ×OI is a density
-rather than a notional. Its migration is a tidy-up, not a fix.
+- `StrikeExposure` gained `call_gamma` and `put_gamma`, populated in
+  `price_exposures`. Additive, defaulted to `0.0` so the level, quality and
+  sentiment tests that construct exposures by hand are untouched. `/gex`
+  displays gamma per strike and needed it surfaced rather than discarded.
+- `services/gex_service.py` was rewritten around the shared pipeline: one
+  `get_option_chain` call, `expiry_datetime` + `calculate_time_to_expiry`,
+  `_resolve_forward_price` (falling back to spot), then `compute_exposures`
+  with `weight_by="oi"` and a direct `black76` pass. `lot_size` survives in the
+  response as display data only.
+- **Put GEX became signed.** `pe_gex` and `total_pe_gex` are now negative and
+  `total_net_gex = total_ce_gex + total_pe_gex`, matching `price_exposures` and
+  the chart study's dashboard. Per-strike `net_gex` and `total_net_gex` are
+  numerically unchanged by the flip — `ce - pe` with a positive put equals
+  `ce + pe` with a signed one — so only the put columns change sign. Every
+  other response key is unchanged; `test/test_gex_service.py` pins the whole
+  contract, since the page had no test at all before this.
 
-### Why it was not done here
+### `strike_count` stays at 45 — measured, not assumed
 
-Changing the numbers on pages the user had not asked to be reviewed is a
-different decision from building a new study, and it needs its own verification
-pass. `/gex`, Max Pain, OI Tracker and Gamma Density all read the same chain.
+The original write-up flagged 45 strikes (91 strikes, 182 symbols) as past the
+100-symbol fyers multiquote OI bucket that `oi_tracker_service.py` documents,
+and proposed dropping it to 23. **That was measured on this broker and is not a
+problem here.** Of the 94 legs common to a 23-strike and a 45-strike request,
+**zero** lose their open interest, and all 28 empty legs at 45 are genuinely
+dead deep-OTM strikes in the outer ring. Narrowing the window would drop real
+strikes from the page to fix a problem this broker does not have — a product
+regression. It stays at 45, with a comment at the constant saying so.
 
-### What doing it involves
+**The fyers case remains unverified**: it could not be tested without a fyers
+session. The chart study keeps its own `STRIKE_COUNT = 23` regardless, because
+a study that refreshes on a timer has a different cost profile than a page load
+and does not need the outer ring.
 
-- Point `gex_service` at `services/gex_levels/exposure.py` for the per-strike
-  maths, and at `_resolve_forward_price` for `F`.
-- Drop `strike_count` to 23, or measure that 45 is genuinely safe on this broker.
-- **Expect the displayed magnitudes to change** — roughly 65x smaller on NIFTY.
-  That is the fix, not a regression. Say so in the release note, because a user
-  watching that page will notice.
-- The *strikes* the walls land on should barely move for a near-dated expiry and
-  will move more for a far one, since that is where the basis is largest.
-- Best done centrally: normalising units-versus-lots inside
-  `option_chain_service` would fix every consumer at once and stop the next tool
-  repeating it. Larger blast radius, so it needs its own regression pass across
-  all four pages.
+### Verified live
 
-### The honest reason to do it
+Same underlying and expiry, `weight_by='oi'`, against a live chain:
 
-Until this lands, `/gex` and the chart study will disagree about the same chain.
-The strikes should agree; the magnitudes will not. That is documented in
-`docs/chart-workspace-studies.md` so nobody reads it as a bug — but two surfaces
-disagreeing is a support question waiting to happen.
+| | net GEX | window |
+| --- | --- | --- |
+| `/gex` Tools page | 8,170 Cr | 91 strikes |
+| GEX Levels study | 8,415 Cr | 47 strikes |
+
+Every strike in the 47-strike overlap matched to 0.0000%; the whole 245 Cr gap
+is the 44 outer strikes `/gex` sees and the study does not (−246 Cr). That is
+the migration being faithful, and it is now recorded in
+`docs/chart-workspace-studies.md` in place of the old note saying the two
+surfaces disagree.
+
+### What is left
+
+- `services/gamma_density_service.py` is largely unaffected: it already
+  resolves the forward, and it deliberately omits the lot factor because Γ×OI
+  is a density rather than a notional. Its migration is a tidy-up, not a fix.
+- Max Pain and OI Tracker read the same chain and have not been reviewed for
+  the units question.
+- Still the better long-term shape: normalising units-versus-lots inside
+  `option_chain_service` would fix every consumer at once and stop the next
+  tool repeating it. Larger blast radius, so it needs its own regression pass
+  across all four pages.
