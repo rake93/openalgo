@@ -95,8 +95,17 @@ def scan_zero_gamma(
       1. Sample SCAN_STEPS forward levels across +/- SCAN_RANGE_PCT of `forward`.
       2. At each, recompute EVERY contract's gamma with Black-76 - `t` and
          `sigma` held fixed, only F varies - and sum the signed exposure.
-      3. Find the first sign change and interpolate linearly between the two
-         bracketing samples.
+      3. Collect EVERY sign change, interpolating linearly between the two
+         bracketing samples, and return the one nearest `forward`.
+
+    Nearest, not first. A real chain can flip sign more than once across a 20%
+    window - short gamma far downside, long gamma near spot, short gamma far
+    upside - and returning the first crossing found while walking up from the
+    bottom of the window reports the far-downside flip. What a trader means by
+    "the gamma flip" is the boundary of the CURRENT regime: the crossing that
+    brackets today's price, above which dealers stabilise and below which they
+    amplify. That framing only makes sense for the adjacent crossing, which is
+    also why the empty case reads "no LOCAL cross".
 
     Volatility is held at each strike's own IV, inverted once at the real
     forward. Re-inverting at every scan level would be both far more expensive
@@ -112,10 +121,12 @@ def scan_zero_gamma(
         weight_by: 'oi' for the standing book, 'volume' for today's flow.
 
     Returns:
-        The interpolated price, or None when the profile does not cross zero
-        anywhere in the window. None is a normal outcome - a chain can be long
-        gamma or short gamma across its whole plausible range - and callers
-        must render it as "no local cross", not as an error.
+        The interpolated price of the crossing nearest `forward`, or None when
+        the profile does not cross zero anywhere in the window. None is a normal
+        outcome - a chain can be long gamma or short gamma across its whole
+        plausible range - and callers must render it as "no local cross", not as
+        an error. Two crossings exactly equidistant from `forward` resolve to
+        the lower one, deterministically.
     """
     if not rows or forward <= 0 or t_years <= 0:
         return None
@@ -135,6 +146,9 @@ def scan_zero_gamma(
     hi = forward * (1.0 + SCAN_RANGE_PCT)
     step = (hi - lo) / (SCAN_STEPS - 1)
 
+    # Every sample is visited: the nearest crossing cannot be known until the
+    # whole window has been walked, so there is no early exit here.
+    crossings: list[float] = []
     previous_level: float | None = None
     previous_total: float | None = None
 
@@ -154,12 +168,14 @@ def scan_zero_gamma(
         )
 
         if previous_total is not None and _crosses_zero(previous_total, total):
-            return _interpolate_zero(previous_level, previous_total, level, total)
+            crossings.append(_interpolate_zero(previous_level, previous_total, level, total))
 
         previous_level = level
         previous_total = total
 
-    return None
+    if not crossings:
+        return None
+    return min(crossings, key=lambda crossing: abs(crossing - forward))
 
 
 def _crosses_zero(before: float, after: float) -> bool:

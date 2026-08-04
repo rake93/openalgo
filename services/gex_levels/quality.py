@@ -17,6 +17,10 @@ Verdict = Literal["good", "degraded", "unusable"]
 
 # At or below this share of strikes yielding an invertible IV, the profile is
 # being driven by the fallback volatility rather than by the market.
+#
+# The comparison below MUST be `<=`, not `<`. The 3-priced-of-5 boundary case
+# is exactly 0.6 in IEEE754 (`3/5 == 0.6` is True in Python), so a strict `<`
+# grades it "good" and the test for it fails.
 _MIN_PRICED_SHARE = 0.6
 
 
@@ -30,6 +34,12 @@ class Quality:
     both_sides: bool
     wall_at_edge: bool
     notes: list[str] = field(default_factory=list)
+
+    @property
+    def may_draw(self) -> bool:
+        """Whether the caller should draw levels at all. 'degraded' still draws,
+        with the caveat in `notes` shown alongside."""
+        return self.verdict != "unusable"
 
 
 def assess_quality(
@@ -62,31 +72,46 @@ def assess_quality(
     notes: list[str] = []
 
     if used == 0 or total_weight <= 0:
+        # Two different failures, and they must not share a note. An empty
+        # result has no chain to have open interest in, so blaming the book
+        # would point the reader at the wrong problem entirely.
+        if used == 0:
+            note = "No strikes were returned for this chain"
+        else:
+            note = f"No open interest or volume across the {used} fetched strikes"
         return Quality(
             verdict="unusable",
             strikes_used=used,
             strikes_priced=priced,
             both_sides=both_sides,
             wall_at_edge=wall_at_edge,
-            notes=["No open interest or volume in the fetched chain"],
+            notes=[note],
         )
 
     degraded = False
 
+    # These notes are shown verbatim to a trader in a small panel, so they say
+    # what is wrong and what it means for the reading - not what the solver did.
     if priced / used <= _MIN_PRICED_SHARE:
         degraded = True
         notes.append(
-            f"Only {priced} of {used} strikes invert to an implied volatility; "
-            "the rest are priced at the chain's ATM volatility"
+            f"Only {priced} of {used} strikes have live option prices; the rest use an "
+            "estimated volatility, so their gamma is less reliable."
         )
 
     if not both_sides:
         degraded = True
-        notes.append("The fetched strikes sit entirely on one side of the forward")
+        notes.append(
+            "The fetched strikes sit entirely on one side of the forward, so a wall on "
+            "the missing side may just be the window edge."
+        )
 
     if wall_at_edge:
         degraded = True
-        notes.append("A wall sits at the edge of the fetched window and may be a window artefact")
+        notes.append(
+            "A wall sits at the edge of the fetched strike window and may be an artefact "
+            "of where the window stopped rather than a real concentration."
+        )
 
     return Quality(
         verdict="degraded" if degraded else "good",
