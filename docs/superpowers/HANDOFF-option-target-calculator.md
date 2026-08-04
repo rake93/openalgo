@@ -95,22 +95,58 @@ over the moves the session actually made (a few tenths of a percent) and then
 applied to a target move that may be 1 percent or more. `r_squared` and
 `samples` are reported so the extrapolation is visible, but it is real.
 
-### 3.2 Cross-expiry compare
+### 3.2 Cross-expiry compare — DEFERRED, not scheduled
 
-Spec Step 13, never built. Price the recommended strike across the next 2-3
-expiries so the weekly-versus-monthly choice is explicit. Self-contained.
+Spec Step 13. Price the recommended strike across the next 2-3 expiries so the
+weekly-versus-monthly choice is explicit. Self-contained, and still **zero
+code** — no `compare_expiries` request field, no `expiry_compare[]` response
+field, nothing in the UI.
 
-### 3.3 Buy button and Strategy Builder handoff
+**Decided on 2026-08-04 not to build it.** This is a deliberate deferral, not
+an oversight or a blocked item: the feature works without it, and the design
+spec's own envelope reserves the field whenever someone picks it up. Do not
+treat its absence as a bug to be fixed on sight.
 
-The user asked for both. Left out because the order-placement and Strategy
-Builder leg contracts were not investigated, and guessing would have produced
-placeholder code. The page is analysis-only today.
+### 3.3 Buy button and Strategy Builder handoff — DONE (2026-08-04, session 2)
 
-### 3.4 CDS
+Both contracts turned out to be fully specified; nothing needed guessing.
+
+**Buy button.** One per non-excluded row, opening a confirm dialog that shows
+the exact payload before anything is sent. Orders go MARKET/MIS through
+`tradingApi.placeOrder`. Two things worth keeping in mind:
+
+- `place_order_service` already honours `get_analyze_mode()`, so analyzer mode
+  routes to the sandbox with no special-casing here. The dialog reads
+  `useThemeStore().appMode` to say which mode the click will actually hit.
+- Quantity is `lots x lot_size`, not lots (`Scalping.tsx:842`). CNC is an
+  equity product and is never used for options.
+
+**Strategy Builder handoff.** `?exchange=NFO&underlying=NIFTY&expiry=11AUG26&legs=24000CE:BUY:1`,
+parsed by `frontend/src/lib/strategyHandoff.ts` (26 tests). Only the legs'
+identity travels: price, IV, lot size and the broker symbol are re-resolved by
+the builder from its own live chain. That is deliberate - some brokers do not
+follow the standard `BASE[DDMMMYY][STRIKE][CE|PE]` concatenation, so a symbol
+built anywhere but the chain can be invalid (`StrategyBuilder.tsx:857`). It
+also means the two pages will show slightly different premiums; that is two
+quotes moments apart, not a bug.
+
+Codec and receiver both fail closed - one malformed or unlisted leg rejects the
+whole handoff, because a strategy short a leg is a different strategy with a
+different payoff and would arrive looking valid.
+
+The builder already had `ExecuteBasketDialog`, so the trade path continues from
+there. No changes were needed to how it executes.
+
+### 3.4 CDS — DEFERRED, blocked on data
 
 Still excluded from `toolsFnoExchanges` in `useSupportedExchanges.ts`. This
 broker's master has **no CDS option expiries at all**, so this is a data
-question before it is a code question.
+question before it is a code question — enabling the exchange in the UI would
+produce an empty chain, not a working surface.
+
+Re-check the master contract before touching any code. If the expiries appear
+there, the calculator itself needs no CDS-specific work: currency options price
+off the same forward machinery as everything else.
 
 ### 3.5 Pre-existing, not caused by this work
 

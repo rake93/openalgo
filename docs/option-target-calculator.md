@@ -270,10 +270,57 @@ made, typically a few tenths of a percent, and then applied to a target move
 that may be 1 percent or more. Beta is extrapolated beyond its sample range;
 `r_squared` and `samples` are reported so that extrapolation is visible.
 
+## Trading from the page
+
+Two exits, so a ranked strike does not have to be retyped somewhere else.
+
+**Buy** on any non-excluded row opens a confirm dialog showing the exact
+payload — broker symbol, exchange, action, quantity as lots x lot size, order
+type, estimated cost, measured spread — before anything is sent. Orders are
+`MARKET` / `MIS`; `CNC` is an equity product and is never used for options.
+Quantity is `lots x lot_size`, not lots.
+
+Analyzer mode needs no special handling here: `place_order_service` already
+honours `get_analyze_mode()` and routes to the sandbox. The dialog reads the
+same signal so it can say up front whether the click places a live order or a
+simulated one.
+
+Because orders are `MARKET`, the dialog names the spread whenever the book is
+wider than 1 percent. This page measures `spread_pct` anyway, and a market
+order on a wide option book can fill well outside the mid the projection
+assumed — a live NIFTY recommendation measured 1.68 percent on the first run.
+
+**Open in Strategy Builder** hands the selected strike over as a URL:
+
+```text
+/strategybuilder?exchange=NFO&underlying=NIFTY&expiry=11AUG26&legs=24000CE:BUY:1
+```
+
+Only the legs' identity is encoded. Price, IV, lot size and the broker symbol
+are re-resolved by the builder from its own live chain — fresher than this
+page's snapshot, and safer, because some brokers do not follow the standard
+`BASE[DDMMMYY][STRIKE][CE|PE]` concatenation and a symbol constructed elsewhere
+can be invalid. Expect the two pages to show slightly different premiums: that
+is two quotes moments apart, not an inconsistency.
+
+Both the codec (`frontend/src/lib/strategyHandoff.ts`) and the receiver fail
+closed. One malformed leg, or one strike not listed on the builder's chain,
+rejects the whole handoff rather than loading a partial strategy — which would
+have a different payoff while looking perfectly valid.
+
 ## Known limitations
 
-- **Cross-expiry comparison and order placement are not implemented.** Both
-  were discussed during design; neither exists in the current API or UI.
+- **Cross-expiry comparison is deferred, not scheduled.** Pricing the
+  recommended strike across the next two or three expiries, so the
+  weekly-versus-monthly choice is explicit, was specified during design but
+  exists in neither the API nor the UI. This is a deliberate decision rather
+  than an oversight — the tool is complete without it.
+- **CDS is deferred, blocked on data.** Currency options are excluded from
+  `toolsFnoExchanges` in `useSupportedExchanges.ts` because this broker's
+  master contract carries no CDS option expiries at all. Enabling the exchange
+  would produce an empty chain rather than a working surface. Nothing in the
+  pricing engine is CDS-specific, so this unblocks itself if the expiries ever
+  appear in the master.
 - **The `trading` day-count session provider falls back to a static table
   more often than it should**, because the seeded special-session data in
   `database/market_calendar_db.py` is currently corrupt: every seeded
