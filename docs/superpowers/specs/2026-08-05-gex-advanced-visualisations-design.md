@@ -1,10 +1,11 @@
 # GEX Levels: Gamma Profile, Bands, Heatmap and Delta Exposure
 
 **Date:** 2026-08-05
-**Status:** **Phases 1-2 shipped and verified live. Phases 3-5 not started** —
-see [§10 Delivery order](#10-delivery-order) for the split and
+**Status:** **Phases 1-3 shipped. Phases 4-5 not started** — see
+[§10 Delivery order](#10-delivery-order) for the split and
 [HANDOFF-gex-advanced-visualisations.md](../HANDOFF-gex-advanced-visualisations.md)
-to pick it up.
+to pick it up. Phases 1-2 are verified live; **phase 3's live verification is
+still outstanding** (see §10b).
 **Builds on:** [2026-08-04-gex-levels-chart-study-design.md](2026-08-04-gex-levels-chart-study-design.md)
 **Reader's guide to the existing study:** [../../gex-levels-reading.md](../../gex-levels-reading.md)
 
@@ -390,7 +391,7 @@ Phased so value lands before the infrastructure is finished.
 | --- | --- | --- |
 | 1 | **Gamma Profile** — already built; folded into step 2 | **DONE** 2026-08-05 |
 | 2 | **Delta Exposure** — `delta_exposure.py`, the live path, the Metric toggle | **DONE** 2026-08-05 |
-| 3 | **Storage and recorder** — `gex_history_db`, `gex_recorder_service`, `build_snapshot` extraction, watchlist routes, the recorded fast path | Not started |
+| 3 | **Storage and recorder** — `gex_history_db`, `gex_recorder_service`, `build_snapshot` extraction, watchlist routes, the recorded fast path | **DONE** 2026-08-05 (live verification outstanding) |
 | 4 | **Gamma Bands** — the first consumer of history; smallest query shape | Not started |
 | 5 | **GEX Heatmap** — the grid endpoint, downsampling, the background renderer | Not started |
 
@@ -407,6 +408,58 @@ the delta work landed and both shipped:
   at once. Plan: [`2026-08-05-gex-hover-and-draggable-card.md`](../plans/2026-08-05-gex-hover-and-draggable-card.md).
 - **Draggable readout card** — header-drag, clamped, double-click to reset,
   persisted with the layout.
+
+## 10b. Where phase 3 read this spec differently
+
+Three detail-level readings taken during implementation. None touches the six
+decisions in §3; each is recorded here so a later reader does not mistake it for
+undocumented drift.
+
+**Quality is stored per weighting, and stored whole.** §5 lists the suffixed
+columns and then says "plus `quality_verdict` and `quality_notes` (JSON) and
+`strikes_used`", which reads as unsuffixed. But `assess_quality` takes the
+*priced* exposures, so a chain can be good on open interest and degraded on
+volume — and §8 wants the Heatmap to dim the columns that were degraded, which
+on a volume-weighted heatmap means the volume verdict. So there are
+`quality_verdict_oi` / `_vol` (a queryable string, so a reader can filter
+without parsing JSON) plus `quality_oi` / `quality_vol` holding the **whole**
+quality payload rather than verdict-and-notes. That last part is not cosmetic:
+`may_draw` is a `@property`, not a dataclass field, and an absent key reads as
+`undefined` -> falsy in TypeScript, which would render every good recorded
+snapshot as "do not draw". `strikes_used` stays single — it is a strike count
+and genuinely weighting-independent.
+
+**The watchlist is capped at ten series** (`MAX_SERIES` in `blueprints/gex.py`).
+Not in this spec. §3 rejected auto-follow *because it grows without bound*, and a
+manually curated list with no ceiling reaches the same place, just more slowly.
+Ten series is 940 chain symbols a minute against a broker that rate-limited a
+single manual call during design (§8). The cap counts disabled rows, so
+re-enabling one cannot push past it.
+
+**The §8 session guard reuses `services/option_target_sessions.py`.** That module
+already validates the calendar window exactly as §8 asks — it rejects the seeded
+MCX special sessions, which decode to 895-minute windows spanning two calendar
+dates, and falls back to a static per-exchange table. `_market_is_open` moved out
+of `option_target_service` into it as `session_is_open`, gaining a `default`
+argument because the two callers want opposite behaviour when the lookup
+*raises*: a price projection must never be blocked by a calendar error
+(`default=True`), while a recorder that fails open polls the broker around the
+clock (`default=False`). A merely suspect window reaches neither default — the
+provider has already fallen back.
+
+### Two figures this spec got wrong, measured during phase 3
+
+**Disk is roughly double.** §3.2 estimates ~6 KB per snapshot and ~100 MB per
+rolling month for two series. Measured over 2,100 real snapshots at 48 strikes:
+**9,435 bytes per snapshot**, so ~7 MB/day and **~210 MB/month** for two series.
+Still small, and `GEX_RECORDER_RETENTION_DAYS` is the knob, but the §3.2 figure
+should not be quoted as-is.
+
+**`get_snapshots_in_range` is unbounded by row count.** §6 caps the *grid*
+endpoint at `MAX_GRID_COLUMNS` and calls the Bands query "a few thousand small
+objects", which it is for a month — but nothing in the query itself enforces
+that. Phase 4 should decide whether Bands needs its own ceiling rather than
+inheriting one only the grid has.
 
 ## 10a. Follow-ups found during implementation
 
