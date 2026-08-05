@@ -711,6 +711,7 @@ export default function ChartWorkspace() {
             <GexDashboard
               data={gexSnapshot}
               stale={controllerRef.current?.gexLevels.stale ?? false}
+              metric={gex.metric}
               onHide={() => {
                 controllerRef.current?.gexLevels.setConfig({ showDashboard: false })
                 setGex((s) => ({ ...s, showDashboard: false }))

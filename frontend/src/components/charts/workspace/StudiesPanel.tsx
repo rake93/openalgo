@@ -406,15 +406,6 @@ export function StudiesPanel(p: StudiesPanelProps) {
               it — its price axis is premium, not the underlying's price.
             </p>
           )}
-          <Field label="Metric" hint="Gamma is hedging pressure; delta is which way the book leans">
-            <TinySelect
-              value={p.gex.metric}
-              onChange={(e) => p.onGex({ metric: e.target.value as GexLevelsConfig['metric'] })}
-            >
-              <option value="gamma">Gamma (GEX)</option>
-              <option value="delta">Delta (DEX)</option>
-            </TinySelect>
-          </Field>
           <Field label="Weight by" hint="OI is the standing book; volume is today's flow">
             <TinySelect
               value={p.gex.weightBy}
@@ -441,6 +432,30 @@ export function StudiesPanel(p: StudiesPanelProps) {
               <option value="levels">Levels only</option>
             </TinySelect>
           </Field>
+          {/* Metric only affects the bar column drawBars() paints, so it is
+           * inert with no on-screen effect when Strike bars is "Levels only" -
+           * hidden here rather than shown-but-inert, the same way the whole
+           * section stays out of the way when GEX itself is unavailable. */}
+          {p.gex.showBars && (
+            <>
+              <Field label="Metric" hint="Gamma or delta bars">
+                <TinySelect
+                  value={p.gex.metric}
+                  onChange={(e) => p.onGex({ metric: e.target.value as GexLevelsConfig['metric'] })}
+                >
+                  <option value="gamma">Gamma (GEX)</option>
+                  <option value="delta">Delta (DEX)</option>
+                </TinySelect>
+              </Field>
+              {p.gex.metric === 'delta' && (
+                <p className="rounded-md border border-border bg-muted/40 px-2.5 py-2 text-[11px] leading-snug text-amber-600 dark:text-amber-400">
+                  Delta bars show which way the open-interest book leans, not dealer hedging
+                  pressure. Walls, Zero-Gamma and Regime stay computed from gamma; dealer delta is
+                  the opposite sign of what the bars show.
+                </p>
+              )}
+            </>
+          )}
           <Field label="Readout card" hint="The numbers panel over the chart">
             <TinySelect
               value={p.gex.showDashboard ? 'show' : 'hide'}

@@ -43,8 +43,23 @@ export function isLightTheme(mode: ThemeMode, appMode: AppMode): boolean {
   return appMode === 'live' && mode === 'light'
 }
 
+/**
+ * `ChartTheme` plus a full-contrast foreground text colour.
+ *
+ * openalgo-charts' `ChartTheme` only carries `axisText` (bound to
+ * `--muted-foreground` below) for text it draws itself - axis labels and the
+ * crosshair tag, both meant to read as passive scale furniture. It has no
+ * field for on-canvas content this app's own primitives draw that must NOT
+ * read that way - the GEX Levels metric caption is the first example - so
+ * this extends the theme this app builds with one, bound to `--foreground`,
+ * the same token the surrounding DOM chrome uses for regular text.
+ */
+export interface AppChartTheme extends ChartTheme {
+  text: string
+}
+
 /** Build the canvas theme from the base palette + the app's live token colors. */
-export function buildChartTheme(mode: ThemeMode, appMode: AppMode): ChartTheme {
+export function buildChartTheme(mode: ThemeMode, appMode: AppMode): AppChartTheme {
   const base = isLightTheme(mode, appMode) ? lightTheme : darkTheme
   return {
     ...base,
@@ -53,6 +68,7 @@ export function buildChartTheme(mode: ThemeMode, appMode: AppMode): ChartTheme {
     axisText: token('--muted-foreground'),
     axisLine: token('--border'),
     crosshair: token('--muted-foreground'),
+    text: token('--foreground'),
   }
 }
 

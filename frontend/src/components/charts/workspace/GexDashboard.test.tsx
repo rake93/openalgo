@@ -87,7 +87,7 @@ function makeData(overrides: Partial<GEXLevelsResponse> = {}): GEXLevelsResponse
 
 describe('GexDashboard', () => {
   it('renders the walls and the zero-gamma level', () => {
-    render(<GexDashboard data={makeData()} stale={false} />)
+    render(<GexDashboard data={makeData()} stale={false} metric="gamma" />)
     expect(screen.getByText('24,800')).toBeInTheDocument()
     expect(screen.getByText('24,400')).toBeInTheDocument()
     expect(screen.getByText('24,550')).toBeInTheDocument()
@@ -95,11 +95,13 @@ describe('GexDashboard', () => {
 
   it('reads Suppressive for positive net gamma and Amplifying for negative — never bullish/bearish', () => {
     const { rerender } = render(
-      <GexDashboard data={makeData({ regime: 'suppressive' })} stale={false} />
+      <GexDashboard data={makeData({ regime: 'suppressive' })} stale={false} metric="gamma" />
     )
     expect(screen.getByText('Suppressive')).toBeInTheDocument()
 
-    rerender(<GexDashboard data={makeData({ regime: 'amplifying' })} stale={false} />)
+    rerender(
+      <GexDashboard data={makeData({ regime: 'amplifying' })} stale={false} metric="gamma" />
+    )
     expect(screen.getByText('Amplifying')).toBeInTheDocument()
 
     const seen = document.body.textContent?.toLowerCase() ?? ''
@@ -108,7 +110,7 @@ describe('GexDashboard', () => {
   })
 
   it('renders "No local cross" when zero_gamma is null, not a dash or an error', () => {
-    render(<GexDashboard data={makeData({ zero_gamma: null })} stale={false} />)
+    render(<GexDashboard data={makeData({ zero_gamma: null })} stale={false} metric="gamma" />)
     expect(screen.getByText('No local cross')).toBeInTheDocument()
   })
 
@@ -117,6 +119,7 @@ describe('GexDashboard', () => {
       <GexDashboard
         data={makeData({ quality: makeQuality({ strikes_used: 24, strikes_priced: 19 }) })}
         stale={false}
+        metric="gamma"
       />
     )
     expect(screen.getByText('19 of 24 strikes')).toBeInTheDocument()
@@ -137,13 +140,14 @@ describe('GexDashboard', () => {
           }),
         })}
         stale={false}
+        metric="gamma"
       />
     )
     expect(screen.getByText(note)).toBeInTheDocument()
   })
 
   it('shows the stale caveat while still showing the numbers underneath', () => {
-    render(<GexDashboard data={makeData()} stale={true} />)
+    render(<GexDashboard data={makeData()} stale={true} metric="gamma" />)
     expect(screen.getByText(/previous snapshot/i)).toBeInTheDocument()
     // The whole point of "stale" is that the old numbers stay visible.
     expect(screen.getByText('24,800')).toBeInTheDocument()
@@ -152,7 +156,7 @@ describe('GexDashboard', () => {
   })
 
   it('does not show the stale caveat when the refresh succeeded', () => {
-    render(<GexDashboard data={makeData()} stale={false} />)
+    render(<GexDashboard data={makeData()} stale={false} metric="gamma" />)
     expect(screen.queryByText(/previous snapshot/i)).not.toBeInTheDocument()
   })
 
@@ -161,6 +165,7 @@ describe('GexDashboard', () => {
       <GexDashboard
         data={makeData({ regime: 'suppressive', sentiment: makeSentiment({ bias: 'bullish' }) })}
         stale={false}
+        metric="gamma"
       />
     )
     expect(screen.getByText('Suppressive')).toBeInTheDocument()
@@ -174,6 +179,7 @@ describe('GexDashboard', () => {
           sentiment: makeSentiment({ bias: 'bullish', agreeing: 2, participating: 3 }),
         })}
         stale={false}
+        metric="gamma"
       />
     )
     const value = screen.getByText('Bullish 2/3')
@@ -187,6 +193,7 @@ describe('GexDashboard', () => {
           sentiment: makeSentiment({ bias: 'bearish', agreeing: 3, participating: 3 }),
         })}
         stale={false}
+        metric="gamma"
       />
     )
     const value = screen.getByText('Bearish 3/3')
@@ -200,6 +207,7 @@ describe('GexDashboard', () => {
           sentiment: makeSentiment({ bias: 'neutral', agreeing: 1, participating: 3 }),
         })}
         stale={false}
+        metric="gamma"
       />
     )
     const value = screen.getByText('Neutral 1/3')
@@ -214,6 +222,7 @@ describe('GexDashboard', () => {
           sentiment: makeSentiment({ bias: 'neutral', agreeing: 3, participating: 3 }),
         })}
         stale={false}
+        metric="gamma"
       />
     )
     const value = screen.getByText('Neutral 3/3')
@@ -238,6 +247,7 @@ describe('GexDashboard', () => {
           sentiment: makeSentiment({ bias: 'neutral', agreeing: 3, participating: 3 }),
         })}
         stale={false}
+        metric="gamma"
       />
     )
     await user.hover(screen.getByText('Neutral 3/3'))
@@ -255,33 +265,70 @@ describe('GexDashboard', () => {
   })
 
   it('does not crash and shows no Sentiment row when sentiment is absent (an older cached response)', () => {
-    render(<GexDashboard data={makeData({ sentiment: undefined })} stale={false} />)
+    render(<GexDashboard data={makeData({ sentiment: undefined })} stale={false} metric="gamma" />)
     expect(screen.getByText('Suppressive')).toBeInTheDocument()
     expect(screen.queryByText(/Bullish|Bearish|Neutral \d/)).not.toBeInTheDocument()
   })
 
   it('renders nothing when data is null', () => {
-    const { container } = render(<GexDashboard data={null} stale={false} />)
+    const { container } = render(<GexDashboard data={null} stale={false} metric="gamma" />)
     expect(container).toBeEmptyDOMElement()
   })
 
   it('renders nothing when status is not success', () => {
     const { container } = render(
-      <GexDashboard data={makeData({ status: 'error', message: 'boom' })} stale={false} />
+      <GexDashboard
+        data={makeData({ status: 'error', message: 'boom' })}
+        stale={false}
+        metric="gamma"
+      />
     )
     expect(container).toBeEmptyDOMElement()
   })
 })
 
+describe('GexDashboard metric', () => {
+  it('reads the Bars row from the metric prop, not from the snapshot', () => {
+    // The dashboard has no metric field of its own in the response - it is
+    // purely a chart-workspace setting - so this has to come from the prop,
+    // and rerendering with a different prop against the exact same data must
+    // flip the row without a new fetch.
+    const { rerender } = render(<GexDashboard data={makeData()} stale={false} metric="gamma" />)
+    expect(screen.getByText('Gamma (GEX)')).toBeInTheDocument()
+
+    rerender(<GexDashboard data={makeData()} stale={false} metric="delta" />)
+    expect(screen.getByText('Delta (DEX)')).toBeInTheDocument()
+    expect(screen.queryByText('Gamma (GEX)')).not.toBeInTheDocument()
+  })
+
+  it('shows no delta caveat under gamma', () => {
+    render(<GexDashboard data={makeData()} stale={false} metric="gamma" />)
+    expect(screen.queryByText(/stay gamma/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the delta caveat under delta, naming what stays gamma', () => {
+    render(<GexDashboard data={makeData()} stale={false} metric="delta" />)
+    const note = screen.getByText(/stay gamma/i)
+    expect(note).toBeInTheDocument()
+    expect(note.textContent).toMatch(/Walls, Zero-Gamma and Regime/)
+  })
+
+  it('shows both the stale caveat and the delta caveat together, as two separate lines', () => {
+    render(<GexDashboard data={makeData()} stale={true} metric="delta" />)
+    expect(screen.getByText(/previous snapshot/i)).toBeInTheDocument()
+    expect(screen.getByText(/stay gamma/i)).toBeInTheDocument()
+  })
+})
+
 describe('GexDashboard hide control', () => {
   it('renders no close control when onHide is omitted', () => {
-    render(<GexDashboard data={makeData()} stale={false} />)
+    render(<GexDashboard data={makeData()} stale={false} metric="gamma" />)
     expect(screen.queryByLabelText(/hide the gex levels card/i)).not.toBeInTheDocument()
   })
 
   it('calls onHide when the close control is pressed', async () => {
     const onHide = vi.fn()
-    render(<GexDashboard data={makeData()} stale={false} onHide={onHide} />)
+    render(<GexDashboard data={makeData()} stale={false} metric="gamma" onHide={onHide} />)
     await userEvent.click(screen.getByLabelText(/hide the gex levels card/i))
     expect(onHide).toHaveBeenCalledTimes(1)
   })

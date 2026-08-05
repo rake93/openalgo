@@ -1,10 +1,15 @@
 /**
- * GEX Levels chart primitive.
+ * GEX Levels chart primitives.
  *
- * Draws three extended price levels (Call Wall, Put Wall, Zero-Gamma) and an
- * optional column of signed per-strike bars anchored in the plot margin. The
- * manager that fetches the option-chain snapshot and owns this primitive's
- * lifecycle lives in `gex-levels.ts`; this file is only the paint step.
+ * `GexLevelsPrimitive` draws three extended price levels (Call Wall, Put
+ * Wall, Zero-Gamma) and an optional column of signed per-strike bars -
+ * gamma or delta, per `GexLevelsConfig.metric` - anchored in the plot
+ * margin. `GexMetricCaptionPrimitive` draws only the label naming which of
+ * the two the bar column currently is, as a second primitive at a higher
+ * zOrder so price action can never paint over it - see its own doc comment.
+ * The manager that fetches the option-chain snapshot and owns both
+ * primitives' lifecycle lives in `gex-levels.ts`; this file is only the
+ * paint step.
  *
  * `IPrimitive` here is imported from the package root (`openalgo-charts`),
  * not a lazy tier, so this needs none of the `tier-compat.ts` casts that the
@@ -66,8 +71,14 @@ const EDGE_MARKER_LENGTH_PX = 72
 const MIN_BAR_ROW_HEIGHT_PX = 1
 const DEFAULT_BAR_ROW_HEIGHT_PX = 6
 const MAX_BAR_ROW_HEIGHT_PX = 14
-/** Gap in px (before dpr scaling) between the plot top and the metric caption drawn above the bar column. */
-const BAR_CAPTION_TOP_PX = 14
+/**
+ * Gap in px (before dpr scaling) between the plot bottom and the metric
+ * caption. Bottom, not top: the top band is where the pane legend's row 0
+ * (symbol + OHLCV) lives, and where an off-screen level's edge-marker stub
+ * (`EDGE_MARKER_INSET_PX`) is most often drawn - the bottom is the one edge
+ * neither of those two routinely claims.
+ */
+const BAR_CAPTION_BOTTOM_PX = 12
 
 /**
  * Format a price the way the rest of the GEX dashboard does: an index/stock
@@ -80,20 +91,38 @@ export function formatGexPrice(price: number): string {
 }
 
 /**
- * Caption drawn above the bar column so the active metric is never left to
- * be inferred from bar shape or colour.
+ * Text for the on-canvas label naming which metric the bar column currently
+ * reads, drawn by `GexMetricCaptionPrimitive`.
  *
- * Every other line in the study - Call Wall, Put Wall, Zero-Gamma - is
- * computed server-side from gamma regardless of this setting; only the bar
- * column's source flips. Delta additionally inverts the frame of reference:
- * DEX is the open-interest book's delta (see
- * `services/gex_levels/delta_exposure.py`), so a positive (call-coloured)
- * bar means the book is long, where under gamma the same colour means
- * dealers are long. Always returning a label - not just for delta - means
- * its absence never has to be interpreted as "this is gamma".
+ * A `Record`, not a two-way ternary: `GexMetric` gaining a third member (say
+ * `'vanna'`) makes this a compile error instead of a silent "Gamma" label
+ * over a vanna column - the one thing this function exists to prevent.
+ *
+ * Wording avoids "book" standing alone: this workspace already has a real
+ * order book (a depth feed, `pollBook()`, the trade panel), so an unqualified
+ * "(book)" risks being read as that rather than the option chain's
+ * open-interest book. "OI-book" disambiguates in the same few characters.
+ *
+ * Both metrics get a label - not just delta - so that whenever the bar
+ * column is actually drawn, which Greek it reads is never left to be
+ * inferred from bar shape or colour alone: every other line in the study -
+ * Call Wall, Put Wall, Zero-Gamma - is computed server-side from gamma
+ * regardless of this setting, only the bar column's source flips, and delta
+ * additionally inverts the frame of reference. DEX is the open-interest
+ * book's delta (see `services/gex_levels/delta_exposure.py`), so a positive
+ * (call-coloured) bar means the book is long, where under gamma the same
+ * colour means dealers are long. When the bar column itself is not drawn -
+ * no strikes, none visible, or switched off - `GexMetricCaptionPrimitive`
+ * draws no caption either, and that absence is fine: there is then nothing
+ * on screen for it to disambiguate.
  */
+const GEX_METRIC_CAPTIONS: Record<GexMetric, string> = {
+  gamma: 'Gamma · dealer sign',
+  delta: 'Delta · OI-book sign',
+}
+
 export function gexMetricCaption(metric: GexMetric): string {
-  return metric === 'delta' ? 'Delta (book)' : 'Gamma (dealer)'
+  return GEX_METRIC_CAPTIONS[metric]
 }
 
 export interface GexLevelPlacement {
@@ -211,6 +240,30 @@ function strikeRowHeightPx(
   gaps.sort((a, b) => a - b)
   const median = gaps[Math.floor(gaps.length / 2)]
   return Math.max(MIN_BAR_ROW_HEIGHT_PX, Math.min(MAX_BAR_ROW_HEIGHT_PX, median - 1))
+}
+
+/**
+ * Device-px x of the bar column's zero-reference axis - the line a positive
+ * bar extends right from and a negative bar extends left from.
+ *
+ * Shared by `GexLevelsPrimitive.drawBars` (which draws the bars against it)
+ * and `GexMetricCaptionPrimitive` (which centres the caption on it) so the
+ * two primitives can never drift apart into disagreeing about where the
+ * column actually is - they are two different `IPrimitive`s at two different
+ * zOrders, not two branches of one function, precisely because a caption
+ * drawn from inside `drawBars` would inherit the bars' `zOrder: 'bottom'`
+ * and be paintable-over by the candles.
+ */
+export function gexColumnAxisX(
+  plotWidth: number,
+  side: 'left' | 'right',
+  columnInset: number,
+  columnWidth: number,
+  dpr: number
+): number {
+  return (
+    (side === 'right' ? plotWidth - columnInset - columnWidth : columnInset + columnWidth) * dpr
+  )
 }
 
 export class GexLevelsPrimitive implements IPrimitive {
@@ -352,25 +405,22 @@ export class GexLevelsPrimitive implements IPrimitive {
     // same-side Volume Profile (150 px wide by default) - the caller supplies
     // the inset (typically the other study's width) rather than this
     // primitive guessing at what else is anchored to the same edge.
-    const axisX =
-      (this.opts.side === 'right'
-        ? rc.plotWidth - this.opts.columnInset - this.opts.columnWidth
-        : this.opts.columnInset + this.opts.columnWidth) * dpr
+    const axisX = gexColumnAxisX(
+      rc.plotWidth,
+      this.opts.side,
+      this.opts.columnInset,
+      this.opts.columnWidth,
+      dpr
+    )
 
     const barThickness = Math.max(1, rowHeight * dpr - dpr)
 
+    // The metric caption is NOT drawn here. It used to be, but this primitive
+    // is zOrder 'bottom' (painted before the candles), so a caption drawn
+    // from inside this method would be paintable-over by price action - see
+    // `GexMetricCaptionPrimitive` below, a separate zOrder: 'top' primitive
+    // that the manager creates and syncs alongside this one.
     ctx.save()
-
-    // Metric caption, at full opacity and drawn before the alpha below is
-    // touched - see gexMetricCaption for why this label is not optional.
-    // Centred on axisX (the same x the zero-reference dashed line below
-    // uses) so it reads as the header of the column beneath it.
-    ctx.font = `${LABEL_FONT_PX * dpr}px system-ui, -apple-system, sans-serif`
-    ctx.textBaseline = 'top'
-    ctx.textAlign = 'center'
-    ctx.fillStyle = rc.theme.axisText
-    ctx.fillText(gexMetricCaption(this.opts.metric), axisX, BAR_CAPTION_TOP_PX * dpr)
-
     ctx.globalAlpha = 0.75
     for (const b of bars) {
       const y = b.y * dpr
@@ -396,6 +446,99 @@ export class GexLevelsPrimitive implements IPrimitive {
     ctx.moveTo(Math.round(axisX) + 0.5, 0)
     ctx.lineTo(Math.round(axisX) + 0.5, rc.plotHeight * dpr)
     ctx.stroke()
+    ctx.restore()
+  }
+}
+
+export interface GexMetricCaptionOptions {
+  /** Mirrors `GexLevelsPrimitiveOptions.showBars` - no bar column, nothing to caption. */
+  showBars: boolean
+  side: 'left' | 'right'
+  columnWidth: number
+  metric: GexMetric
+  columnInset: number
+}
+
+export const DEFAULT_GEX_METRIC_CAPTION_OPTIONS: GexMetricCaptionOptions = {
+  showBars: true,
+  side: 'right',
+  columnWidth: 120,
+  metric: 'gamma',
+  columnInset: 0,
+}
+
+/**
+ * Draws only the "which metric" label for the bar column, at `zOrder: 'top'`
+ * - deliberately a second, separate `IPrimitive` rather than one more thing
+ * `GexLevelsPrimitive.drawBars` paints.
+ *
+ * A primitive's `zOrder()` is fixed for its entire `draw()` call - there is
+ * no way for one primitive to paint part of itself behind the candles and
+ * part of it in front. `GexLevelsPrimitive` is `zOrder: 'bottom'` so the
+ * bars and walls sit behind price action like Volume/Market Profile; the
+ * caption is exactly the opposite requirement; it is a warning label, and a
+ * warning label that price action can paint over defeats its own purpose.
+ * The only way to get both is two primitives. The manager (`gex-levels.ts`)
+ * creates, removes and reconfigures this one in lockstep with the main
+ * primitive - see `syncPrimitive()`.
+ *
+ * Deliberately has no `setData`: unlike `GexLevelsPrimitive`, this primitive
+ * never reads the snapshot itself, only `showBars` and `metric` from options
+ * - so there is nothing to blank between refreshes, and the manager never
+ * needs to keep two primitives' data in sync.
+ */
+export class GexMetricCaptionPrimitive implements IPrimitive {
+  private opts: GexMetricCaptionOptions
+  private host: PrimitiveHost | null = null
+
+  constructor(opts: Partial<GexMetricCaptionOptions> = {}) {
+    this.opts = { ...DEFAULT_GEX_METRIC_CAPTION_OPTIONS, ...opts }
+  }
+
+  attached(host: PrimitiveHost): void {
+    this.host = host
+  }
+
+  detached(): void {
+    this.host = null
+  }
+
+  zOrder(): ZOrder {
+    return 'top'
+  }
+
+  setOptions(patch: Partial<GexMetricCaptionOptions>): void {
+    this.opts = { ...this.opts, ...patch }
+    this.host?.requestUpdate()
+  }
+
+  draw(ctx: CanvasRenderingContext2D, rc: PrimitiveRenderContext): void {
+    if (!this.opts.showBars) return
+    const dpr = rc.dpr
+    const axisX = gexColumnAxisX(
+      rc.plotWidth,
+      this.opts.side,
+      this.opts.columnInset,
+      this.opts.columnWidth,
+      dpr
+    )
+    const y = rc.plotHeight * dpr - BAR_CAPTION_BOTTOM_PX * dpr
+
+    ctx.save()
+    ctx.font = `${LABEL_FONT_PX * dpr}px system-ui, -apple-system, sans-serif`
+    ctx.textBaseline = 'bottom'
+    ctx.textAlign = 'center'
+    // `ChartTheme` (openalgo-charts) has no generic foreground-text field -
+    // only `axisText`, which is `--muted-foreground` (see chartTheme.ts) and
+    // reads as dim axis-tick chrome, not as a label worth noticing. This app
+    // bridges the gap by adding `text` (`--foreground`) onto the theme object
+    // it builds (see `AppChartTheme` in `@/lib/trading/chartTheme`), which
+    // `ChartTheme` itself does not declare - hence the structural read here
+    // rather than a typed property access - falling back to `axisText` for
+    // any caller (tests, a future non-app embedding) that only supplies the
+    // bare `ChartTheme` shape.
+    ctx.fillStyle = (rc.theme as { text?: string }).text ?? rc.theme.axisText
+    ctx.fillText(gexMetricCaption(this.opts.metric), axisX, y)
     ctx.restore()
   }
 }

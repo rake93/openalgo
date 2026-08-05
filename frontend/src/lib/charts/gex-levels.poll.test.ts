@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GEXLevelsResponse } from '@/api/gex'
 import { GexLevelsManager } from './gex-levels'
-import { GexLevelsPrimitive } from './gex-levels-primitive'
+import { GexLevelsPrimitive, GexMetricCaptionPrimitive } from './gex-levels-primitive'
 
 function make(
   instrument: { underlying: string; exchange: string } | null = {
@@ -150,49 +150,57 @@ describe('GexLevelsManager refresh loop', () => {
 })
 
 describe('GexLevelsManager primitive lifecycle', () => {
+  // The study is two primitives, not one: GexLevelsPrimitive (levels + bars,
+  // zOrder 'bottom') and GexMetricCaptionPrimitive (the bar column's metric
+  // label, zOrder 'top' so price action can't paint over it). The manager
+  // creates, removes and reconfigures both together - see syncPrimitive()'s
+  // doc comment - so every add/remove-count assertion below counts both.
   function chartDouble() {
     return { addPrimitive: vi.fn(), removePrimitive: vi.fn() }
   }
 
-  it('adds the primitive when the study is enabled', () => {
+  it('adds both primitives when the study is enabled', () => {
     const chart = chartDouble()
     const { manager } = make()
     manager.attachChart(chart as never)
     manager.setConfig({ enabled: true })
-    expect(chart.addPrimitive).toHaveBeenCalledTimes(1)
+    expect(chart.addPrimitive).toHaveBeenCalledTimes(2)
+    const added = chart.addPrimitive.mock.calls.map((c) => c[0])
+    expect(added.some((p) => p instanceof GexLevelsPrimitive)).toBe(true)
+    expect(added.some((p) => p instanceof GexMetricCaptionPrimitive)).toBe(true)
   })
 
-  it('removes the primitive when the study is disabled', () => {
+  it('removes both primitives when the study is disabled', () => {
     const chart = chartDouble()
     const { manager } = make()
     manager.attachChart(chart as never)
     manager.setConfig({ enabled: true })
     manager.setConfig({ enabled: false })
-    expect(chart.removePrimitive).toHaveBeenCalledTimes(1)
+    expect(chart.removePrimitive).toHaveBeenCalledTimes(2)
   })
 
-  it('does not add the primitive twice for repeated enables', () => {
+  it('does not add either primitive twice for repeated enables', () => {
     const chart = chartDouble()
     const { manager } = make()
     manager.attachChart(chart as never)
     manager.setConfig({ enabled: true })
     manager.setConfig({ enabled: true })
-    expect(chart.addPrimitive).toHaveBeenCalledTimes(1)
+    expect(chart.addPrimitive).toHaveBeenCalledTimes(2)
   })
 
-  it('re-adds to a rebuilt chart without removing from the destroyed one', () => {
+  it('re-adds both primitives to a rebuilt chart without removing from the destroyed one', () => {
     const first = chartDouble()
     const second = chartDouble()
     const { manager } = make()
     manager.attachChart(first as never)
     manager.setConfig({ enabled: true })
     manager.attachChart(second as never)
-    expect(second.addPrimitive).toHaveBeenCalledTimes(1)
+    expect(second.addPrimitive).toHaveBeenCalledTimes(2)
     // The old chart is already destroyed - calling into it would throw.
     expect(first.removePrimitive).not.toHaveBeenCalled()
   })
 
-  it('survives a chart that throws on removePrimitive', () => {
+  it('survives a chart that throws on removePrimitive for both primitives', () => {
     const chart = {
       addPrimitive: vi.fn(),
       removePrimitive: vi.fn(() => {
@@ -203,6 +211,27 @@ describe('GexLevelsManager primitive lifecycle', () => {
     manager.attachChart(chart as never)
     manager.setConfig({ enabled: true })
     expect(() => manager.setConfig({ enabled: false })).not.toThrow()
+  })
+
+  it('drops each primitive handle independently, so a chart that throws removing only one of them still drops both', () => {
+    // The main and caption primitives are removed through separate try/catch
+    // blocks (see syncPrimitive()) precisely so a throw on one does not skip
+    // dropping the other's handle. If it did, re-enabling afterwards would
+    // recreate only the primitive whose handle was actually cleared.
+    const chart = {
+      addPrimitive: vi.fn(),
+      removePrimitive: vi.fn((p: unknown) => {
+        if (p instanceof GexLevelsPrimitive) throw new Error('main primitive already gone')
+      }),
+    }
+    const { manager } = make()
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    expect(() => manager.setConfig({ enabled: false })).not.toThrow()
+
+    chart.addPrimitive.mockClear()
+    manager.setConfig({ enabled: true })
+    expect(chart.addPrimitive).toHaveBeenCalledTimes(2)
   })
 
   it('pushes a snapshot held before attachChart into the freshly created primitive', async () => {
@@ -280,6 +309,40 @@ describe('GexLevelsManager primitive lifecycle', () => {
     manager.setConfig({ metric: 'delta' })
     expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ metric: 'delta' }))
 
+    setOptionsSpy.mockRestore()
+  })
+
+  it('propagates the metric and showBars settings to the caption primitive too - the same silent-no-op risk applies to it independently of the main primitive', () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const { manager } = make()
+    manager.attachChart(chart as never)
+
+    manager.setConfig({ enabled: true })
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ metric: 'gamma', showBars: true })
+    )
+
+    manager.setConfig({ metric: 'delta', showBars: false })
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ metric: 'delta', showBars: false })
+    )
+
+    setOptionsSpy.mockRestore()
+  })
+
+  it('applies the volume profile inset to the caption primitive too, not just the main one', () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+      fetchLevels: vi.fn().mockResolvedValue({ status: 'success' }),
+      volumeProfileWidthOnSide: (side) => (side === 'right' ? 150 : 0),
+    })
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true, side: 'right' })
+    expect(setOptionsSpy).toHaveBeenCalledWith(expect.objectContaining({ columnInset: 150 }))
     setOptionsSpy.mockRestore()
   })
 })

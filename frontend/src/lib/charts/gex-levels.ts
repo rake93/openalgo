@@ -1,27 +1,36 @@
 /**
  * GEX Levels study for the /charts workspace.
  *
- * Draws dealer gamma-exposure levels (call wall, put wall, zero gamma, and the
- * per-strike bars) on the price axis. Unlike Volume Profile, Market Profile and
- * Order Flow (see profiles.ts), GEX is not derived from the chart's own bars at
- * all: it is a live option-chain snapshot for a *different* instrument than the
- * one charted (the underlying's option chain), fetched from the server on a
+ * Draws dealer gamma-exposure levels (call wall, put wall, zero gamma) and a
+ * per-strike bar column - gamma or delta, per `GexLevelsConfig.metric` - on
+ * the price axis. Unlike Volume Profile, Market Profile and Order Flow (see
+ * profiles.ts), GEX is not derived from the chart's own bars at all: it is a
+ * live option-chain snapshot for a *different* instrument than the one
+ * charted (the underlying's option chain), fetched from the server on a
  * timer. That is also why it could not be an OpenScript indicator - the
  * engine's `request.security` is same-symbol only by design, and GEX needs the
  * whole option chain of a different instrument.
  *
  * Mirrors `ProfileManager`: a settings object, `snapshot()` / `restore()` so
  * the study persists with the saved layout, and lifecycle torn down through
- * `dispose()`. This file also owns the `GexLevelsPrimitive` that paints these
- * levels - `attachChart` / `syncPrimitive` mirror `ProfileManager.attachChart`
- * / `rebuild()` exactly, including the "drop, don't remove" handling of a
- * chart rebuild. The workspace wiring that supplies `instrument()` and calls
- * `instrumentChanged()` is still a later task.
+ * `dispose()`. This file also owns the two primitives that paint the study -
+ * `GexLevelsPrimitive` (levels and bars) and `GexMetricCaptionPrimitive` (the
+ * bar column's metric label, at a higher zOrder so it can't be painted over -
+ * see its doc comment in `gex-levels-primitive.ts`). `attachChart` /
+ * `syncPrimitive` mirror `ProfileManager.attachChart` / `rebuild()` exactly,
+ * including the "drop, don't remove" handling of a chart rebuild, for both
+ * primitives in lockstep. The workspace wiring that supplies `instrument()`
+ * and calls `instrumentChanged()` is still a later task.
  */
 
 import type { Chart } from 'openalgo-charts'
 import type { GEXLevelsResponse, GEXWeightBy, GexMetric } from '@/api/gex'
-import { GexLevelsPrimitive, type GexLevelsPrimitiveOptions } from './gex-levels-primitive'
+import {
+  GexLevelsPrimitive,
+  type GexLevelsPrimitiveOptions,
+  type GexMetricCaptionOptions,
+  GexMetricCaptionPrimitive,
+} from './gex-levels-primitive'
 
 export interface GexLevelsConfig {
   enabled: boolean
@@ -102,6 +111,7 @@ export class GexLevelsManager {
 
   private chart: Chart | null = null
   private primitive: GexLevelsPrimitive | null = null
+  private captionPrimitive: GexMetricCaptionPrimitive | null = null
 
   /**
    * Bumped every time the charted instrument changes. Each outgoing request
@@ -281,10 +291,12 @@ export class GexLevelsManager {
    * `syncPrimitive()` call that follows - even though that call reassigns the
    * field - so reading `this.primitive` afterwards in the same function body
    * type-checks as `never`. Moving the assignment behind its own function
-   * boundary keeps that narrowing from leaking into `attachChart`.
+   * boundary keeps that narrowing from leaking into `attachChart`. Drops the
+   * caption primitive's handle the same way, for the same reason.
    */
   private dropPrimitiveHandle(): void {
     this.primitive = null
+    this.captionPrimitive = null
   }
 
   /**
@@ -310,10 +322,28 @@ export class GexLevelsManager {
       this.primitive = null
     }
 
+    // The metric caption is a second, independent primitive (see its doc
+    // comment in gex-levels-primitive.ts for why it cannot just be one more
+    // thing GexLevelsPrimitive draws) - created, removed and reconfigured in
+    // lockstep with the main primitive, but through its own try/catch so a
+    // chart that throws removing one still gets the other's handle dropped.
+    if (this.settings.enabled && !this.captionPrimitive) {
+      this.captionPrimitive = new GexMetricCaptionPrimitive(this.captionOptions())
+      chart.addPrimitive(this.captionPrimitive, 0)
+    } else if (!this.settings.enabled && this.captionPrimitive) {
+      try {
+        chart.removePrimitive(this.captionPrimitive)
+      } catch {
+        // As above: the chart may already be gone.
+      }
+      this.captionPrimitive = null
+    }
+
     // Re-pushed unconditionally, not just at construction: an options change
     // (column width, side, which lines are shown, or the volume-profile
     // inset) while the study stays enabled must still take effect.
     this.primitive?.setOptions(this.primitiveOptions())
+    this.captionPrimitive?.setOptions(this.captionOptions())
   }
 
   private primitiveOptions(): Partial<GexLevelsPrimitiveOptions> {
@@ -332,6 +362,22 @@ export class GexLevelsManager {
       // an optional callback the workspace controller supplies - mirroring
       // `ProfileManager.volumeOptions()`'s handling of the Market Profile
       // collision.
+      columnInset: this.cb.volumeProfileWidthOnSide?.(c.side) ?? 0,
+    }
+  }
+
+  /**
+   * Mirrors `primitiveOptions()`, trimmed to the subset `GexMetricCaptionPrimitive`
+   * actually needs to place and word its label - it has no walls, no
+   * `columnWidth`-scaled bars, nothing else to configure.
+   */
+  private captionOptions(): Partial<GexMetricCaptionOptions> {
+    const c = this.settings
+    return {
+      showBars: c.showBars,
+      side: c.side,
+      columnWidth: c.columnWidth,
+      metric: c.metric,
       columnInset: this.cb.volumeProfileWidthOnSide?.(c.side) ?? 0,
     }
   }
@@ -362,6 +408,7 @@ export class GexLevelsManager {
     // removePrimitive - dispose runs during workspace teardown, by which point
     // the chart itself is already on its way out.
     this.primitive = null
+    this.captionPrimitive = null
     this.chart = null
   }
 }

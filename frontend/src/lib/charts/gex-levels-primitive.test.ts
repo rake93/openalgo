@@ -1,8 +1,9 @@
 /**
- * Pure geometry/formatting helpers behind the GEX Levels primitive. The
- * primitive's `draw()` itself cannot be unit-tested - jsdom provides no
- * canvas - so this only covers the parts extracted to take plain numbers and
- * callbacks instead of a live chart.
+ * Pure geometry/formatting helpers behind the GEX Levels primitives, plus a
+ * `draw()`-level suite for the metric caption. jsdom provides no canvas, but
+ * `draw()` only ever calls a handful of `CanvasRenderingContext2D` methods, so
+ * a plain object recording those calls is enough to pin what actually reaches
+ * the screen - see `fakeCtx` / `fakeRc` below.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -11,26 +12,23 @@ import {
   computeGexBarGeometry,
   computeGexLevelPlacement,
   formatGexPrice,
+  GexLevelsPrimitive,
+  GexMetricCaptionPrimitive,
   gexMetricCaption,
 } from './gex-levels-primitive'
 
 describe('gexMetricCaption', () => {
-  it('labels gamma with the dealer frame', () => {
-    expect(gexMetricCaption('gamma')).toBe('Gamma (dealer)')
+  it('labels gamma with the dealer-sign frame', () => {
+    expect(gexMetricCaption('gamma')).toBe('Gamma · dealer sign')
   })
 
-  it('labels delta with the book frame, not the dealer frame', () => {
+  it('labels delta with the OI-book frame, not the dealer frame', () => {
     // DEX is the open-interest book's delta, not the dealer's - dealers hold
     // the negation (services/gex_levels/delta_exposure.py). Getting this
     // label backwards would make the caption actively mislead rather than
-    // just being absent.
-    expect(gexMetricCaption('delta')).toBe('Delta (book)')
-  })
-
-  it('always returns a non-empty label for both metrics, so absence is never mistaken for gamma', () => {
-    for (const metric of ['gamma', 'delta'] as const) {
-      expect(gexMetricCaption(metric).length).toBeGreaterThan(0)
-    }
+    // just being absent. "OI-book", not a bare "book" - this workspace also
+    // has a real order book (depth, pollBook(), the trade panel).
+    expect(gexMetricCaption('delta')).toBe('Delta · OI-book sign')
   })
 })
 
@@ -203,5 +201,114 @@ describe('computeGexBarGeometry', () => {
     const delta = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'delta')
     expect(delta.bars.find((b) => b.strike === 24_200)?.length).toBe(120)
     expect(delta.bars.find((b) => b.strike === 24_400)?.length).toBe(60)
+  })
+})
+
+/**
+ * `draw()` only ever calls a handful of `CanvasRenderingContext2D` methods -
+ * this records the ones that matter (`fillText`) and no-ops the rest, which
+ * is enough to stand in for a real canvas without jsdom needing one.
+ */
+function fakeCtx() {
+  const texts: { text: string; x: number; y: number }[] = []
+  return {
+    texts,
+    save() {},
+    restore() {},
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    stroke() {},
+    setLineDash() {},
+    fillRect() {},
+    fillText(text: string, x: number, y: number) {
+      texts.push({ text, x, y })
+    },
+    strokeStyle: '',
+    lineWidth: 0,
+    fillStyle: '',
+    font: '',
+    textBaseline: '',
+    textAlign: '',
+    globalAlpha: 1,
+  }
+}
+
+/** Only the `PrimitiveRenderContext` fields `draw()` actually reads. */
+function fakeRc(overrides: { plotWidth?: number; plotHeight?: number; dpr?: number } = {}) {
+  return {
+    priceScale: { priceToY: (_price: number) => 200 },
+    plotWidth: 400,
+    plotHeight: 300,
+    dpr: 1,
+    theme: { axisText: '#888888', axisLine: '#333333' },
+    ...overrides,
+  }
+}
+
+describe('GexMetricCaptionPrimitive draw', () => {
+  it('emits the caption text for the configured metric', () => {
+    const ctx = fakeCtx()
+    const primitive = new GexMetricCaptionPrimitive({ showBars: true, metric: 'delta' })
+    primitive.draw(ctx as never, fakeRc() as never)
+    expect(ctx.texts.map((t) => t.text)).toContain(gexMetricCaption('delta'))
+  })
+
+  it('positions the caption at the bar column axis - side, columnInset and columnWidth all move it', () => {
+    const ctx = fakeCtx()
+    // side 'right', columnInset 0, columnWidth 120, plotWidth 400, dpr 1:
+    // axisX = (400 - 0 - 120) * 1 = 280, matching gexColumnAxisX exactly -
+    // this is the same formula GexLevelsPrimitive.drawBars uses for the bars
+    // themselves, so a caption drifting from this value would sit over the
+    // wrong part of the column.
+    const primitive = new GexMetricCaptionPrimitive({
+      showBars: true,
+      metric: 'gamma',
+      side: 'right',
+      columnInset: 0,
+      columnWidth: 120,
+    })
+    primitive.draw(ctx as never, fakeRc({ plotWidth: 400 }) as never)
+    expect(ctx.texts[0]?.x).toBe(280)
+  })
+
+  it('draws nothing when the bar column is switched off', () => {
+    const ctx = fakeCtx()
+    const primitive = new GexMetricCaptionPrimitive({ showBars: false, metric: 'gamma' })
+    primitive.draw(ctx as never, fakeRc() as never)
+    expect(ctx.texts).toEqual([])
+  })
+
+  it('is always top zOrder, regardless of options', () => {
+    const primitive = new GexMetricCaptionPrimitive()
+    expect(primitive.zOrder()).toBe('top')
+  })
+})
+
+describe('GexLevelsPrimitive draw does not draw the caption itself', () => {
+  // GexLevelsPrimitive is zOrder 'bottom' (see its own zOrder()); if the
+  // caption were emitted from inside it too - a regression back to how this
+  // primitive worked before the caption moved to its own zOrder: 'top'
+  // primitive - it would once again be paintable-over by the candles that
+  // render between the two. This pins that the split actually happened,
+  // not just that GexMetricCaptionPrimitive independently works. Reuses the
+  // module-level `strike` helper defined above for `computeGexBarGeometry`.
+
+  it('never emits caption text, even with bars showing and data loaded', () => {
+    const ctx = fakeCtx()
+    const primitive = new GexLevelsPrimitive({
+      showBars: true,
+      showCallWall: false,
+      showPutWall: false,
+      showZeroGamma: false,
+      metric: 'delta',
+    })
+    primitive.setData({
+      status: 'success',
+      strikes: [strike(24_200, 100), strike(24_400, -50)],
+    } as never)
+    primitive.draw(ctx as never, fakeRc() as never)
+    expect(ctx.texts.map((t) => t.text)).not.toContain(gexMetricCaption('delta'))
+    expect(ctx.texts.map((t) => t.text)).not.toContain(gexMetricCaption('gamma'))
   })
 })

@@ -2,13 +2,17 @@
  * GEX Levels numeric dashboard (chart-workspace GEX Levels study, Task 13).
  *
  * The chart draws Call Wall, Put Wall and Zero-Gamma as lines on the price
- * axis plus a per-strike gamma column; this panel is the numbers behind those
- * lines. Nothing here is computed — every value is read straight from the
- * `/gex/api/gex-levels` response, matching {@link InspectorPanel}'s role of
- * reading rather than recalculating.
+ * axis, plus a per-strike bar column that reads either gamma or delta; this
+ * panel is the numbers behind those lines. Every one of those numbers -
+ * including Regime - is computed from gamma regardless of which metric the
+ * bars currently show, which is why this card's Bars row and delta caveat
+ * exist: they are the on-screen reminder of that split. Nothing here is
+ * computed - every value is read straight from the `/gex/api/gex-levels`
+ * response, matching {@link InspectorPanel}'s role of reading rather than
+ * recalculating.
  */
 
-import type { GEXLevelsResponse, GEXSentimentSignal } from '@/api/gex'
+import type { GEXLevelsResponse, GEXSentimentSignal, GexMetric } from '@/api/gex'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
@@ -16,6 +20,14 @@ export interface GexDashboardProps {
   data: GEXLevelsResponse | null
   /** The newest refresh failed; what is shown is the previous snapshot. */
   stale: boolean
+  /**
+   * Which metric the chart's bar column currently reads. Every other number
+   * in this card - Call/Put/Net GEX, Regime, the walls - is gamma regardless
+   * of this setting, so it is shown and, under delta, called out: the Bars
+   * row alone would let a reader assume the rest of the card follows the bar
+   * column, which it never does.
+   */
+  metric: GexMetric
   /**
    * Dismiss the card. The study keeps running and its levels stay on the
    * chart - this hides the readout only, and the Studies panel switches it
@@ -84,7 +96,7 @@ function Row({
   )
 }
 
-export function GexDashboard({ data, stale, onHide }: GexDashboardProps) {
+export function GexDashboard({ data, stale, metric, onHide }: GexDashboardProps) {
   if (!data || data.status !== 'success') return null
 
   const regime = data.regime
@@ -168,7 +180,15 @@ export function GexDashboard({ data, stale, onHide }: GexDashboardProps) {
         </p>
       )}
 
+      {metric === 'delta' && (
+        <p className={cn('border-b border-border px-2.5 py-1.5 leading-snug', AMBER)}>
+          Bars show DEX, the open-interest book. Walls, Zero-Gamma and Regime below stay gamma;
+          dealer delta is the opposite sign.
+        </p>
+      )}
+
       <dl className="grid grid-cols-[1fr_auto] gap-x-2 gap-y-0.5 px-2.5 py-2 tabular-nums">
+        <Row label="Bars" value={metric === 'delta' ? 'Delta (DEX)' : 'Gamma (GEX)'} />
         <Row label="Call GEX" value={formatMoney(data.total_call_gex)} tone={GREEN} />
         <Row label="Put GEX" value={formatMoney(data.total_put_gex)} tone={RED} />
         <Row label="Net GEX" value={formatMoney(data.net_gex)} tone={regimeTone} emphasis />
