@@ -97,8 +97,8 @@ describe('GexDashboard', () => {
     // total_call_gex: 125000000 -> 12.50 Cr, total_put_gex: -98000000 ->
     // -9.80 Cr, net_gex: 27000000 -> 2.70 Cr. This is the one place that
     // fails if a change motivated by the canvas readout (formatGexMoney is
-    // now shared - see gex-levels-primitive.ts) alters what the sidebar
-    // card itself shows.
+    // shared - see gex-levels-geometry.ts) alters what the sidebar card
+    // itself shows.
     render(<GexDashboard data={makeData()} stale={false} metric="gamma" />)
     expect(screen.getByText('12.50 Cr')).toBeInTheDocument()
     expect(screen.getByText('-9.80 Cr')).toBeInTheDocument()

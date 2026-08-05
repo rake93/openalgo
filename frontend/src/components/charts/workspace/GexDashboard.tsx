@@ -14,7 +14,7 @@
 
 import type { GEXLevelsResponse, GEXSentimentSignal, GexMetric } from '@/api/gex'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { formatGexMoney } from '@/lib/charts/gex-levels-primitive'
+import { formatGexMoney } from '@/lib/charts/gex-levels-geometry'
 import { cn } from '@/lib/utils'
 
 export interface GexDashboardProps {
