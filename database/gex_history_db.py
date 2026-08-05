@@ -448,12 +448,17 @@ def get_latest_snapshot(underlying: str, exchange: str, expiry_date: str) -> dic
         expiry_date: The RESOLVED expiry in DDMMMYY.
 
     Returns:
-        The snapshot's columns plus a `strikes` list ordered by strike
-        ascending, or None if nothing has been recorded for that contract.
+        The snapshot's columns, the owning series' `underlying` and `exchange`,
+        and a `strikes` list ordered by strike ascending. None if nothing has
+        been recorded for that contract.
+
+        The two series fields are folded in because a snapshot row alone cannot
+        say what instrument it belongs to, and the fast path has to echo them
+        back in the study's payload.
     """
     try:
-        row = (
-            db_session.query(GexSnapshot)
+        found = (
+            db_session.query(GexSnapshot, GexSeries.underlying, GexSeries.exchange)
             .join(GexSeries, GexSeries.id == GexSnapshot.series_id)
             .filter(
                 GexSeries.underlying == (underlying or "").strip().upper(),
@@ -463,10 +468,13 @@ def get_latest_snapshot(underlying: str, exchange: str, expiry_date: str) -> dic
             .order_by(GexSnapshot.ts.desc())
             .first()
         )
-        if row is None:
+        if found is None:
             return None
 
+        row, series_underlying, series_exchange = found
         payload = _row_dict(row, _SNAPSHOT_COLUMNS)
+        payload["underlying"] = series_underlying
+        payload["exchange"] = series_exchange
         payload["strikes"] = [
             _row_dict(strike, _STRIKE_COLUMNS)
             for strike in db_session.query(GexSnapshotStrike)

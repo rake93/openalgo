@@ -221,6 +221,10 @@ def test_a_snapshot_and_its_strikes_round_trip(gexdb):
 
     latest = gexdb.get_latest_snapshot("NIFTY", "NFO", "11AUG26")
     assert latest["ts"] == 1_754_000_000
+    # Folded in from the series: a snapshot row alone cannot say what
+    # instrument it belongs to, and the fast path has to echo these back.
+    assert latest["underlying"] == "NIFTY"
+    assert latest["exchange"] == "NFO"
     assert latest["call_wall_oi"] == 24800.0
     assert latest["call_wall_vol"] == 24700.0
     assert latest["regime_vol"] == "amplifying"

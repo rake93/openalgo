@@ -16,6 +16,7 @@ decision, not something an external platform should be able to set.
 """
 
 import re
+import time
 
 from flask import Blueprint, jsonify, request, session
 from flask_cors import cross_origin
@@ -42,6 +43,88 @@ MAX_SERIES = 10
 # `nearest` resolves per tick and rolls weekly; anything else must be a pinned
 # DDMMMYY, the same shape the chain service takes.
 _EXPIRY_RULE_RE = re.compile(r"^\d{2}[A-Z]{3}\d{2}$")
+
+# Two cadence intervals. One missed tick must not force a broker round trip -
+# that would undo the point of the recorder - while a recorder that is down must
+# not freeze the study on stale numbers.
+FAST_PATH_MAX_AGE_SECONDS = 120
+
+
+def _recorded_payload(snapshot: dict, weight_by: str) -> dict:
+    """Reshape one stored snapshot into the payload the study already renders.
+
+    The frontend must have exactly ONE payload shape to handle, so `strikes`
+    is rebuilt with the same keys the live path emits (`net_gex`, `net_dex`,
+    ...) rather than the storage names, and every key the live payload carries
+    is present here. A key this path omitted would read as `undefined` rather
+    than failing - which is how the first implementation of this study shipped
+    a chart with no bar column and a dashboard with two blank rows.
+
+    The two GEX totals are summed from the strike rows rather than stored. They
+    are derivable, and a stored total that disagreed with its own profile would
+    be unfixable - the dashboard and the bars would tell the reader two
+    different stories. `net_gex` is the stored figure, because that is what the
+    levels and the regime were derived from.
+
+    Args:
+        snapshot: A row from `gex_history_db.get_latest_snapshot`, including its
+            `strikes` list.
+        weight_by: 'oi' or 'volume' - which stored column family to serve.
+
+    Returns:
+        The same payload shape `services.gex_levels_service.build_snapshot`
+        produces, with `source: "recorded"`.
+
+    Raises:
+        KeyError: If the row is missing a column - e.g. written by an older
+            schema. The caller treats that as "fall back to a live fetch".
+    """
+    # "oi" -> the _oi columns, "volume" -> the _vol columns.
+    suffix = "oi" if weight_by == "oi" else "vol"
+
+    strikes = [
+        {
+            "strike": row["strike"],
+            "call_gex": row[f"call_gex_{suffix}"],
+            "put_gex": row[f"put_gex_{suffix}"],
+            "net_gex": row[f"net_gex_{suffix}"],
+            "call_dex": row[f"call_dex_{suffix}"],
+            "put_dex": row[f"put_dex_{suffix}"],
+            "net_dex": row[f"net_dex_{suffix}"],
+        }
+        for row in snapshot["strikes"]
+    ]
+
+    return {
+        "status": "success",
+        "underlying": snapshot["underlying"],
+        "exchange": snapshot["exchange"],
+        "expiry_date": snapshot["expiry_date"],
+        "weight_by": weight_by,
+        "spot_price": snapshot["spot_price"],
+        "forward_price": snapshot["forward_price"],
+        "atm_strike": snapshot["atm_strike"],
+        "lot_size": snapshot["lot_size"],
+        # Recorded at write time, so it is up to two minutes stale. Over a
+        # 120-second window that is immaterial to a figure quoted in days.
+        "dte_days": snapshot["dte_days"],
+        "interest_rate": snapshot["interest_rate"],
+        "strikes": strikes,
+        "total_call_gex": round(sum(s["call_gex"] for s in strikes), 2),
+        "total_put_gex": round(sum(s["put_gex"] for s in strikes), 2),
+        "call_wall": snapshot[f"call_wall_{suffix}"],
+        "put_wall": snapshot[f"put_wall_{suffix}"],
+        # Null is a real reading - "no local cross" - not missing data.
+        "zero_gamma": snapshot[f"zero_gamma_{suffix}"],
+        "net_gex": snapshot[f"net_gex_{suffix}"],
+        "regime": snapshot[f"regime_{suffix}"],
+        # The whole stored quality dict, `may_draw` included. Anything less and
+        # the study would treat every recorded snapshot as undrawable.
+        "quality": snapshot[f"quality_{suffix}"],
+        "sentiment": snapshot[f"sentiment_{suffix}"],
+        "source": "recorded",
+        "as_of": snapshot["ts"],
+    }
 
 
 def _sync_recorder_jobs() -> None:
@@ -163,6 +246,25 @@ def gex_levels():
             return jsonify(
                 {"status": "error", "message": "weight_by must be 'oi' or 'volume'"}
             ), 400
+
+        # The recorded fast path, deliberately AFTER validation: a malformed
+        # request must not be answered from history any more than from the
+        # broker. Because a watchlisted series is already being polled once a
+        # minute, N open tabs on the study now cost one broker call rather than
+        # N - this deployment shares one broker session across up to five
+        # devices.
+        #
+        # Wrapped so it can only ever SKIP the fast path. The recorded path is
+        # an optimisation; a broken or absent gex.db, or a row written by an
+        # older schema, must degrade the study to exactly the behaviour it had
+        # before the recorder existed rather than take the study down. A series
+        # nobody chose to record has no row at all and must still render.
+        try:
+            snapshot = gex_history_db.get_latest_snapshot(underlying, exchange, expiry_date)
+            if snapshot and (int(time.time()) - snapshot["ts"]) < FAST_PATH_MAX_AGE_SECONDS:
+                return jsonify(_recorded_payload(snapshot, weight_by)), 200
+        except Exception:
+            logger.exception("Recorded GEX fast path failed; falling back to a live broker fetch")
 
         success, response, status_code = get_gex_levels(
             underlying=underlying,
