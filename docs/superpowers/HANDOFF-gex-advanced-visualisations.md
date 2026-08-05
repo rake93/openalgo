@@ -14,8 +14,8 @@
 | Gamma Profile | **Shipped**, verified live |
 | Delta Exposure (DEX) | **Shipped**, verified live |
 | Hover readout, draggable card | **Shipped**, confirmed by the user |
-| **Snapshot recorder (phase 3)** | Built, green, fd-audited. **Never seen on a live chart** — see §2 |
-| **Gamma Bands (phase 4)** | Built, green, fd-audited. **Never seen on a live chart** — see §2 |
+| **Snapshot recorder (phase 3)** | Built, green, fd-audited. **Live verification still owed** — see §2.1 |
+| **Gamma Bands (phase 4)** | Built, green, fd-audited. **Seen and verified on a real chart** against seeded history — see §2.2 |
 | **GEX Heatmap (phase 5)** | Not started. Unblocked — do this next |
 
 **331 backend tests** across the GEX and option-target suites and **174 frontend
@@ -25,14 +25,21 @@ the whole change.
 
 ---
 
-## 2. Do this before anything else: two phases of live verification are owed
+## 2. Do this before anything else: phase 3's live verification is owed
 
-**Neither phase 3 nor phase 4 has ever touched a broker or been looked at on a
-real chart.** Every test stubs the chain. That matters more here than anywhere
-else in this codebase, because three defects on this exact feature reached the
-live chart with a full green suite — a dead futures badge, a caption drawn under
-the readout card, and a card drag that panned the chart. jsdom calls draw
-handlers with no chart underneath and can see none of that.
+**Phase 4 has been checked on a real chart** (2026-08-06, against seeded
+history — §2.2). **Phase 3 has never touched a broker**: every test stubs the
+chain, and the recorder has only ever been observed staying correctly silent out
+of hours.
+
+That gap matters more here than anywhere else in this codebase. Three defects on
+this exact feature have reached the live chart with a full green suite, and a
+fourth was found the same way on 2026-08-06: **the recorded fast path had never
+once fired**, because the study sends the charted instrument's exchange
+(`NSE_INDEX`) while the watchlist stores the options exchange (`NFO`). Every test
+passed the same exchange on both sides. The study kept working by falling back to
+a live fetch, so it looked switched off rather than broken. jsdom and stubs can
+see none of this.
 
 ### 2.0 Start from a clean server, and check you are on one
 
@@ -79,29 +86,43 @@ not `src`); a backend change needs the restart. Keep `dist` out of commits.
 8. Out of hours with a series on the watchlist, the recorder must stay silent —
    `session_is_open(..., default=False)` is what should stop it.
 
-### 2.2 Phase 4, the bands
+### 2.2 Phase 4, the bands — DONE 2026-08-06, repeat it after any renderer change
 
-The market does not need to be open for this one. Seed a session:
+The market does not need to be open for this one. Seed a session, aiming it at a
+contract and a time range the chart is actually showing:
 
 ```
-uv run python scripts/seed_gex_history.py --expiry 28JUL26 --hours 6
+uv run python scripts/seed_gex_history.py --expiry 11AUG26 --hours 6 \
+    --end "2026-08-05 15:25" --center 24560
 ```
 
-It writes three shapes on purpose, and each is a rule the renderer must get
-right. Verified through the real read path: 346 gaps of 60s, **one of 120s**,
-**one of 660s**, 30 null zero-gammas and three distinct call-wall steps.
+**Both of those flags exist because of mistakes made the first time.** Without
+`--end` the seeder anchors to `now`, so run after hours every point lands past
+the chart's last bar and extrapolates off the right edge of the gapless axis —
+drawn perfectly, entirely off-screen. Without `--center` the walls can sit
+outside the visible price range, and since Bands contributes nothing to autoscale
+(deliberately), they are simply clipped away. Both look identical to "the feature
+does not work".
+
+It writes three shapes on purpose, each a rule the renderer must get right.
+Verified through the real read path: 346 gaps of 60s, **one of 120s**, **one of
+660s**, 30 null zero-gammas and three distinct call-wall steps.
 
 - the **one-minute hole must NOT break** the line (the 150s threshold exists so a
   single dropped tick does not shatter a session into one-point segments);
-- the **ten-minute outage MUST break** it;
+- the **ten-minute outage MUST break** it — visible as a gap in the shaded
+  corridor, not just in the lines;
 - the **null zero-gamma stretch must leave a hole**, not drop to the axis;
 - walls must **step**, not slope — a diagonal implies the level passed through
   prices no strike ever occupied;
 - turning Bands off must remove them and leave the live levels untouched.
 
-Then `--clear` to remove the fabricated rows, or delete the series from the
-panel. **Do not leave seeded rows in a database that later records real ones** —
-the seeder refuses to mix them, but only in that direction.
+All five confirmed on screen on 2026-08-06.
+
+Then `--clear` to remove the fabricated rows. **Do not leave seeded rows in a
+database that later records real ones** — the seeder refuses to seed over real
+snapshots, but the recorder will happily write real ones alongside fakes, and
+nothing on the chart would tell them apart afterwards.
 
 ---
 
@@ -210,6 +231,36 @@ profile for both metrics and both weightings, plus the raw OI and volume.
 **Do not add `autoscaleInfo`.** The heatmap spans the whole strike window, so it
 would flatten the candles harder than anything else in this study.
 
+### Solve the per-frame recomputation before the heatmap, not after
+
+`GexBandsPrimitive` re-splits its **entire** history on every `draw()`, and draw
+fires on every pan, zoom and tick. Measured cost of one frame's segment work
+(fd-audit, 2026-08-06):
+
+| History | Per frame | Share of a 60fps budget |
+| --- | --- | --- |
+| 375 pts (default 6h lookback) | 0.43 ms | 3% |
+| 1,080 pts | 0.56 ms | 3% |
+| 4,320 pts (72h — the panel's maximum) | 1.56 ms | 9% |
+| 20,000 pts (`MAX_HISTORY_POINTS`, raw API only) | 9.46 ms | **57%** |
+
+**It is not a leak** — the allocations are collected, and descriptors and RSS
+were both flat across 1,000 reads. It is latent for Bands too, because the
+lookback select tops out at 72 hours, so a user cannot reach worse than 9%.
+
+It will not stay latent for the Heatmap. That draws a 47-strike grid rather than
+three lines, over the same column budget, so the same "recompute on every frame"
+shape starts from a much larger constant. **Fix it in `GexBandsPrimitive` first
+and build the heatmap on the fixed shape**, rather than shipping a second
+primitive with the same defect.
+
+The fix is contained: compute the segments in `setData` / `setOptions` and have
+`draw()` read a prepared result. **Cache exactly one value per primitive
+instance, never a map keyed by anything** — a keyed cache here would be the
+unbounded module-level registry the `fd-audit` skill exists to catch, traded in
+to fix a cost that was never a leak. Worth a test that a second `draw()` with
+unchanged data does no splitting.
+
 ---
 
 ## 5. Known limitations, deliberately left
@@ -236,6 +287,10 @@ negation.
 ---
 
 ## 6. Follow-ups worth doing, none blocking
+
+**Bands re-split their history every frame.** The one finding from the 2026-08-06
+`fd-audit`; the numbers, the reason it is latent, and the shape of the fix are in
+§4a, because it should be fixed *before* the Heatmap rather than after.
 
 **`scan_zero_gamma` re-resolves what the caller already has.** Measured on a
 47-strike chain: `resolve_ivs` (0.574 ms) and `weighted_legs` (0.201 ms) run once
