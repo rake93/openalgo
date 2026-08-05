@@ -104,7 +104,7 @@ function linearPriceToY(price: number): number {
 describe('computeGexBarGeometry', () => {
   it('returns nothing when every strike falls outside the visible range', () => {
     const strikes = [strike(10_000, 500), strike(10_050, -300)]
-    const { bars, rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    const { bars, rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'gamma')
     expect(bars).toEqual([])
     expect(rowHeight).toBe(0)
   })
@@ -115,7 +115,7 @@ describe('computeGexBarGeometry', () => {
       strike(24_200, 100),
       strike(24_400, -50),
     ]
-    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'gamma')
     expect(bars.map((b) => b.strike)).toEqual([24_200, 24_400])
     // Peak is 100 (the larger of the two visible strikes), so the full-size
     // bar is exactly columnWidth, not scaled down by the off-screen 9999.
@@ -124,7 +124,7 @@ describe('computeGexBarGeometry', () => {
 
   it('does not divide by zero when every visible strike has net_gex 0', () => {
     const strikes = [strike(24_200, 0), strike(24_400, 0)]
-    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'gamma')
     expect(bars).toHaveLength(2)
     for (const b of bars) {
       expect(b.length).toBe(0)
@@ -134,14 +134,14 @@ describe('computeGexBarGeometry', () => {
 
   it('assigns sign correctly: net_gex >= 0 is positive, negative is not', () => {
     const strikes = [strike(24_200, 0), strike(24_400, -1)]
-    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'gamma')
     expect(bars.find((b) => b.strike === 24_200)?.positive).toBe(true)
     expect(bars.find((b) => b.strike === 24_400)?.positive).toBe(false)
   })
 
   it('falls back to a default row height for a single strike, without NaN', () => {
     const strikes = [strike(24_200, 50)]
-    const { bars, rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    const { bars, rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'gamma')
     expect(bars).toHaveLength(1)
     expect(rowHeight).toBeGreaterThan(0)
     expect(Number.isNaN(rowHeight)).toBe(false)
@@ -150,7 +150,7 @@ describe('computeGexBarGeometry', () => {
   it('caps row height so bars cannot grow into an overlapping smear when zoomed in', () => {
     // Strikes 400 price-units apart map to a huge pixel gap on this scale.
     const strikes = [strike(24_200, 10), strike(24_600, -10)]
-    const { rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    const { rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'gamma')
     expect(rowHeight).toBeLessThanOrEqual(14)
   })
 
@@ -172,19 +172,15 @@ describe('computeGexBarGeometry', () => {
   })
 
   it('scales each metric against its own peak, never the other metric', () => {
+    // The gamma/delta test above already proves per-metric peak scaling (a
+    // leaked gamma peak of 100 would turn delta's 24_400 assertion of 60 into
+    // 48). This fixture exists on top of that for a starker regression
+    // signal: a leaked peak here would shrink both bars to slivers (1.2px and
+    // 0.6px) rather than a merely-wrong number, which is easier to miss.
     const strikes = [strike(24_200, 1000, 10), strike(24_400, 500, 5)]
 
     const delta = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'delta')
-    // If the gamma peak of 1000 leaked into the delta scaling these would be
-    // 1.2px and 0.6px - a column of invisible slivers rather than an
-    // obviously wrong chart, which is why it needs pinning.
     expect(delta.bars.find((b) => b.strike === 24_200)?.length).toBe(120)
     expect(delta.bars.find((b) => b.strike === 24_400)?.length).toBe(60)
-  })
-
-  it('defaults to the gamma metric when none is passed', () => {
-    const strikes = [strike(24_200, 100, -80)]
-    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
-    expect(bars[0]?.positive).toBe(true)
   })
 })

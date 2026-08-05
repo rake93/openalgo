@@ -118,7 +118,13 @@ export interface GexBarGeometry {
   y: number
   /** Unsigned bar length, already scaled to `columnWidth`. 0 when there is no signal to scale against. */
   length: number
-  /** `net_gex >= 0` - call-dominant / stabilising, drawn in the call colour. */
+  /**
+   * Sign of the selected metric's exposure at this strike, drawn in the call
+   * colour when true. The two metrics read opposite parties: under gamma,
+   * positive means dealers are long (stabilising); under delta, positive
+   * means the open-interest book is long, and dealers hold the negation -
+   * see `services/gex_levels/delta_exposure.py`'s module docstring.
+   */
   positive: boolean
 }
 
@@ -136,7 +142,7 @@ export function computeGexBarGeometry(
   priceToY: (price: number) => number,
   plotHeight: number,
   columnWidth: number,
-  metric: GexMetric = 'gamma'
+  metric: GexMetric
 ): { bars: GexBarGeometry[]; rowHeight: number } {
   // Clipping to the visible range is what replaces an autoscale contribution:
   // the study never asks the pane to widen to fit the strike window, it only
@@ -147,10 +153,9 @@ export function computeGexBarGeometry(
   })
   if (visible.length === 0) return { bars: [], rowHeight: 0 }
 
-  // One accessor for both the peak and the per-bar value, so the two can never
-  // be scaled against different metrics. Gamma and delta exposure differ by
-  // orders of magnitude, so a mismatch would render every bar as an invisible
-  // sliver rather than as an obviously wrong chart.
+  // Gamma exposure carries an F^2 * 0.01 factor and delta exposure only F, so
+  // the two are off by a large factor - a mismatch here would render every
+  // bar as an invisible sliver rather than as an obviously wrong chart.
   const exposureOf = (s: GEXStrikeLevel): number => (metric === 'delta' ? s.net_dex : s.net_gex)
 
   const peak = visible.reduce((max, s) => Math.max(max, Math.abs(exposureOf(s))), 0)
