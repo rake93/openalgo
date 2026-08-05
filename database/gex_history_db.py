@@ -488,7 +488,46 @@ def get_latest_snapshot(underlying: str, exchange: str, expiry_date: str) -> dic
         return None
 
 
-def get_snapshots_in_range(series_id: int, from_ts: int, to_ts: int) -> list[dict]:
+def get_series_by_contract(underlying: str, exchange: str, expiry_date: str) -> dict | None:
+    """The series that has recorded snapshots for one RESOLVED contract.
+
+    Resolved by what was actually recorded rather than by the series' rule,
+    because the rule does not identify a contract: a `nearest` series holds
+    several over its retention window, and a pinned one names exactly one. A
+    caller holding an expiry - from a live snapshot, say - can therefore find
+    its history without knowing which rule produced it.
+
+    Args:
+        underlying: Underlying symbol.
+        exchange: Options exchange.
+        expiry_date: The RESOLVED expiry in DDMMMYY.
+
+    Returns:
+        The series dict, or None if nothing has been recorded for that contract.
+    """
+    try:
+        row = (
+            db_session.query(GexSeries)
+            .join(GexSnapshot, GexSnapshot.series_id == GexSeries.id)
+            .filter(
+                GexSeries.underlying == (underlying or "").strip().upper(),
+                GexSeries.exchange == (exchange or "").strip().upper(),
+                GexSnapshot.expiry_date == (expiry_date or "").strip().upper(),
+            )
+            .first()
+        )
+        return _series_dict(row) if row else None
+    except Exception:
+        logger.exception(f"Error resolving the GEX series for {underlying} {exchange}")
+        return None
+
+
+def get_snapshots_in_range(
+    series_id: int,
+    from_ts: int,
+    to_ts: int,
+    expiry_date: str | None = None,
+) -> list[dict]:
     """Snapshot rows for one series between two timestamps, INCLUSIVE both ends.
 
     Snapshot rows only, no strike children: this is the query Gamma Bands runs,
@@ -502,22 +541,24 @@ def get_snapshots_in_range(series_id: int, from_ts: int, to_ts: int) -> list[dic
         series_id: The series to read.
         from_ts: Inclusive lower bound, epoch seconds.
         to_ts: Inclusive upper bound, epoch seconds.
+        expiry_date: Optional RESOLVED expiry to scope to. A `nearest` series
+            holds several contracts over its retention window, and splicing them
+            into one line would draw a wall jump at every roll that is the book
+            changing rather than the market moving. Callers plotting through time
+            should always pass it.
 
     Returns:
         Snapshot dicts ordered by `ts` ascending.
     """
     try:
-        return [
-            _row_dict(row, _SNAPSHOT_COLUMNS)
-            for row in db_session.query(GexSnapshot)
-            .filter(
-                GexSnapshot.series_id == series_id,
-                GexSnapshot.ts >= from_ts,
-                GexSnapshot.ts <= to_ts,
-            )
-            .order_by(GexSnapshot.ts)
-            .all()
-        ]
+        query = db_session.query(GexSnapshot).filter(
+            GexSnapshot.series_id == series_id,
+            GexSnapshot.ts >= from_ts,
+            GexSnapshot.ts <= to_ts,
+        )
+        if expiry_date:
+            query = query.filter(GexSnapshot.expiry_date == expiry_date.strip().upper())
+        return [_row_dict(row, _SNAPSHOT_COLUMNS) for row in query.order_by(GexSnapshot.ts).all()]
     except Exception:
         logger.exception(f"Error reading GEX snapshots for series {series_id}")
         return []
