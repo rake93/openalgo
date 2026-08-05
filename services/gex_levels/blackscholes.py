@@ -17,6 +17,10 @@ FALLBACK_IV = 0.15
 # Above this, an "IV" is a solver artefact rather than a market volatility.
 _MAX_PLAUSIBLE_IV = 5.0
 
+# Black-76 delta is bounded by +/-1 (call 0..1, put -1..0). Anything well
+# outside that band is a solver artefact rather than a position.
+_MAX_PLAUSIBLE_DELTA = 1.5
+
 
 def safe_iv(
     black76, price: float, F: float, K: float, r: float, t: float, flag: str
@@ -77,6 +81,40 @@ def safe_gamma(black76, flag: str, F: float, K: float, t: float, r: float, sigma
     if g is None or not math.isfinite(g) or g < 0:
         return 0.0
     return g
+
+
+def safe_delta(black76, flag: str, F: float, K: float, t: float, r: float, sigma: float) -> float:
+    """
+    Black-76 delta, or 0.0 on any numerical failure.
+
+    Unlike `safe_gamma` this must NOT reject negative results. A put's delta is
+    negative by definition, and rejecting negatives here would silently delete
+    the entire put side of every delta profile - leaving a chart that looks
+    plausible and is directionally meaningless.
+
+    Args:
+        black76: The opengreeks.black76 module (injected so this stays pure).
+        flag: 'c' for a call, 'p' for a put.
+        F: Forward price of the underlying.
+        K: Strike.
+        t: Time to expiry in years.
+        r: Risk-free rate as a decimal (0.065, not 6.5).
+        sigma: Volatility as a decimal.
+
+    Returns:
+        The delta - positive for calls, negative for puts - or 0.0 when the
+        inputs are non-positive, the calculation raises, or the result is
+        non-finite or implausibly large in magnitude.
+    """
+    if not sigma or sigma <= 0 or F <= 0 or K <= 0 or t <= 0:
+        return 0.0
+    try:
+        d = black76.delta(flag, F, K, t, r, sigma)
+    except Exception:
+        return 0.0
+    if d is None or not math.isfinite(d) or abs(d) > _MAX_PLAUSIBLE_DELTA:
+        return 0.0
+    return d
 
 
 def atm_iv_from(per_strike_iv: dict[float, float | None], atm_strike: float | None) -> float:
