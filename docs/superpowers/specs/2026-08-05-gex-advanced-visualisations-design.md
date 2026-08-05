@@ -394,6 +394,27 @@ Phased so value lands before the infrastructure is finished:
 
 Steps 1 and 2 ship two of the four features with no recorder at all.
 
+## 10a. Follow-ups found during implementation
+
+Recorded rather than actioned, because each is pre-existing rather than
+introduced by this work.
+
+**`scan_zero_gamma` re-resolves what the caller already has.** Measured on a
+47-strike chain: `resolve_ivs` 0.574 ms and `weighted_legs` 0.201 ms run once in
+`gex_levels_service`, then `scan_zero_gamma` runs both again internally with
+identical arguments — same `rows`, forward, `t_years`, `r`, `atm_strike` and
+weighting. That duplicated 0.775 ms per request is larger than the entire delta
+pricing pass this work added (0.300 ms). `scan_zero_gamma` uses `rows` for
+nothing beyond its `if not rows` guard, so accepting the already-built `legs`
+would remove it. It changes `levels.py`'s signature, which is why it was not
+folded into the delta work.
+
+**The `/gex` Tools page still calls `compute_exposures`.** That is correct today
+— it needs gamma only — but it means the two surfaces now reach the pricers by
+different routes. If `/gex` ever gains the delta metric, it should move to the
+`resolve_ivs` -> `weighted_legs` -> two-pricer shape rather than growing a second
+single-shot path.
+
 ## 11. Out of scope
 
 - Converting Zero-Gamma from forward space to spot space on cash-index charts
