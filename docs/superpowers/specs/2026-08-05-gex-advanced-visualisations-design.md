@@ -1,11 +1,11 @@
 # GEX Levels: Gamma Profile, Bands, Heatmap and Delta Exposure
 
 **Date:** 2026-08-05
-**Status:** **Phases 1-3 shipped. Phases 4-5 not started** — see
+**Status:** **Phases 1-4 built. Phase 5 not started** — see
 [§10 Delivery order](#10-delivery-order) for the split and
 [HANDOFF-gex-advanced-visualisations.md](../HANDOFF-gex-advanced-visualisations.md)
-to pick it up. Phases 1-2 are verified live; **phase 3's live verification is
-still outstanding** (see §10b).
+to pick it up. Phases 1-2 are verified live; **phases 3 and 4 are green and
+audited but have NOT been seen on a live chart** — see the handoff §2.
 **Builds on:** [2026-08-04-gex-levels-chart-study-design.md](2026-08-04-gex-levels-chart-study-design.md)
 **Reader's guide to the existing study:** [../../gex-levels-reading.md](../../gex-levels-reading.md)
 
@@ -392,7 +392,7 @@ Phased so value lands before the infrastructure is finished.
 | 1 | **Gamma Profile** — already built; folded into step 2 | **DONE** 2026-08-05 |
 | 2 | **Delta Exposure** — `delta_exposure.py`, the live path, the Metric toggle | **DONE** 2026-08-05 |
 | 3 | **Storage and recorder** — `gex_history_db`, `gex_recorder_service`, `build_snapshot` extraction, watchlist routes, the recorded fast path | **DONE** 2026-08-05 (live verification outstanding) |
-| 4 | **Gamma Bands** — the first consumer of history; smallest query shape | Not started |
+| 4 | **Gamma Bands** — the first consumer of history; smallest query shape | **DONE** 2026-08-06 (live verification outstanding) |
 | 5 | **GEX Heatmap** — the grid endpoint, downsampling, the background renderer | Not started |
 
 Steps 1 and 2 shipped two of the four features with no recorder at all, exactly

@@ -1,9 +1,9 @@
 # Handoff: GEX Levels advanced visualisations
 
-**Session date:** 2026-08-05 (phase 3; phases 1-2 the same day)
+**Session dates:** 2026-08-05 (phases 1-3), 2026-08-06 (phase 4)
 **Branch:** `feat/indicator-engine` (long-lived; never merged to main — see the fork model note in memory)
 **Read first:** [`specs/2026-08-05-gex-advanced-visualisations-design.md`](specs/2026-08-05-gex-advanced-visualisations-design.md)
-**Plan just executed:** [`plans/2026-08-05-gex-snapshot-recorder.md`](plans/2026-08-05-gex-snapshot-recorder.md)
+**Plans executed:** [`plans/2026-08-05-gex-snapshot-recorder.md`](plans/2026-08-05-gex-snapshot-recorder.md), [`plans/2026-08-06-gex-gamma-bands.md`](plans/2026-08-06-gex-gamma-bands.md)
 
 ---
 
@@ -14,34 +14,54 @@
 | Gamma Profile | **Shipped**, verified live |
 | Delta Exposure (DEX) | **Shipped**, verified live |
 | Hover readout, draggable card | **Shipped**, confirmed by the user |
-| **Snapshot recorder (phase 3)** | **Built and green. NOT yet verified live** — see §2 |
-| **Gamma Bands (phase 4)** | Not started. Unblocked — do this next |
-| **GEX Heatmap (phase 5)** | Not started |
+| **Snapshot recorder (phase 3)** | Built, green, fd-audited. **Never seen on a live chart** — see §2 |
+| **Gamma Bands (phase 4)** | Built, green, fd-audited. **Never seen on a live chart** — see §2 |
+| **GEX Heatmap (phase 5)** | Not started. Unblocked — do this next |
 
-Backend tests went from 160 to **301 across the GEX and option-target suites**,
-all green. No pure module under `services/gex_levels/` changed, which is the
-regression guard for the whole change.
+**331 backend tests** across the GEX and option-target suites and **174 frontend
+tests** across the seven GEX files, all green. No pure module under
+`services/gex_levels/` changed in either phase, which is the regression guard for
+the whole change.
 
 ---
 
-## 2. Do this before anything else: verify phase 3 live
+## 2. Do this before anything else: two phases of live verification are owed
 
-**Phase 3 has never touched a broker.** Every test stubs the chain. That matters
-more here than usual, because last session three defects reached the live chart
-with a full green suite — a dead futures badge, a caption drawn under the readout
-card, and a card drag that panned the chart. jsdom and stubs cannot see any of
-that.
+**Neither phase 3 nor phase 4 has ever touched a broker or been looked at on a
+real chart.** Every test stubs the chain. That matters more here than anywhere
+else in this codebase, because three defects on this exact feature reached the
+live chart with a full green suite — a dead futures badge, a caption drawn under
+the readout card, and a card drag that panned the chart. jsdom calls draw
+handlers with no chart underneath and can see none of that.
 
-The server must be restarted first; nothing hot-reloads.
+### 2.0 Start from a clean server, and check you are on one
+
+A stale second instance is a live hazard here, not a hypothetical: on 2026-08-06
+port 5000 was serving a build with **neither** phase's routes registered while
+two `app.py` process pairs were running. The cheap check, from any shell:
+
+```
+curl -s -o /dev/null -w "%{http_code} %{content_type}\n" -X POST \
+  -H 'Content-Type: application/json' -d '{}' \
+  http://127.0.0.1:5000/gex/api/gex-history
+```
+
+`400 application/json` means the route is registered. **`200 text/html` means it
+is not** — the `app.py` 404 handler falls through to `serve_react_app()`, so a
+missing route looks like a working page. Kill every `app.py` and start one.
+
+A frontend change also needs `cd frontend && npm run build` (Flask serves `dist`,
+not `src`); a backend change needs the restart. Keep `dist` out of commits.
+
+### 2.1 Phase 3, the recorder
 
 1. **Idle case first, and it is the one an upgrade hits.** `GET
    /gex/api/gex-series` returns `[]` on a fresh install, and the log shows the
    recorder registering only `gex_prune` — no recording job, no broker call.
-2. Add a series (session-gated, so drive it from the browser console on an
-   authenticated tab, or export the session cookie):
-   ```
-   POST /gex/api/gex-series {"underlying":"NIFTY","exchange":"NFO","expiry_rule":"nearest"}
-   ```
+2. Add a series. There is now a **button for this** — enable GEX levels, turn
+   Gamma bands on, and use "Record this series" in the Studies panel. (The raw
+   route is still `POST /gex/api/gex-series {"underlying":"NIFTY",
+   "exchange":"NFO","expiry_rule":"nearest"}`.)
 3. Within two minutes `db/gex.db` should hold a `gex_snapshot` row with **both**
    `call_wall_oi` and `call_wall_vol` populated, and ~47 `gex_snapshot_strike`
    children.
@@ -53,9 +73,35 @@ The server must be restarted first; nothing hot-reloads.
    feature's main claim.
 6. **Compare a recorded snapshot against a forced live fetch of the same chain**
    — disable the series, reload, and check the walls and net GEX agree. There is
-   a unit test for this, but the unit test cannot see a units bug in the live
-   chain; the last one survived 99 green tests and was caught only by a live call.
+   a unit test for this, but it cannot see a units bug in the live chain; the
+   last one survived 99 green tests and was caught only by a live call.
 7. After the close: no new rows, and no rate-limit warnings in `log/errors.jsonl`.
+8. Out of hours with a series on the watchlist, the recorder must stay silent —
+   `session_is_open(..., default=False)` is what should stop it.
+
+### 2.2 Phase 4, the bands
+
+The market does not need to be open for this one. Seed a session:
+
+```
+uv run python scripts/seed_gex_history.py --expiry 28JUL26 --hours 6
+```
+
+It writes three shapes on purpose, and each is a rule the renderer must get
+right. Verified through the real read path: 346 gaps of 60s, **one of 120s**,
+**one of 660s**, 30 null zero-gammas and three distinct call-wall steps.
+
+- the **one-minute hole must NOT break** the line (the 150s threshold exists so a
+  single dropped tick does not shatter a session into one-point segments);
+- the **ten-minute outage MUST break** it;
+- the **null zero-gamma stretch must leave a hole**, not drop to the axis;
+- walls must **step**, not slope — a diagonal implies the level passed through
+  prices no strike ever occupied;
+- turning Bands off must remove them and leave the live levels untouched.
+
+Then `--clear` to remove the fabricated rows, or delete the series from the
+panel. **Do not leave seeded rows in a database that later records real ones** —
+the seeder refuses to mix them, but only in that direction.
 
 ---
 
@@ -98,38 +144,71 @@ lands with Bands, when there is something visible to switch on.
 
 ---
 
-## 4. Pick up here: phase 4, Gamma Bands
+## 4. What phase 4 built
 
-The smallest query shape, and the first consumer of the history.
+**`services/gex_history_service.py`** — the read side, separate from the recorder
+so a query path can never trigger a fetch (a test pins that by exploding if the
+chain service is reached, rather than mocking it into silence). Scoped to one
+**resolved** contract: a `nearest` series rolls weekly, and splicing contracts
+would draw a wall jump at every roll that is the book changing, not the market
+moving. The honest cost is that a weekly series shows only as much history as the
+current contract has existed — about five sessions, not the thirty retained.
 
-**The query already exists and is already boundary-tested:**
-`gex_history_db.get_snapshots_in_range(series_id, from_ts, to_ts)` — inclusive
-both ends, ordered ascending, snapshot rows only. What remains:
+**`POST /gex/api/gex-history`** with `fields: "levels"`. `fields: "grid"` is an
+explicit 400 so phase 5 gets a seam, not a surprise. `MAX_HISTORY_POINTS =
+20_000` bounds the **window** rather than truncating the result: returning the
+first N points of a wider range would draw a band that simply stops, which reads
+as the market going quiet.
 
-- `services/gex_history_service.py` — the read side, deliberately separate from
-  the recorder so a query path can never trigger a fetch.
-- `POST /gex/api/gex-history` with `fields: "levels"` (spec §6).
-- Step-line renderers for Call Wall, Put Wall and Zero-Gamma over price.
-- A watchlist control in the GEX Levels settings panel, wired to the routes
-  phase 3 shipped.
+**`gex-bands-geometry.ts`** (pure) and **`gex-bands-primitive.ts`** (canvas). One
+path per segment, step lines, `timeToIndexFloat` for x, no `autoscaleInfo`.
 
-**Three things the spec is explicit about and a renderer will get wrong:**
+**The manager** gained `showBands` (off by default) and a history loop that runs
+at `refreshSeconds × 5` and waits for the live snapshot to resolve the contract.
 
-1. **A gap must look like a gap.** A failed tick has no row. The Bands break the
-   line; they do not interpolate. Flat gamma where there was *no reading* is the
-   error `quality.py` and `direction.ts` already forbid.
-2. **Mark the roll.** Every snapshot stores its resolved `expiry_date`. On a
-   `nearest` series, 30 days is four or five different books, and the walls jump
-   at each roll because the book changed, not because the market moved. Filter to
-   one contract or mark the boundary — drawing across it unmarked is the same
-   class of error as labelling a synthetic forward "Futures".
-3. **Zero-Gamma stays in forward space** and inherits the existing limitation:
-   on a cash-index chart the band sits above the equivalent spot level by the
-   basis. Documented in [`../gex-levels-reading.md`](../gex-levels-reading.md) §8.
+**The panel** gained the Bands controls and the **recorder notice** — the piece
+that makes phase 3 usable without curl.
 
-**One thing to decide rather than inherit:** `get_snapshots_in_range` has no row
-ceiling. The spec caps only the phase 5 grid endpoint and calls the Bands query
-"a few thousand small objects" — true for a month, but nothing enforces it.
+### Two things phase 4 decided that the spec left open
+
+**Bands is off by default.** It is the only control in that panel that can be
+switched on and legitimately draw nothing, so the notice block explains the state
+and offers to start recording rather than looking broken.
+
+**The window ceiling now exists.** The previous handoff flagged that
+`get_snapshots_in_range` had no row limit; `MAX_HISTORY_POINTS` is it.
+
+---
+
+## 4a. Pick up here: phase 5, the GEX Heatmap
+
+The grid endpoint, downsampling, and a background layer in the price pane.
+
+**What is already in place:** `fields` is plumbed end to end and `"grid"` returns
+a 400 naming itself. Every response already carries `resolution` and
+`downsampled`, always `"1m"` / `false`, so downsampling lands as a value change
+rather than a shape change. `gex_snapshot_strike` holds the full per-strike
+profile for both metrics and both weightings, plus the raw OI and volume.
+
+**What the spec is explicit about (§6, §7) and a heatmap will get wrong:**
+
+1. **The grid must be capped and must say so.** 30 days is ~8,250 columns and
+   ~3.5 MB. `MAX_GRID_COLUMNS = 1000`, then `5m`, then `15m` — and the response
+   carries `resolution` and `downsampled` because *a heatmap that silently
+   thinned itself would look like a market that went quiet*.
+2. **Bucketing selects a representative snapshot, never an average.** Averaging
+   across a wall that jumped strike invents a concentration at neither strike.
+3. **It must share the price pane.** Its y-axis *is* the strike ladder, and its
+   whole value is that a band of colour lines up with the candles that did or did
+   not break it. In a separate pane the reader eyeballs two y-axes against each
+   other — doing by hand the comparison the picture exists to make.
+4. **Column-oriented JSON**: one `strikes[]` axis then `columns: [{ts, values[]}]`,
+   so a timestamp costs 47 numbers rather than 47 objects.
+5. **A gap stays blank**, and a column recorded as `degraded` should be dimmed or
+   hatched — `quality_verdict` is already on every point.
+
+**Do not add `autoscaleInfo`.** The heatmap spans the whole strike window, so it
+would flatten the candles harder than anything else in this study.
 
 ---
 
@@ -217,7 +296,16 @@ implementation. The inline run cost less and found the same class of problem.
 instead of `patch()` showed RSS plateauing after 400 ticks and **no line from the
 new modules** in `tracemalloc`'s retained-growth list. Descriptors were flat
 across 200 ticks, 200 read pairs and 600 watchlist syncs. If you audit with
-mocks in the loop, you are measuring the mocks.
+mocks in the loop, you are measuring the mocks. Phase 4's audit was run the same
+way from the start: 1,000 reads of a 349-point window, handles flat at 197-198,
+no trend in RSS, nothing from the new modules retained.
+
+**Check which server you are talking to before believing anything.** Phase 4
+ended with port 5000 serving a build that had neither phase's routes, while two
+`app.py` process pairs were alive. Because the 404 handler falls through to the
+React app, a missing route answers `200 text/html` and looks like a working page.
+§2.0 has the one-line check. This is the second time this trap has cost time on
+this feature.
 
 **Two test bugs, no implementation bugs, during phase 3.** Both were arithmetic
 in the test's own constants — a timestamp that was not a multiple of the cadence,
