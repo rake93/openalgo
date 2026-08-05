@@ -14,9 +14,10 @@
  * Mirrors `ProfileManager`: a settings object, `snapshot()` / `restore()` so
  * the study persists with the saved layout, and lifecycle torn down through
  * `dispose()`. This file also owns the two primitives that paint the study -
- * `GexLevelsPrimitive` (levels and bars) and `GexMetricCaptionPrimitive` (the
- * bar column's metric label, at a higher zOrder so it can't be painted over -
- * see its doc comment in `gex-levels-primitive.ts`). `attachChart` /
+ * `GexLevelsPrimitive` (levels and bars) and `GexOverlayPrimitive` (the bar
+ * column's metric label and the per-strike hover readout, both painted at a
+ * higher zOrder so price action can't cover them - see its doc comment in
+ * `gex-levels-primitive.ts`). `attachChart` /
  * `syncPrimitive` mirror `ProfileManager.attachChart` / `rebuild()` exactly,
  * including the "drop, don't remove" handling of a chart rebuild, for both
  * primitives in lockstep. The workspace wiring that supplies `instrument()`
@@ -28,8 +29,8 @@ import type { GEXLevelsResponse, GEXWeightBy, GexMetric } from '@/api/gex'
 import {
   GexLevelsPrimitive,
   type GexLevelsPrimitiveOptions,
-  type GexMetricCaptionOptions,
-  GexMetricCaptionPrimitive,
+  type GexOverlayOptions,
+  GexOverlayPrimitive,
 } from './gex-levels-primitive'
 
 export interface GexLevelsConfig {
@@ -111,7 +112,7 @@ export class GexLevelsManager {
 
   private chart: Chart | null = null
   private primitive: GexLevelsPrimitive | null = null
-  private captionPrimitive: GexMetricCaptionPrimitive | null = null
+  private captionPrimitive: GexOverlayPrimitive | null = null
 
   /**
    * Bumped every time the charted instrument changes. Each outgoing request
@@ -155,7 +156,7 @@ export class GexLevelsManager {
   /**
    * True when `snapshotValue` actually has bar data - a successful response
    * with at least one strike. Read by `captionOptions()`; see
-   * `GexMetricCaptionOptions.hasBars` for why the caption needs this and
+   * `GexOverlayOptions.hasBars` for why the caption needs this and
    * `showBars` (a user setting, not a data fact) is not enough on its own.
    */
   private get hasBars(): boolean {
@@ -353,7 +354,7 @@ export class GexLevelsManager {
     // lockstep with the main primitive, but through its own try/catch so a
     // chart that throws removing one still gets the other's handle dropped.
     if (this.settings.enabled && !this.captionPrimitive) {
-      this.captionPrimitive = new GexMetricCaptionPrimitive(this.captionOptions())
+      this.captionPrimitive = new GexOverlayPrimitive(this.captionOptions())
       chart.addPrimitive(this.captionPrimitive, 0)
     } else if (!this.settings.enabled && this.captionPrimitive) {
       try {
@@ -393,13 +394,13 @@ export class GexLevelsManager {
 
   /**
    * Mostly mirrors `primitiveOptions()`, trimmed to the subset
-   * `GexMetricCaptionPrimitive` actually needs to place and word its label -
+   * `GexOverlayPrimitive` actually needs to place and word its label -
    * it has no walls, no `columnWidth`-scaled bars, nothing else to configure
    * - plus one field `primitiveOptions()` has no reason to carry: `hasBars`,
    * a fact about the snapshot rather than a setting, computed fresh on every
    * call so it is never one refresh behind.
    */
-  private captionOptions(): Partial<GexMetricCaptionOptions> {
+  private captionOptions(): Partial<GexOverlayOptions> {
     const c = this.settings
     const s = this.snapshotValue
     return {
@@ -409,7 +410,7 @@ export class GexLevelsManager {
       columnWidth: c.columnWidth,
       metric: c.metric,
       columnInset: this.cb.volumeProfileWidthOnSide?.(c.side) ?? 0,
-      // The hover readout's raw material - see GexMetricCaptionOptions.strikes.
+      // The hover readout's raw material - see GexOverlayOptions.strikes.
       // Derived fresh from snapshotValue on every call, the same as hasBars,
       // so it is reachable from every mutation point (fetchNow's success
       // handler, instrumentChanged) without a new syncPrimitive() call site:

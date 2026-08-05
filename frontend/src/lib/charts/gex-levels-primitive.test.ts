@@ -16,7 +16,7 @@ import {
   formatGexMoney,
   formatGexPrice,
   GexLevelsPrimitive,
-  GexMetricCaptionPrimitive,
+  GexOverlayPrimitive,
   gexHitTestStrike,
   gexMetricCaption,
   gexReadoutLines,
@@ -571,10 +571,10 @@ function fakeRc(
   }
 }
 
-describe('GexMetricCaptionPrimitive draw', () => {
+describe('GexOverlayPrimitive draw', () => {
   it('emits the caption text for the configured metric', () => {
     const ctx = fakeCtx()
-    const primitive = new GexMetricCaptionPrimitive({
+    const primitive = new GexOverlayPrimitive({
       showBars: true,
       hasBars: true,
       metric: 'delta',
@@ -593,7 +593,7 @@ describe('GexMetricCaptionPrimitive draw', () => {
     // = 300 - 12 = 288: this is the axis the Critical review bug lived on
     // (the caption used to sit at the TOP of the plot, under the readout
     // card) - a regression back to the top must fail this assertion.
-    const primitive = new GexMetricCaptionPrimitive({
+    const primitive = new GexOverlayPrimitive({
       showBars: true,
       hasBars: true,
       metric: 'gamma',
@@ -614,7 +614,7 @@ describe('GexMetricCaptionPrimitive draw', () => {
 
   it('draws nothing when the bar column is switched off, even with bar data present', () => {
     const ctx = fakeCtx()
-    const primitive = new GexMetricCaptionPrimitive({
+    const primitive = new GexOverlayPrimitive({
       showBars: false,
       hasBars: true,
       metric: 'gamma',
@@ -625,11 +625,11 @@ describe('GexMetricCaptionPrimitive draw', () => {
 
   it('draws nothing when there is no bar data, even with the bar column switched on', () => {
     // The showBars-off case above and this one are independent gates - see
-    // GexMetricCaptionOptions.hasBars. This is the instrument-with-no-option-
+    // GexOverlayOptions.hasBars. This is the instrument-with-no-option-
     // chain case: showBars stays whatever the user last set it to, but there
     // is nothing on the chart for the caption to be captioning.
     const ctx = fakeCtx()
-    const primitive = new GexMetricCaptionPrimitive({
+    const primitive = new GexOverlayPrimitive({
       showBars: true,
       hasBars: false,
       metric: 'gamma',
@@ -639,7 +639,7 @@ describe('GexMetricCaptionPrimitive draw', () => {
   })
 
   it('is always top zOrder, regardless of options', () => {
-    const primitive = new GexMetricCaptionPrimitive()
+    const primitive = new GexOverlayPrimitive()
     expect(primitive.zOrder()).toBe('top')
   })
 })
@@ -650,7 +650,7 @@ describe('GexLevelsPrimitive draw does not draw the caption itself', () => {
   // primitive worked before the caption moved to its own zOrder: 'top'
   // primitive - it would once again be paintable-over by the candles that
   // render between the two. This pins that the split actually happened,
-  // not just that GexMetricCaptionPrimitive independently works. Reuses the
+  // not just that GexOverlayPrimitive independently works. Reuses the
   // module-level `strike` helper defined above for `computeGexBarGeometry`.
 
   it('never emits caption text, even with bars showing and data loaded', () => {
@@ -672,9 +672,9 @@ describe('GexLevelsPrimitive draw does not draw the caption itself', () => {
   })
 })
 
-describe('GexMetricCaptionPrimitive hitTest', () => {
+describe('GexOverlayPrimitive hitTest', () => {
   function makePrimitive(overrides: Record<string, unknown> = {}) {
-    return new GexMetricCaptionPrimitive({
+    return new GexOverlayPrimitive({
       showBars: true,
       hasBars: true,
       side: 'right',
@@ -745,9 +745,9 @@ describe('GexMetricCaptionPrimitive hitTest', () => {
   })
 })
 
-describe('GexMetricCaptionPrimitive draw hover readout', () => {
+describe('GexOverlayPrimitive draw hover readout', () => {
   function makePrimitive(overrides: Record<string, unknown> = {}) {
-    return new GexMetricCaptionPrimitive({
+    return new GexOverlayPrimitive({
       showBars: true,
       hasBars: true,
       side: 'right',

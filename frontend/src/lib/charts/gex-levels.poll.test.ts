@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GEXLevelsResponse } from '@/api/gex'
 import { GexLevelsManager } from './gex-levels'
-import { GexLevelsPrimitive, GexMetricCaptionPrimitive } from './gex-levels-primitive'
+import { GexLevelsPrimitive, GexOverlayPrimitive } from './gex-levels-primitive'
 
 function make(
   instrument: { underlying: string; exchange: string } | null = {
@@ -151,7 +151,7 @@ describe('GexLevelsManager refresh loop', () => {
 
 describe('GexLevelsManager primitive lifecycle', () => {
   // The study is two primitives, not one: GexLevelsPrimitive (levels + bars,
-  // zOrder 'bottom') and GexMetricCaptionPrimitive (the bar column's metric
+  // zOrder 'bottom') and GexOverlayPrimitive (the bar column's metric
   // label, zOrder 'top' so price action can't paint over it). The manager
   // creates, removes and reconfigures both together - see syncPrimitive()'s
   // doc comment - so every add/remove-count assertion below counts both.
@@ -167,7 +167,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
     expect(chart.addPrimitive).toHaveBeenCalledTimes(2)
     const added = chart.addPrimitive.mock.calls.map((c) => c[0])
     expect(added.some((p) => p instanceof GexLevelsPrimitive)).toBe(true)
-    expect(added.some((p) => p instanceof GexMetricCaptionPrimitive)).toBe(true)
+    expect(added.some((p) => p instanceof GexOverlayPrimitive)).toBe(true)
   })
 
   it('removes both primitives when the study is disabled', () => {
@@ -314,7 +314,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
 
   it('propagates the metric and showBars settings to the caption primitive too - the same silent-no-op risk applies to it independently of the main primitive', () => {
     const chart = chartDouble()
-    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const setOptionsSpy = vi.spyOn(GexOverlayPrimitive.prototype, 'setOptions')
     const { manager } = make()
     manager.attachChart(chart as never)
 
@@ -333,7 +333,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
 
   it('applies the volume profile inset to the caption primitive too, not just the main one', () => {
     const chart = chartDouble()
-    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const setOptionsSpy = vi.spyOn(GexOverlayPrimitive.prototype, 'setOptions')
     const manager = new GexLevelsManager({
       onChange: vi.fn(),
       instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
@@ -348,7 +348,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
 
   it('sets hasBars true once a response with strikes arrives, false while none has yet', async () => {
     const chart = chartDouble()
-    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const setOptionsSpy = vi.spyOn(GexOverlayPrimitive.prototype, 'setOptions')
     const fetchLevels = vi
       .fn()
       .mockResolvedValue({ status: 'success', strikes: [{ strike: 24_200, net_gex: 100 }] })
@@ -372,7 +372,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
 
   it('sets hasBars false for a successful response with an empty strikes array', async () => {
     const chart = chartDouble()
-    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const setOptionsSpy = vi.spyOn(GexOverlayPrimitive.prototype, 'setOptions')
     const manager = new GexLevelsManager({
       onChange: vi.fn(),
       instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
@@ -387,7 +387,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
 
   it('sets hasBars false for an error-status response, even though the fetch resolved rather than rejected', async () => {
     const chart = chartDouble()
-    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const setOptionsSpy = vi.spyOn(GexOverlayPrimitive.prototype, 'setOptions')
     const manager = new GexLevelsManager({
       onChange: vi.fn(),
       instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
@@ -411,7 +411,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
       exchange: 'NFO',
     }
     const chart = chartDouble()
-    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const setOptionsSpy = vi.spyOn(GexOverlayPrimitive.prototype, 'setOptions')
     const manager = new GexLevelsManager({
       onChange: vi.fn(),
       instrument: () => instrument,
@@ -436,7 +436,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
 
   it('does not feed the previous (nonexistent) strikes or walls to the caption primitive before the first fetch resolves', () => {
     const chart = chartDouble()
-    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const setOptionsSpy = vi.spyOn(GexOverlayPrimitive.prototype, 'setOptions')
     const strikes = [{ strike: 24_200, net_gex: 100, net_dex: 40 }]
     const manager = new GexLevelsManager({
       onChange: vi.fn(),
@@ -458,7 +458,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
 
   it('feeds the strikes and walls to the caption primitive once a snapshot arrives - the hover readout needs both', async () => {
     const chart = chartDouble()
-    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const setOptionsSpy = vi.spyOn(GexOverlayPrimitive.prototype, 'setOptions')
     const strikes = [{ strike: 24_200, net_gex: 100, net_dex: 40 }]
     const manager = new GexLevelsManager({
       onChange: vi.fn(),
@@ -483,7 +483,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
       exchange: 'NFO',
     }
     const chart = chartDouble()
-    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const setOptionsSpy = vi.spyOn(GexOverlayPrimitive.prototype, 'setOptions')
     const strikes = [{ strike: 24_200, net_gex: 100, net_dex: 40 }]
     const manager = new GexLevelsManager({
       onChange: vi.fn(),

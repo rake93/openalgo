@@ -4,9 +4,11 @@
  * `GexLevelsPrimitive` draws three extended price levels (Call Wall, Put
  * Wall, Zero-Gamma) and an optional column of signed per-strike bars -
  * gamma or delta, per `GexLevelsConfig.metric` - anchored in the plot
- * margin. `GexMetricCaptionPrimitive` draws only the label naming which of
- * the two the bar column currently is, as a second primitive at a higher
- * zOrder so price action can never paint over it - see its own doc comment.
+ * margin, at `zOrder: 'bottom'`. `GexOverlayPrimitive` is everything that
+ * has to paint at `zOrder: 'top'` instead, so price action can never cover
+ * it: the label naming which of the two the bar column currently reads, and
+ * a hover readout for whichever strike's row the pointer is over (both
+ * metrics for that strike, plus its wall status) - see its own doc comment.
  * The manager that fetches the option-chain snapshot and owns both
  * primitives' lifecycle lives in `gex-levels.ts`; this file is only the
  * paint step.
@@ -157,7 +159,7 @@ function formatGexSignedMoney(v: number | null | undefined): string {
 
 /**
  * Text for the on-canvas label naming which metric the bar column currently
- * reads, drawn by `GexMetricCaptionPrimitive`.
+ * reads, drawn by `GexOverlayPrimitive`.
  *
  * A `Record`, not a two-way ternary: `GexMetric` gaining a third member (say
  * `'vanna'`) makes this a compile error instead of a silent "Gamma" label
@@ -178,7 +180,7 @@ function formatGexSignedMoney(v: number | null | undefined): string {
  * (call-coloured) bar means the book is long, where under gamma the same
  * colour means dealers are long.
  *
- * `GexMetricCaptionPrimitive` draws no caption when the bar column is
+ * `GexOverlayPrimitive` draws no caption when the bar column is
  * switched off (`showBars`) or when the manager's most recent snapshot has
  * nothing to show (`hasBars` - no data yet, an error response, or an
  * instrument with no option chain: see `GexLevelsManager.captionOptions()`),
@@ -325,7 +327,7 @@ function strikeRowHeightPx(
  * bar extends right from and a negative bar extends left from.
  *
  * Shared by `GexLevelsPrimitive.drawBars` (which draws the bars against it)
- * and `GexMetricCaptionPrimitive` (which centres the caption on it) so the
+ * and `GexOverlayPrimitive` (which centres the caption on it) so the
  * two primitives can never drift apart into disagreeing about where the
  * column actually is - they are two different `IPrimitive`s at two different
  * zOrders, not two branches of one function, precisely because a caption
@@ -360,7 +362,7 @@ export function gexColumnAxisX(
  *
  * Delegates the column's horizontal extent to `gexColumnAxisX` instead of
  * re-deriving `side`/`columnInset`/`columnWidth` into an axis position here
- * - the same reason `GexMetricCaptionPrimitive` shares it with `drawBars`
+ * - the same reason `GexOverlayPrimitive` shares it with `drawBars`
  * rather than recomputing its own: two independent formulas for "where is
  * the axis" are two things that can silently drift apart, one of which
  * would leave the hover region misaligned with the bars actually painted.
@@ -701,7 +703,7 @@ export class GexLevelsPrimitive implements IPrimitive {
     // The metric caption is NOT drawn here. It used to be, but this primitive
     // is zOrder 'bottom' (painted before the candles), so a caption drawn
     // from inside this method would be paintable-over by price action - see
-    // `GexMetricCaptionPrimitive` below, a separate zOrder: 'top' primitive
+    // `GexOverlayPrimitive` below, a separate zOrder: 'top' primitive
     // that the manager creates and syncs alongside this one.
     ctx.save()
     ctx.globalAlpha = 0.75
@@ -733,7 +735,7 @@ export class GexLevelsPrimitive implements IPrimitive {
   }
 }
 
-export interface GexMetricCaptionOptions {
+export interface GexOverlayOptions {
   /** Mirrors `GexLevelsPrimitiveOptions.showBars` - no bar column, nothing to caption. */
   showBars: boolean
   /**
@@ -766,7 +768,7 @@ export interface GexMetricCaptionOptions {
   putWall: number | null
 }
 
-export const DEFAULT_GEX_METRIC_CAPTION_OPTIONS: GexMetricCaptionOptions = {
+export const DEFAULT_GEX_OVERLAY_OPTIONS: GexOverlayOptions = {
   showBars: true,
   // false, not true: the constructor always runs one setOptions() behind a
   // real GexLevelsManager.captionOptions() call in the same synchronous
@@ -817,12 +819,12 @@ const READOUT_GAP_PX = 10
  * manager to keep in sync - only more fields on an options object it was
  * already re-pushing on every change.
  */
-export class GexMetricCaptionPrimitive implements IPrimitive {
-  private opts: GexMetricCaptionOptions
+export class GexOverlayPrimitive implements IPrimitive {
+  private opts: GexOverlayOptions
   private host: PrimitiveHost | null = null
 
-  constructor(opts: Partial<GexMetricCaptionOptions> = {}) {
-    this.opts = { ...DEFAULT_GEX_METRIC_CAPTION_OPTIONS, ...opts }
+  constructor(opts: Partial<GexOverlayOptions> = {}) {
+    this.opts = { ...DEFAULT_GEX_OVERLAY_OPTIONS, ...opts }
   }
 
   attached(host: PrimitiveHost): void {
@@ -837,7 +839,7 @@ export class GexMetricCaptionPrimitive implements IPrimitive {
     return 'top'
   }
 
-  setOptions(patch: Partial<GexMetricCaptionOptions>): void {
+  setOptions(patch: Partial<GexOverlayOptions>): void {
     this.opts = { ...this.opts, ...patch }
     this.host?.requestUpdate()
   }
