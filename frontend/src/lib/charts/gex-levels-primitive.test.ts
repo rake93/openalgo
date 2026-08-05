@@ -237,20 +237,36 @@ describe('gexHitTestStrike', () => {
     { strike: 24_500, y: 100, length: 60, positive: true },
     { strike: 24_600, y: 200, length: 120, positive: true },
   ]
+  // Fixed geometry shared by every case below; each `it` only overrides x/y
+  // (and occasionally `bars`), keeping the object-literal call sites focused
+  // on what actually varies per scenario.
+  const base = {
+    rowHeight: 40,
+    plotWidth: 300,
+    columnWidth: 120,
+    side: 'right' as const,
+    columnInset: 0,
+  }
 
   it('returns the strike whose row band contains the point', () => {
     // rowHeight 40 means each band is +/-20px around its y.
-    expect(gexHitTestStrike(bars, 40, 300, 120, 'right', 0, 290, 195)?.strike).toBe(24_600)
+    expect(gexHitTestStrike({ ...base, bars, x: 290, y: 195 })?.strike).toBe(24_600)
   })
 
   it('returns null above and below every band', () => {
-    expect(gexHitTestStrike(bars, 40, 300, 120, 'right', 0, 290, 150)).toBeNull()
+    // A point strictly between the two bands...
+    expect(gexHitTestStrike({ ...base, bars, x: 290, y: 150 })).toBeNull()
+    // ...and points past the topmost band's outer edge (80..120) and the
+    // bottommost band's outer edge (180..220) - "above and below every
+    // band" as the test name claims, not just the gap between them.
+    expect(gexHitTestStrike({ ...base, bars, x: 290, y: 50 })).toBeNull()
+    expect(gexHitTestStrike({ ...base, bars, x: 290, y: 260 })).toBeNull()
   })
 
   it('returns null outside the column horizontally', () => {
     // axisX for plotWidth 300, columnWidth 120, right side is 180; the column
     // spans 60..300. A point at x=20 is in the chart body, not the column.
-    expect(gexHitTestStrike(bars, 40, 300, 120, 'right', 0, 20, 195)).toBeNull()
+    expect(gexHitTestStrike({ ...base, bars, x: 20, y: 195 })).toBeNull()
   })
 
   it('picks the nearer row when two bands touch', () => {
@@ -258,19 +274,32 @@ describe('gexHitTestStrike', () => {
       { strike: 24_500, y: 100, length: 60, positive: true },
       { strike: 24_600, y: 140, length: 60, positive: true },
     ]
-    expect(gexHitTestStrike(touching, 40, 300, 120, 'right', 0, 290, 121)?.strike).toBe(24_600)
-    expect(gexHitTestStrike(touching, 40, 300, 120, 'right', 0, 290, 119)?.strike).toBe(24_500)
+    expect(gexHitTestStrike({ ...base, bars: touching, x: 290, y: 121 })?.strike).toBe(24_600)
+    expect(gexHitTestStrike({ ...base, bars: touching, x: 290, y: 119 })?.strike).toBe(24_500)
+  })
+
+  it('breaks an exact tie by array order, not by picking neither', () => {
+    // y=120 is the shared boundary of touching's two bands (24_500: 80..120,
+    // 24_600: 120..160) - equidistant from both centres (100 and 140, 20px
+    // either way). The docstring pins this as "earlier bar in `bars` wins",
+    // not "first band scanned" or an arbitrary pick; a change from strict
+    // `<` to `<=` when updating the best match would flip this silently.
+    const touching = [
+      { strike: 24_500, y: 100, length: 60, positive: true },
+      { strike: 24_600, y: 140, length: 60, positive: true },
+    ]
+    expect(gexHitTestStrike({ ...base, bars: touching, x: 290, y: 120 })?.strike).toBe(24_500)
   })
 
   it('returns null for an empty bar list', () => {
-    expect(gexHitTestStrike([], 40, 300, 120, 'right', 0, 290, 195)).toBeNull()
+    expect(gexHitTestStrike({ ...base, bars: [], x: 290, y: 195 })).toBeNull()
   })
 
   it('hit-tests the left-anchored column too', () => {
     // side 'left' puts the axis at columnInset + columnWidth = 120, so the
     // column spans 0..240 and a point at x=290 is now OUTSIDE it.
-    expect(gexHitTestStrike(bars, 40, 300, 120, 'left', 0, 290, 195)).toBeNull()
-    expect(gexHitTestStrike(bars, 40, 300, 120, 'left', 0, 200, 195)?.strike).toBe(24_600)
+    expect(gexHitTestStrike({ ...base, bars, side: 'left', x: 290, y: 195 })).toBeNull()
+    expect(gexHitTestStrike({ ...base, bars, side: 'left', x: 200, y: 195 })?.strike).toBe(24_600)
   })
 })
 

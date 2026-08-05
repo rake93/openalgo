@@ -324,18 +324,31 @@ export function gexColumnAxisX(
  * `drawBars` centres `barThickness` on `b.y * dpr`). When a point falls in
  * more than one band - adjacent bands can touch or, at extreme zoom,
  * overlap - the band whose centre is nearest the point wins, rather than
- * whichever bar happens to come first in the array.
+ * whichever bar happens to come first in the array; an exact tie (the point
+ * equidistant from two centres) resolves to whichever of those two is
+ * earlier in `bars`, via a strict `<` when updating the best match.
+ *
+ * Takes a single options object, not positional arguments, deliberately:
+ * the realistic call site sits right next to `drawBars`' own
+ * `gexColumnAxisX(rc.plotWidth, this.opts.side, this.opts.columnInset,
+ * this.opts.columnWidth, dpr)` call, and `columnWidth`/`columnInset` are
+ * both bare `number`s that `side` also separates positionally in that call -
+ * a maintainer copying that argument order in would silently transpose them
+ * here, which typechecks and produces a hit region quietly offset from the
+ * bars it is meant to track. Field names mirror `gexColumnAxisX`'s own
+ * parameter names so the mapping at the call site stays visible.
  */
-export function gexHitTestStrike(
-  bars: readonly GexBarGeometry[],
-  rowHeight: number,
-  plotWidth: number,
-  columnWidth: number,
-  side: 'left' | 'right',
-  columnInset: number,
-  x: number,
+export function gexHitTestStrike(opts: {
+  bars: readonly GexBarGeometry[]
+  rowHeight: number
+  plotWidth: number
+  columnWidth: number
+  side: 'left' | 'right'
+  columnInset: number
+  x: number
   y: number
-): GexBarGeometry | null {
+}): GexBarGeometry | null {
+  const { bars, rowHeight, plotWidth, columnWidth, side, columnInset, x, y } = opts
   if (bars.length === 0) return null
 
   const axisX = gexColumnAxisX(plotWidth, side, columnInset, columnWidth, 1)
