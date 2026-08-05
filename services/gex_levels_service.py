@@ -151,9 +151,9 @@ def get_gex_levels(
         rows = _build_chain_rows(full_chain)
 
         # Resolved once and priced twice. resolve_ivs does not depend on which
-        # Greek is being priced, and it is the expensive half of this pipeline
-        # - two solver calls per strike - so delta exposure costs no extra
-        # inversion and no extra broker call.
+        # Greek is being priced, and it is the expensive half of a single
+        # pricing pass - two solver calls per strike - so delta exposure costs
+        # no extra inversion and no extra broker call.
         ivs = resolve_ivs(
             black76,
             rows,
@@ -220,9 +220,8 @@ def get_gex_levels(
                 # The per-strike profile the chart's bar column is drawn from.
                 # Without it the study renders levels but no distribution, so a
                 # trader cannot see how concentrated a wall actually is.
-                # Both metrics on every strike. Both pricers walk the same
-                # `legs` list, so zip pairs them correctly; strict=True because
-                # a length mismatch is a bug, not something to truncate.
+                # strict=True: a mismatch would pair one strike's gamma with
+                # another's delta. Surface it, do not truncate.
                 "strikes": [
                     {
                         "strike": e.strike,

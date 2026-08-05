@@ -228,24 +228,6 @@ def test_every_sentiment_signal_carries_all_five_fields():
         assert isinstance(signal["weight"], (int, float))
 
 
-def test_the_strike_profile_is_returned_with_one_entry_per_strike():
-    chain, forward = _patched()
-    with chain, forward:
-        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
-
-    assert len(payload["strikes"]) == payload["quality"]["strikes_used"]
-    for row in payload["strikes"]:
-        assert set(row) == {
-            "strike",
-            "call_gex",
-            "put_gex",
-            "net_gex",
-            "call_dex",
-            "put_dex",
-            "net_dex",
-        }
-
-
 def test_the_totals_agree_with_the_per_strike_profile():
     """net_gex must be the sum of the profile the chart draws, or the dashboard
     and the bars would tell the reader two different stories."""
@@ -266,13 +248,16 @@ def test_the_totals_agree_with_the_per_strike_profile():
 
 def test_every_strike_carries_delta_exposure_alongside_gamma():
     """The Metric toggle switches which field the bar column reads, so both
-    must be present on every strike of the same payload - not fetched twice."""
+    must be present on every strike of the same payload - not fetched twice.
+
+    Also pins strike count against quality.strikes_used, folded in here rather
+    than kept in a separate test now that both check the same "strikes" list.
+    """
     chain, forward = _patched()
     with chain, forward:
-        ok, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
 
-    assert ok is True
-    assert payload["strikes"]
+    assert len(payload["strikes"]) == payload["quality"]["strikes_used"]
     for item in payload["strikes"]:
         assert set(item) == {
             "strike",
@@ -286,13 +271,32 @@ def test_every_strike_carries_delta_exposure_alongside_gamma():
 
 
 def test_delta_exposure_is_signed_by_leg_not_by_dealer_convention():
-    """Deep strikes must straddle zero: a low strike is call-dominant (both
-    deltas near +1 and 0) and a high strike put-dominant (near 0 and -1). If
-    the dealer sign flip is ever applied to delta, every strike turns positive
-    and this fails."""
+    """Every call leg is non-negative and every put leg non-positive, matching
+    Black-76 delta's own sign rather than GEX's dealer convention. That holds
+    at every strike regardless of forward or OI, which makes it the strongest
+    tripwire here: a dealer sign flip applied to delta would turn put_dex
+    positive at the very first strike, and it also catches a call_dex/put_dex
+    mapping swap in the payload dict - a swap that leaves net_dex, and so
+    every other assertion in this file, unchanged.
+
+    net_dex additionally straddles zero on this fixture - the low strike nets
+    positive, the high strike negative - but not because either strike is deep
+    enough for delta to saturate. At 30 DTE the five strikes sit within about
+    +/-0.85% of the forward (measured call/put delta: 0.770/-0.332 at 24400,
+    0.357/-0.742 at 24800 - nowhere near +1/0 or 0/-1). The crossing instead
+    comes from the fixture's 100000/90000 call-to-put OI ratio, which places
+    the OI-weighted zero crossing essentially at the forward. Because that
+    depends on the stub forward sitting inside the strike range, a fixture
+    change could make this half of the test fail spuriously without the sign
+    convention being wrong - the call_dex/put_dex assertions above carry no
+    such dependency.
+    """
     chain, forward = _patched()
     with chain, forward:
         _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
+
+    assert all(s["call_dex"] >= 0 for s in payload["strikes"])
+    assert all(s["put_dex"] <= 0 for s in payload["strikes"])
 
     net = [item["net_dex"] for item in payload["strikes"]]
     assert any(v < 0 for v in net), f"no negative net_dex in {net}"
