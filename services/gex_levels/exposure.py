@@ -312,5 +312,11 @@ def finite_weight(weight: float) -> float:
     arrives the same way. One such strike would otherwise turn the entire net
     profile into NaN, which silently takes both walls and the zero-gamma level
     with it.
+
+    Args:
+        weight: An open-interest or volume value for one leg of one strike.
+
+    Returns:
+        `weight` unchanged when finite, or 0.0 when it is NaN or infinite.
     """
     return weight if math.isfinite(weight) else 0.0
