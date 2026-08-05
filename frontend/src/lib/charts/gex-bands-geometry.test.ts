@@ -3,6 +3,7 @@ import {
   DEFAULT_BAND_MAX_GAP_SECONDS,
   type GexBandPoint,
   splitBandSegments,
+  splitCorridorSegments,
 } from './gex-bands-geometry'
 
 const M = 60
@@ -133,5 +134,53 @@ describe('DEFAULT_BAND_MAX_GAP_SECONDS', () => {
     // Tied to the recorder's 60s cadence: one missed tick (120s apart) must
     // not break the line, two (180s) must.
     expect(DEFAULT_BAND_MAX_GAP_SECONDS).toBe(150)
+  })
+})
+
+function corridor(...rows: Array<[number, number | null, number | null]>) {
+  return splitCorridorSegments(
+    rows.map(([ts, upper, lower]) => ({ ts, upper, lower })),
+    DEFAULT_BAND_MAX_GAP_SECONDS
+  )
+}
+
+describe('splitCorridorSegments', () => {
+  it('pairs the two walls into one filled run', () => {
+    const segments = corridor([0, 24700, 24400], [M, 24700, 24400], [2 * M, 24750, 24400])
+
+    expect(segments).toHaveLength(1)
+    expect(segments[0]).toEqual([
+      { ts: 0, upper: 24700, lower: 24400 },
+      { ts: M, upper: 24700, lower: 24400 },
+      { ts: 2 * M, upper: 24750, lower: 24400 },
+    ])
+  })
+
+  it('breaks the corridor wherever the line would break', () => {
+    const segments = corridor([0, 24700, 24400], [M, 24700, 24400], [10 * M, 24750, 24450])
+
+    expect(segments).toHaveLength(2)
+  })
+
+  it('drops a minute where EITHER wall has no reading', () => {
+    // A corridor needs both edges. Filling from a wall to nothing would invent
+    // a boundary the data never had.
+    const segments = corridor([0, 24700, 24400], [M, 24700, null], [2 * M, 24700, 24400])
+
+    expect(segments).toHaveLength(2)
+    expect(segments.flat()).toHaveLength(2)
+  })
+
+  it('keeps an inverted corridor rather than silently reordering it', () => {
+    // If the put wall ever prints above the call wall that is a real reading
+    // about a degenerate chain, and the fill should show it crossed rather
+    // than hide it by sorting the pair.
+    const segments = corridor([0, 24400, 24700])
+
+    expect(segments[0][0]).toEqual({ ts: 0, upper: 24400, lower: 24700 })
+  })
+
+  it('returns nothing when a wall is absent throughout', () => {
+    expect(corridor([0, 24700, null], [M, 24700, null])).toEqual([])
   })
 })

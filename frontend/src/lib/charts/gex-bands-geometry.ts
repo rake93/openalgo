@@ -101,3 +101,69 @@ export function splitBandSegments(
   if (current.length > 0) segments.push(current)
   return segments
 }
+
+/** One minute of the corridor: both walls, paired. */
+export interface GexCorridorPoint {
+  ts: number
+  upper: number
+  lower: number
+}
+
+/** A minute's two wall readings before pairing. Either may be absent. */
+export interface GexCorridorReading {
+  ts: number
+  upper: number | null
+  lower: number | null
+}
+
+/**
+ * Split the two wall series into runs that may be FILLED as a corridor.
+ *
+ * The corridor between the Call Wall and the Put Wall is the region dealers
+ * are hedging inside, and drawing it as a shaded band rather than two thin
+ * lines is what makes it legible on a chart that already carries a VWAP, three
+ * dashed live levels and the candles themselves.
+ *
+ * A minute is dropped unless BOTH walls have a reading. Filling from a wall to
+ * nothing would invent a boundary the data never had - the same rule
+ * `splitBandSegments` applies to a single level, applied to a pair.
+ *
+ * An inverted pair (put wall above call wall) is kept as-is rather than
+ * reordered. It is a real reading about a degenerate chain, and silently
+ * sorting it would hide the crossing that makes it interesting.
+ *
+ * @param readings Per-minute wall pairs, any order.
+ * @param maxGapSeconds Largest joinable gap. See `DEFAULT_BAND_MAX_GAP_SECONDS`.
+ * @returns Corridor runs in time order. Never mutates or aliases `readings`.
+ */
+export function splitCorridorSegments(
+  readings: readonly GexCorridorReading[],
+  maxGapSeconds: number = DEFAULT_BAND_MAX_GAP_SECONDS
+): GexCorridorPoint[][] {
+  if (readings.length === 0) return []
+
+  const ordered = [...readings].sort((a, b) => a.ts - b.ts)
+
+  const segments: GexCorridorPoint[][] = []
+  let current: GexCorridorPoint[] = []
+
+  for (const reading of ordered) {
+    const { upper, lower } = reading
+    if (upper === null || lower === null || !Number.isFinite(upper) || !Number.isFinite(lower)) {
+      if (current.length > 0) segments.push(current)
+      current = []
+      continue
+    }
+
+    const previous = current[current.length - 1]
+    if (previous !== undefined && reading.ts - previous.ts > maxGapSeconds) {
+      segments.push(current)
+      current = []
+    }
+
+    current.push({ ts: reading.ts, upper, lower })
+  }
+
+  if (current.length > 0) segments.push(current)
+  return segments
+}

@@ -38,16 +38,25 @@ function fakeCtx() {
   const paths: { points: [number, number][]; stroke: string; width: number }[] = []
   let current: { points: [number, number][]; stroke: string; width: number } | null = null
   const arcs: { x: number; y: number; fill: string }[] = []
+  const fills: { points: [number, number][]; fill: string; alpha: number }[] = []
 
   const ctx = {
     paths,
     arcs,
+    fills,
     save() {},
     restore() {},
     setLineDash() {},
+    closePath() {},
     rect() {},
     clip() {},
-    fill() {},
+    fill() {
+      // A fill with a real outline is a corridor; the lone-point dot also
+      // fills, so only outlines with vertices count.
+      if (current && current.points.length > 2) {
+        fills.push({ points: current.points, fill: ctx.fillStyle, alpha: ctx.globalAlpha })
+      }
+    },
     beginPath() {
       current = { points: [], stroke: '', width: 0 }
       paths.push(current)
@@ -244,5 +253,93 @@ describe('GexBandsPrimitive draw', () => {
     expect(
       (new GexBandsPrimitive() as unknown as { autoscaleInfo?: unknown }).autoscaleInfo
     ).toBeUndefined()
+  })
+})
+
+describe('GexBandsPrimitive corridor', () => {
+  it('shades between the two walls', () => {
+    // The corridor is what makes this read as BANDS rather than as three more
+    // lines on a chart that already carries a VWAP, three dashed live levels
+    // and the candles.
+    const ctx = fakeCtx()
+    const primitive = new GexBandsPrimitive()
+    primitive.setData(series())
+    primitive.draw(ctx as never, fakeRc() as never)
+
+    expect(ctx.fills).toHaveLength(1)
+    expect(ctx.fills[0].fill).toBe(DEFAULT_GEX_BANDS_OPTIONS.corridorColor)
+    expect(ctx.fills[0].alpha).toBe(DEFAULT_GEX_BANDS_OPTIONS.corridorOpacity)
+  })
+
+  it('breaks the shading wherever the walls break', () => {
+    const ctx = fakeCtx()
+    const primitive = new GexBandsPrimitive()
+    primitive.setData({
+      points: [
+        { ts: T0, call_wall: 24800, put_wall: 24400, zero_gamma: null },
+        { ts: T0 + M, call_wall: 24800, put_wall: 24400, zero_gamma: null },
+        { ts: T0 + 11 * M, call_wall: 24900, put_wall: 24450, zero_gamma: null },
+        { ts: T0 + 12 * M, call_wall: 24900, put_wall: 24450, zero_gamma: null },
+      ],
+    })
+    primitive.draw(ctx as never, fakeRc() as never)
+
+    expect(ctx.fills).toHaveLength(2)
+  })
+
+  it('does not shade up to a wall the reader cannot see', () => {
+    // Hiding one edge but keeping the fill would assert a boundary with
+    // nothing on screen to justify it.
+    const ctx = fakeCtx()
+    const primitive = new GexBandsPrimitive({ showPutWall: false })
+    primitive.setData(series())
+    primitive.draw(ctx as never, fakeRc() as never)
+
+    expect(ctx.fills).toHaveLength(0)
+  })
+
+  it('can be switched off without losing the wall lines', () => {
+    const ctx = fakeCtx()
+    const primitive = new GexBandsPrimitive({ showCorridor: false })
+    primitive.setData(series())
+    primitive.draw(ctx as never, fakeRc() as never)
+
+    expect(ctx.fills).toHaveLength(0)
+    expect(pathsFor(ctx, DEFAULT_GEX_BANDS_OPTIONS.callColor)).toHaveLength(1)
+  })
+
+  it('closes the fill along the same step outline the edges stroke', () => {
+    // A fill that sloped where its edge stepped would leave a visible sliver
+    // at every wall move.
+    const ctx = fakeCtx()
+    const primitive = new GexBandsPrimitive({ showZeroGamma: false })
+    primitive.setData({
+      points: [
+        { ts: T0, call_wall: 24800, put_wall: 24400, zero_gamma: null },
+        { ts: T0 + M, call_wall: 24900, put_wall: 24400, zero_gamma: null },
+      ],
+    })
+    primitive.draw(ctx as never, fakeRc() as never)
+
+    const yFor = (price: number) => 400 * (1 - (price - 24_000) / 1_000)
+    // Upper edge forward with its step, then the lower edge back.
+    expect(ctx.fills[0].points).toEqual([
+      [100, yFor(24800)],
+      [110, yFor(24800)],
+      [110, yFor(24900)],
+      [110, yFor(24400)],
+      [100, yFor(24400)],
+    ])
+  })
+
+  it('skips a corridor with only one minute in it', () => {
+    const ctx = fakeCtx()
+    const primitive = new GexBandsPrimitive()
+    primitive.setData({
+      points: [{ ts: T0, call_wall: 24800, put_wall: 24400, zero_gamma: null }],
+    })
+    primitive.draw(ctx as never, fakeRc() as never)
+
+    expect(ctx.fills).toHaveLength(0)
   })
 })

@@ -25,7 +25,9 @@ import type { IPrimitive, PrimitiveHost, PrimitiveRenderContext, ZOrder } from '
 import {
   DEFAULT_BAND_MAX_GAP_SECONDS,
   type GexBandPoint,
+  type GexCorridorPoint,
   splitBandSegments,
+  splitCorridorSegments,
 } from './gex-bands-geometry'
 
 /** One recorded minute: every level at that moment. Mirrors the server's `points[]`. */
@@ -51,6 +53,19 @@ export interface GexBandsOptions {
   zeroGammaColor: string
   /** Bands sit behind the live levels; this is what keeps them from competing. */
   opacity: number
+  /**
+   * Shade the region between the two walls.
+   *
+   * This is what makes the feature read as *bands* rather than as three more
+   * lines on a chart that already carries a VWAP, three dashed live levels and
+   * the candles. The corridor is the range dealers are hedging inside, and its
+   * width through the session is the thing worth seeing - two thin lines make
+   * the reader measure it by eye.
+   */
+  showCorridor: boolean
+  corridorColor: string
+  /** Deliberately very low: the corridor is a backdrop, never a foreground object. */
+  corridorOpacity: number
 }
 
 export const DEFAULT_GEX_BANDS_OPTIONS: GexBandsOptions = {
@@ -63,7 +78,12 @@ export const DEFAULT_GEX_BANDS_OPTIONS: GexBandsOptions = {
   callColor: '#26a69a',
   putColor: '#ef5350',
   zeroGammaColor: '#f5a623',
-  opacity: 0.55,
+  opacity: 0.8,
+  showCorridor: true,
+  // Neutral rather than either wall's colour: the corridor belongs to both, and
+  // tinting it green or red would imply a direction the region does not carry.
+  corridorColor: '#7e8aa2',
+  corridorOpacity: 0.1,
 }
 
 /** Radius in px (before dpr) of the dot marking a reading with no neighbours. */
@@ -108,15 +128,100 @@ export class GexBandsPrimitive implements IPrimitive {
     const points = this.data?.points
     if (!points || points.length === 0) return
 
-    const bands: Array<[BandKey, boolean, string]> = [
-      ['call_wall', this.opts.showCallWall, this.opts.callColor],
-      ['put_wall', this.opts.showPutWall, this.opts.putColor],
-      ['zero_gamma', this.opts.showZeroGamma, this.opts.zeroGammaColor],
+    // The shaded region first, so both wall edges are drawn on top of it.
+    // Gated on both walls being shown: a corridor is bounded BY them, and
+    // shading up to a hidden edge would assert a boundary the reader cannot see.
+    if (this.opts.showCorridor && this.opts.showCallWall && this.opts.showPutWall) {
+      this.drawCorridor(ctx, rc, points)
+    }
+
+    const bands: Array<[BandKey, boolean, string, boolean]> = [
+      ['call_wall', this.opts.showCallWall, this.opts.callColor, false],
+      ['put_wall', this.opts.showPutWall, this.opts.putColor, false],
+      // Dotted, and drawn last so it reads as a marker INSIDE the corridor
+      // rather than as a third edge of it.
+      ['zero_gamma', this.opts.showZeroGamma, this.opts.zeroGammaColor, true],
     ]
 
-    for (const [key, shown, colour] of bands) {
+    for (const [key, shown, colour, dotted] of bands) {
       if (!shown) continue
-      this.drawBand(ctx, rc, points, key, colour)
+      this.drawBand(ctx, rc, points, key, colour, dotted)
+    }
+  }
+
+  /**
+   * Shade between the two walls, one filled polygon per unbroken run.
+   *
+   * Built by walking the upper edge left to right and the lower edge back
+   * right to left, both as step lines so the fill's boundary matches the
+   * strokes exactly - a fill that sloped where its edge stepped would leave
+   * visible slivers at every wall move.
+   */
+  private drawCorridor(
+    ctx: CanvasRenderingContext2D,
+    rc: PrimitiveRenderContext,
+    points: readonly GexHistoryPoint[]
+  ): void {
+    const segments = splitCorridorSegments(
+      points.map((p) => ({ ts: p.ts, upper: p.call_wall, lower: p.put_wall })),
+      this.opts.maxGapSeconds
+    )
+    if (segments.length === 0) return
+
+    ctx.save()
+    ctx.globalAlpha = this.opts.corridorOpacity
+    ctx.fillStyle = this.opts.corridorColor
+
+    for (const segment of segments) {
+      // A single minute has no width to fill.
+      if (segment.length < 2) continue
+
+      ctx.beginPath()
+      this.traceStepEdge(ctx, rc, segment, 'upper', false)
+      this.traceStepEdge(ctx, rc, segment, 'lower', true)
+      ctx.closePath()
+      ctx.fill()
+    }
+
+    ctx.restore()
+  }
+
+  /**
+   * Append one edge of a corridor segment to the current path as a step line.
+   *
+   * @param reverse Walk right to left, for the return leg that closes the
+   *   polygon. The step order inverts with it so the returned edge traces the
+   *   same outline the forward one would.
+   */
+  private traceStepEdge(
+    ctx: CanvasRenderingContext2D,
+    rc: PrimitiveRenderContext,
+    segment: readonly GexCorridorPoint[],
+    edge: 'upper' | 'lower',
+    reverse: boolean
+  ): void {
+    const dpr = rc.dpr
+    const ordered = reverse ? [...segment].reverse() : segment
+
+    let previousY = rc.priceScale.priceToY(ordered[0][edge]) * dpr
+    const firstX = this.xFor(rc, ordered[0].ts)
+    if (reverse) ctx.lineTo(firstX, previousY)
+    else ctx.moveTo(firstX, previousY)
+
+    for (let i = 1; i < ordered.length; i += 1) {
+      const point = ordered[i]
+      const x = this.xFor(rc, point.ts)
+      const y = rc.priceScale.priceToY(point[edge]) * dpr
+      if (reverse) {
+        // Walking backwards, the vertical comes before the horizontal so the
+        // outline retraces the forward step rather than mirroring it.
+        if (y !== previousY) ctx.lineTo(this.xFor(rc, ordered[i - 1].ts), y)
+        ctx.lineTo(x, y)
+      } else {
+        ctx.lineTo(x, previousY)
+        if (y !== previousY) ctx.lineTo(x, y)
+      }
+      previousY = y
     }
   }
 
@@ -125,7 +230,8 @@ export class GexBandsPrimitive implements IPrimitive {
     rc: PrimitiveRenderContext,
     points: readonly GexHistoryPoint[],
     key: BandKey,
-    colour: string
+    colour: string,
+    dotted = false
   ): void {
     const readings: GexBandPoint[] = points.map((p) => ({ ts: p.ts, value: p[key] }))
     const segments = splitBandSegments(readings, this.opts.maxGapSeconds)
@@ -137,8 +243,10 @@ export class GexBandsPrimitive implements IPrimitive {
     ctx.globalAlpha = this.opts.opacity
     ctx.strokeStyle = colour
     ctx.fillStyle = colour
-    ctx.lineWidth = Math.max(1, Math.round(dpr))
-    ctx.setLineDash([])
+    // The wall edges carry the corridor's shape, so they are a touch heavier
+    // than a hairline - at 1px against candles and a VWAP they read as noise.
+    ctx.lineWidth = Math.max(1, Math.round(dpr * (dotted ? 1 : 1.5)))
+    ctx.setLineDash(dotted ? [2 * dpr, 3 * dpr] : [])
 
     for (const segment of segments) {
       // One path PER SEGMENT. A single path across all of them would join the

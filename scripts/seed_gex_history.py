@@ -30,9 +30,12 @@ Usage:
 """
 
 import argparse
+import math
 import os
 import sys
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -43,28 +46,39 @@ from database import gex_history_db  # noqa: E402
 SEED_MARKER = "SEEDED-BY-seed_gex_history.py"
 
 CADENCE = 60
+IST = ZoneInfo("Asia/Kolkata")
 
 
-def _walls(step: int, total: int) -> tuple[float, float, float | None]:
+def _walls(step: int, total: int, center: float) -> tuple[float, float, float | None]:
     """Levels for one minute of the fabricated session.
 
     Walls hold for long stretches and then jump a strike, which is what they
     actually do - a wall is the strike with the most gamma, and that changes in
     discrete steps rather than drifting.
+
+    Derived from `center` so the fabricated levels land inside the price range
+    the chart is actually showing. Bands contribute nothing to autoscale (by
+    design - see the primitive), so a wall seeded outside the visible range is
+    simply clipped away and the whole check silently shows nothing.
     """
     third = max(1, total // 3)
-    call_wall = 24800.0 + 100.0 * (step // third)
-    put_wall = 24400.0 - 50.0 * (step // max(1, total // 2))
+    call_wall = center + 50.0 + 50.0 * (step // third)
+    put_wall = center - 100.0 - 50.0 * (step // max(1, total // 2))
 
     # A stretch with no local cross, so the band has to leave a hole rather
     # than draw a line through it.
     if third <= step < third + max(2, total // 12):
         return call_wall, put_wall, None
 
-    # Otherwise it wanders between the walls.
+    # Otherwise it drifts between the walls. A smooth wander, NOT a sawtooth:
+    # the first version used `step % 40` and produced a jagged ramp-and-reset
+    # that looked like violent churn on the chart. Judging a renderer against
+    # that is judging the seeder, so this uses two slow sine components whose
+    # periods do not divide each other - close to how the flip level actually
+    # moves as the book fills in.
     span = call_wall - put_wall
-    phase = (step % 40) / 40.0
-    return call_wall, put_wall, put_wall + span * (0.45 + 0.10 * phase)
+    wander = 0.5 + 0.16 * math.sin(step / 47.0) + 0.07 * math.sin(step / 13.0)
+    return call_wall, put_wall, put_wall + span * wander
 
 
 def _snapshot(ts: int, expiry: str, call_wall: float, put_wall: float, zero_gamma):
@@ -145,7 +159,14 @@ def clear(underlying: str, exchange: str, expiry: str) -> int:
     return len(ids)
 
 
-def seed(underlying: str, exchange: str, expiry: str, hours: int) -> int:
+def seed(
+    underlying: str,
+    exchange: str,
+    expiry: str,
+    hours: int,
+    center: float,
+    end_ts: int | None = None,
+) -> int:
     series = _resolve_series(underlying, exchange)
     if series is None:
         ok, message, series = gex_history_db.add_series(underlying, exchange, "nearest")
@@ -170,8 +191,12 @@ def seed(underlying: str, exchange: str, expiry: str, hours: int) -> int:
         return 0
 
     total = hours * 60
-    now = int(time.time()) // CADENCE * CADENCE
-    start = now - total * CADENCE
+    # Anchored to the END of a charted session by default rather than to the
+    # clock. Run after hours, `now` sits past the last bar, and every point
+    # extrapolates off the right edge of a gapless time axis - the bands are
+    # drawn perfectly and none of them are on screen.
+    end = (end_ts if end_ts is not None else int(time.time())) // CADENCE * CADENCE
+    start = end - total * CADENCE
 
     # The two deliberate holes. Positions chosen to sit inside a normal lookback
     # window rather than at an edge, so both are visible without scrolling.
@@ -186,7 +211,7 @@ def seed(underlying: str, exchange: str, expiry: str, hours: int) -> int:
         if outage_start <= step < outage_start + outage_minutes:
             continue
 
-        call_wall, put_wall, zero_gamma = _walls(step, total)
+        call_wall, put_wall, zero_gamma = _walls(step, total, center)
         ts = start + step * CADENCE
         if gex_history_db.write_snapshot(
             series["id"], _snapshot(ts, expiry, call_wall, put_wall, zero_gamma), []
@@ -213,6 +238,20 @@ def main() -> None:
         help="Resolved DDMMMYY expiry, e.g. 28JUL26. Must match what the study resolves to.",
     )
     parser.add_argument("--hours", type=int, default=6)
+    parser.add_argument(
+        "--center",
+        type=float,
+        default=24600.0,
+        help="Price the fabricated walls straddle. Set it inside the range the chart shows.",
+    )
+    parser.add_argument(
+        "--end",
+        default=None,
+        help=(
+            "IST end of the fabricated session, 'YYYY-MM-DD HH:MM'. Defaults to now, "
+            "which is wrong after hours - anchor it to the last bar on the chart."
+        ),
+    )
     parser.add_argument("--clear", action="store_true", help="Remove seeded rows and exit")
     args = parser.parse_args()
 
@@ -225,7 +264,11 @@ def main() -> None:
         if args.clear:
             clear(underlying, exchange, expiry)
         else:
-            seed(underlying, exchange, expiry, args.hours)
+            end_ts = None
+            if args.end:
+                ist = datetime.strptime(args.end, "%Y-%m-%d %H:%M").replace(tzinfo=IST)
+                end_ts = int(ist.timestamp())
+            seed(underlying, exchange, expiry, args.hours, args.center, end_ts)
     finally:
         gex_history_db.db_session.remove()
 
