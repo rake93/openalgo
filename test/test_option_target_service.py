@@ -502,7 +502,7 @@ def test_snapshot_reports_market_open_state():
 
 def test_market_closed_adds_a_stale_quote_warning():
     with (
-        patch("services.option_target_service._market_is_open", return_value=False),
+        patch("services.option_target_service.session_is_open", return_value=False),
         patch("services.option_target_service.get_option_chain", _fake_chain()),
         patch("services.option_target_service._matched_future_symbol", return_value=None),
         patch("services.option_target_service._vol_beta_samples", return_value=[]),

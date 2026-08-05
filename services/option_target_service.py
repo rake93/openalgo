@@ -46,7 +46,7 @@ from services.option_target.volbeta import (
     build_beta_samples,
     estimate_vol_beta,
 )
-from services.option_target_sessions import build_session_provider
+from services.option_target_sessions import build_session_provider, session_is_open
 from services.pricing_underlying import requires_futures_underlying
 from utils.logging import get_logger
 
@@ -252,26 +252,6 @@ def _expiry_datetime(expiry_date: str, exchange: str) -> datetime:
         return datetime(year, month, day, hour, minute, tzinfo=IST)
     except (IndexError, KeyError, ValueError) as exc:
         raise ValueError(f"Invalid expiry_date {expiry_date!r}; expected DDMMMYY") from exc
-
-
-def _market_is_open(exchange: str, moment: datetime) -> bool:
-    """Whether `moment` falls inside the exchange's session for that date.
-
-    Reuses the same session source as the trading day-count so the two can
-    never disagree about when a market is open.
-    """
-    try:
-        provider = build_session_provider(exchange)
-        bounds = provider(moment.date())
-        if bounds is None:
-            return False
-        (open_h, open_m), (close_h, close_m) = bounds
-        open_at = moment.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
-        close_at = moment.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
-        return open_at <= moment <= close_at
-    except Exception as exc:  # noqa: BLE001 - must never block a projection
-        logger.warning("Market-open check failed for %s: %s", exchange, exc)
-        return True
 
 
 def _compact_expiry(dashed: str) -> str:
@@ -529,7 +509,9 @@ def get_option_target(
             )
 
         now = datetime.now(IST)
-        market_open = _market_is_open(exchange, now)
+        # Default True on a hard lookup failure: a calendar error must never
+        # block a price projection. See session_is_open's `default` argument.
+        market_open = session_is_open(exchange, now)
         if not market_open:
             warnings.append(
                 "Market is closed for this exchange. Every price below is the last "

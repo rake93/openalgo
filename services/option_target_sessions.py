@@ -1,4 +1,11 @@
-"""Live, validated per-date trading-session provider for the Option Target Calculator.
+"""Live, validated per-date trading-session provider.
+
+Two consumers, both of which need "is this exchange trading?" answered from the
+platform's calendar without inheriting its known-bad seed data: the Option
+Target Calculator (via `build_session_provider`, fed to the pure day-count) and
+the GEX snapshot recorder (via `session_is_open`, deciding whether to poll the
+broker this minute). They share this module rather than each validating the
+calendar themselves, because a second validator would drift from this one.
 
 `services.option_target.daycount` is pure (no IO) and resolves session hours
 from a static per-exchange table. That table cannot express a special session
@@ -167,3 +174,43 @@ def build_session_provider(
         return None if resolved is _CLOSED else resolved
 
     return provider
+
+
+def session_is_open(exchange: str, moment: datetime, *, default: bool = True) -> bool:
+    """Whether `moment` falls inside `exchange`'s session on that date.
+
+    Goes through `build_session_provider`, so this inherits the validation
+    above: a suspect calendar window - the seeded MCX special sessions decode
+    to 895-minute windows spanning two calendar dates - is rejected and the
+    static per-exchange table is used instead. That is the normal failure path
+    and it never reaches `default`.
+
+    Boundaries are inclusive at both ends, matching how the platform's other
+    session checks read a window.
+
+    Args:
+        exchange: Exchange code.
+        moment: The instant to test. Must be IST-aware.
+        default: What to return if the lookup RAISES outright - not if the
+            market is simply shut, which is always False. The Option Target
+            Calculator passes the True default: a calendar error must never
+            block a price projection. The GEX recorder passes False, because
+            failing open there means a broker call every minute around the
+            clock. Callers with a real cost to being wrong should say which
+            way they want to be wrong.
+
+    Returns:
+        True if the market is open at `moment`.
+    """
+    try:
+        provider = build_session_provider(exchange)
+        bounds = provider(moment.date())
+        if bounds is None:
+            return False
+        (open_h, open_m), (close_h, close_m) = bounds
+        open_at = moment.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+        close_at = moment.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+        return open_at <= moment <= close_at
+    except Exception as exc:  # noqa: BLE001 - the caller chooses how to fail
+        logger.warning("Market-open check failed for %s: %s", exchange, exc)
+        return default
