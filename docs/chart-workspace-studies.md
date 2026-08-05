@@ -275,13 +275,14 @@ will read the delta colours backwards unless they remember the flip.
 server-side from gamma alone, regardless of which metric is selected, and
 Regime is the sign of net GEX, never net DEX. The readout card's Call GEX, Put
 GEX and Net GEX rows stay the same for both settings too. One consequence
-follows directly: under gamma, the longest bar in the column always lands on
-one of the two walls — Call or Put, whichever carries the larger magnitude —
-because a wall is by definition the strike of the profile's algebraic extreme,
-and every bar is scaled against that same peak. Switch to delta and that
-coincidence breaks: the walls stay exactly where gamma put them, but the
-tallest DEX bar sits wherever the open-interest book is most lopsided, which is
-generally a different strike.
+follows directly: under gamma, the longest bar in the column lands on one of
+the two walls — Call or Put, whichever carries the larger magnitude — whenever
+that wall's strike is within the visible price range, because the wall ranks
+the full fetched chain while the bar peak scales only over what is currently
+on screen. Switch to delta and that coincidence breaks even when both walls
+are visible: the walls stay exactly where gamma put them, but the tallest DEX
+bar sits wherever the open-interest book is most lopsided, which is generally
+a different strike.
 
 Three on-screen labels keep this unambiguous: a `Bars` row in the readout card
 reading `Gamma (GEX)` or `Delta (DEX)`, an amber caveat in the card whenever
