@@ -5,6 +5,7 @@ Serves Gamma Exposure and OI Walls data.
 Endpoints:
     POST   /gex/api/gex-data          - GEX data for all strikes (/gex Tools page)
     POST   /gex/api/gex-levels        - GEX Levels for the /charts study
+    POST   /gex/api/gex-history       - Recorded levels through time (Gamma Bands)
     GET    /gex/api/gex-series        - The snapshot recorder's watchlist
     POST   /gex/api/gex-series        - Start recording a series
     PATCH  /gex/api/gex-series/<id>   - Enable or disable recording
