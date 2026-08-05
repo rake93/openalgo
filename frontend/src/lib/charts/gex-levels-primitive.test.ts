@@ -76,6 +76,10 @@ describe('computeGexLevelPlacement', () => {
   })
 })
 
+// netDex defaults to netGex so every existing fixture renders identically
+// under either metric without being touched. Only the metric-selection
+// tests (next task) pass a distinct third argument, since only those need
+// to prove gamma and delta actually diverge.
 function strike(strikePrice: number, netGex: number, netDex: number = netGex): GEXStrikeLevel {
   return {
     strike: strikePrice,

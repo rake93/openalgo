@@ -47,17 +47,24 @@ export interface GEXStrikeLevel {
   put_gex: number
   net_gex: number
   /**
-   * Delta exposure, signed by leg rather than by dealer convention: positive
-   * where calls dominate the strike. Required rather than optional - the
-   * server always sends both metrics in one payload, and an optional field
-   * defaulted to 0 would draw a flat profile that looks like real data.
+   * `call_dex` is the call leg's own notional delta exposure, sign fixed by
+   * side (always >= 0). `put_dex` is the put leg's own notional delta
+   * exposure, sign fixed by side (always <= 0). `net_dex` is call_dex +
+   * put_dex - positive where calls dominate the strike. Required rather than
+   * optional - the server always sends both metrics in one payload, and an
+   * optional field defaulted to 0 would draw a flat profile that looks like
+   * real data.
    */
   call_dex: number
   put_dex: number
   net_dex: number
 }
 
-/** Which Greek the strike-bar profile is drawn from. */
+/**
+ * Which Greek the strike-bar profile is drawn from. Client-only - a UI
+ * rendering selector, not part of the server payload. Colocated here rather
+ * than in a UI module so both consumers keep reusing this existing import.
+ */
 export type GexMetric = 'gamma' | 'delta'
 
 export interface GEXQuality {
