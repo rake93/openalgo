@@ -301,3 +301,86 @@ def test_delta_exposure_is_signed_by_leg_not_by_dealer_convention():
     net = [item["net_dex"] for item in payload["strikes"]]
     assert any(v < 0 for v in net), f"no negative net_dex in {net}"
     assert any(v > 0 for v in net), f"no positive net_dex in {net}"
+
+
+# ------------------------------------------------- the recorder / live-path seam
+
+
+def test_the_recorder_seam_reproduces_the_live_payload_exactly():
+    """The failure this design exists to prevent: a recorder that reimplements
+    the maths and drifts. /gex drifted from the study exactly that way and
+    shipped three defects. If these two ever differ, one of them is computing
+    something the other is not."""
+    from services.gex_levels_service import build_snapshot, fetch_snapshot_inputs
+
+    chain, forward = _patched()
+    with chain, forward:
+        ok, live_payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
+    assert ok is True
+
+    chain, forward = _patched()
+    with chain, forward:
+        from opengreeks import black76
+
+        inputs = fetch_snapshot_inputs("NIFTY", "NFO", EXPIRY, "key")
+        seam_payload = build_snapshot(black76, inputs, "oi")
+
+    # `source` and `as_of` are provenance, stamped by each wrapper rather than by
+    # the compute core - the recorder's rows are not "live". Everything the study
+    # actually draws from must match exactly.
+    assert seam_payload == {k: v for k, v in live_payload.items() if k not in ("source", "as_of")}
+    assert live_payload["source"] == "live"
+
+
+def test_one_fetch_serves_both_weightings_with_one_iv_solve():
+    """The recorder writes OI and volume columns from a single tick. resolve_ivs
+    is weighting-independent and is the expensive half - two solver calls per
+    strike - so it must be paid once, not twice."""
+    from services.gex_levels import exposure
+    from services.gex_levels_service import build_snapshot, fetch_snapshot_inputs
+
+    chain, forward = _patched()
+    with (
+        chain,
+        forward,
+        patch("services.gex_levels_service.resolve_ivs", wraps=exposure.resolve_ivs) as solve,
+    ):
+        from opengreeks import black76
+
+        inputs = fetch_snapshot_inputs("NIFTY", "NFO", EXPIRY, "key")
+        by_oi = build_snapshot(black76, inputs, "oi")
+        by_vol = build_snapshot(black76, inputs, "volume")
+
+    assert solve.call_count == 1
+    assert [s["strike"] for s in by_oi["strikes"]] == [s["strike"] for s in by_vol["strikes"]]
+    assert by_oi["weight_by"] == "oi"
+    assert by_vol["weight_by"] == "volume"
+
+
+def test_an_unusable_chain_raises_a_typed_error_not_a_bare_valueerror():
+    """The wrapper maps this to 404 and the recorder maps it to 'skip this tick'.
+    A bare ValueError would be caught by the wrapper's broad except and reported
+    as a 500 - an operator would go looking for a crash that never happened."""
+    from services.gex_levels_service import UnusableChain, fetch_snapshot_inputs
+
+    empty = {"status": "success", "chain": [], "atm_strike": None, "underlying_ltp": 0}
+    with (
+        patch("services.gex_levels_service.get_option_chain", return_value=(True, empty, 200)),
+        patch("services.gex_levels_service._resolve_forward_price", return_value=24610.0),
+    ):
+        with pytest.raises(UnusableChain):
+            fetch_snapshot_inputs("NIFTY", "NFO", EXPIRY, "key")
+
+
+def test_a_failed_chain_fetch_raises_a_typed_error_carrying_the_brokers_response():
+    """The endpoint passes the broker's own message and status straight through,
+    so the seam must not flatten them into a generic error."""
+    from services.gex_levels_service import ChainFetchFailed, fetch_snapshot_inputs
+
+    failure = {"status": "error", "message": "No strikes"}
+    with patch("services.gex_levels_service.get_option_chain", return_value=(False, failure, 404)):
+        with pytest.raises(ChainFetchFailed) as exc:
+            fetch_snapshot_inputs("NIFTY", "NFO", EXPIRY, "key")
+
+    assert exc.value.status_code == 404
+    assert exc.value.response == failure
