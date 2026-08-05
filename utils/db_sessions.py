@@ -44,6 +44,11 @@ SCOPED_SESSION_MODULES = [
     ("database.strategy_book_db", "db_session"),
     ("database.oauth_db", "db_session"),
     ("database.whatsapp_db", "db_session"),
+    # The GEX snapshot recorder writes from a scheduler thread every minute,
+    # which has no app context and so never reaches teardown_appcontext. Its
+    # jobs call remove_all_scoped_sessions() themselves, and this entry is what
+    # makes that call cover gex.db.
+    ("database.gex_history_db", "db_session"),
 ]
 
 

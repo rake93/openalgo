@@ -62,11 +62,11 @@ from blueprints.custom_straddle import custom_straddle_bp  # Import custom strad
 from blueprints.dashboard import dashboard_bp
 from blueprints.flow import flow_bp  # Import the flow blueprint
 from blueprints.gamma_density import gamma_density_bp  # Import the Gamma Density blueprint
-from blueprints.indicators import indicators_bp  # Indicator engine (layouts/scripts/alerts)
 from blueprints.gc_json import gc_json_bp
 from blueprints.gex import gex_bp  # Import the GEX blueprint
 from blueprints.health import health_bp  # Import the health monitoring blueprint
 from blueprints.historify import historify_bp  # Import the historify blueprint
+from blueprints.indicators import indicators_bp  # Indicator engine (layouts/scripts/alerts)
 from blueprints.ivchart import ivchart_bp  # Import the IV chart blueprint
 from blueprints.ivsmile import ivsmile_bp  # Import the IV Smile blueprint
 from blueprints.latency import latency_bp  # Import the latency blueprint
@@ -116,8 +116,9 @@ from database.apilog_db import init_db as ensure_api_log_tables_exists
 from database.auth_db import init_db as ensure_auth_tables_exists
 from database.chartink_db import init_db as ensure_chartink_tables_exists
 from database.flow_db import init_db as ensure_flow_tables_exists
-from database.indicator_db import init_db as ensure_indicator_tables_exists
+from database.gex_history_db import init_gex_history_db as ensure_gex_history_tables_exists
 from database.historify_db import init_database as ensure_historify_tables_exists
+from database.indicator_db import init_db as ensure_indicator_tables_exists
 from database.latency_db import init_latency_db as ensure_latency_tables_exists
 from database.leverage_db import init_db as ensure_leverage_tables_exists
 from database.sandbox_db import init_db as ensure_sandbox_tables_exists
@@ -277,6 +278,7 @@ def create_app():
     # Warming here means the first backtest does not pay it and boot does not
     # block on it.
     from portfolio import warm_analytics
+
     warm_analytics()
 
     # Exempt API endpoints from CSRF protection (they use API key authentication)
@@ -712,6 +714,7 @@ def setup_environment(app):
                 ("Scalping DB", ensure_scalping_tables_exists),
                 ("Leverage DB", ensure_leverage_tables_exists),
                 ("Strategy Portfolio DB", ensure_strategy_portfolio_tables_exists),
+                ("GEX History DB", ensure_gex_history_tables_exists),
             ]
 
             db_init_start = time.time()
@@ -806,6 +809,20 @@ def setup_environment(app):
                 logger.debug("Indicator alert scheduler initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize Indicator alert scheduler: {e}")
+
+            try:
+                # Snapshot recorder for the GEX Levels chart study. Ships with an
+                # EMPTY watchlist and registers no jobs until a series is added
+                # at /gex/api/gex-series, so an upgrade never starts polling the
+                # broker on a schedule nobody asked for. Once a series IS added
+                # it reduces broker load rather than adding to it: the study
+                # reads the recorded row, so N open tabs cost one poll, not N.
+                from services.gex_recorder_service import init_gex_recorder
+
+                init_gex_recorder()
+                logger.debug("GEX recorder initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize GEX recorder: {e}")
 
             try:
                 # Server-side scalping SL / target / trailing-stop engine. Runs
