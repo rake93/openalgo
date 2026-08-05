@@ -59,6 +59,16 @@ export interface GexLevelsConfig {
   refreshSeconds: number
   side: 'left' | 'right'
   columnWidth: number
+  /**
+   * Pixel offset of the readout card from its default top-right anchor.
+   * Persisted with the layout like every other study setting, so a card
+   * moved out of the way stays moved.
+   *
+   * An offset of zero is indistinguishable from the card never having been
+   * dragged, which is what makes this safe to add to an existing saved
+   * layout: `restore` fills it from the defaults and nothing shifts.
+   */
+  cardOffset: { x: number; y: number }
 }
 
 export const DEFAULT_GEX_LEVELS_SETTINGS: GexLevelsConfig = {
@@ -74,6 +84,7 @@ export const DEFAULT_GEX_LEVELS_SETTINGS: GexLevelsConfig = {
   refreshSeconds: 60,
   side: 'right',
   columnWidth: 120,
+  cardOffset: { x: 0, y: 0 },
 }
 
 /** The underlying instrument GEX is computed for - never the charted symbol itself. */

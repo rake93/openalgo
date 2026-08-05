@@ -9,7 +9,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { GEXLevelsResponse, GEXQuality, GEXSentiment } from '@/api/gex'
-import { GexDashboard } from './GexDashboard'
+import { clampGexCardOffset, GexDashboard } from './GexDashboard'
 
 function makeQuality(overrides: Partial<GEXQuality> = {}): GEXQuality {
   return {
@@ -343,5 +343,87 @@ describe('GexDashboard hide control', () => {
     render(<GexDashboard data={makeData()} stale={false} metric="gamma" onHide={onHide} />)
     await userEvent.click(screen.getByLabelText(/hide the gex levels card/i))
     expect(onHide).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('clampGexCardOffset', () => {
+  const card = { width: 216, height: 240 }
+  const container = { width: 1000, height: 600 }
+
+  it('leaves an in-bounds offset alone', () => {
+    expect(clampGexCardOffset({ x: -100, y: 50 }, card, container)).toEqual({ x: -100, y: 50 })
+  })
+
+  it('stops the card leaving the left edge', () => {
+    // Natural left is 1000 - 8 - 216 = 776, so x may not go below -776.
+    expect(clampGexCardOffset({ x: -5000, y: 0 }, card, container).x).toBe(-776)
+  })
+
+  it('stops the card leaving the right and top edges', () => {
+    // The anchor is already 8px from each, so it may travel 8px back at most.
+    expect(clampGexCardOffset({ x: 5000, y: -5000 }, card, container)).toEqual({ x: 8, y: -8 })
+  })
+
+  it('stops the card leaving the bottom edge', () => {
+    // 600 - 8 - 240 = 352.
+    expect(clampGexCardOffset({ x: 0, y: 5000 }, card, container).y).toBe(352)
+  })
+
+  it('does not invert the clamp when the card is taller than the pane', () => {
+    const clamped = clampGexCardOffset({ x: 0, y: 5000 }, { width: 216, height: 900 }, container)
+    expect(clamped.y).toBe(-8)
+  })
+})
+
+describe('GexDashboard card position', () => {
+  function cardOf() {
+    return document.querySelector('aside') as HTMLElement
+  }
+
+  it('renders with no transform at the default anchor, so an untouched layout is unchanged', () => {
+    render(<GexDashboard data={makeData()} stale={false} metric="gamma" />)
+    expect(cardOf().style.transform).toBe('')
+  })
+
+  it('translates by the offset once moved', () => {
+    render(
+      <GexDashboard
+        data={makeData()}
+        stale={false}
+        metric="gamma"
+        offset={{ x: -120, y: 40 }}
+        onOffsetChange={vi.fn()}
+      />
+    )
+    expect(cardOf().style.transform).toBe('translate(-120px, 40px)')
+  })
+
+  it('only makes the header take pointer events, so the body never swallows a chart click', () => {
+    render(<GexDashboard data={makeData()} stale={false} metric="gamma" onOffsetChange={vi.fn()} />)
+    expect(cardOf().className).toContain('pointer-events-none')
+    const header = screen.getByText(/GEX Levels/).closest('div') as HTMLElement
+    expect(header.className).toContain('pointer-events-auto')
+    expect(header.className).toContain('cursor-grab')
+  })
+
+  it('resets the offset on a double-click of the header', async () => {
+    const onOffsetChange = vi.fn()
+    render(
+      <GexDashboard
+        data={makeData()}
+        stale={false}
+        metric="gamma"
+        offset={{ x: -300, y: 200 }}
+        onOffsetChange={onOffsetChange}
+      />
+    )
+    await userEvent.dblClick(screen.getByText(/GEX Levels/))
+    expect(onOffsetChange).toHaveBeenCalledWith({ x: 0, y: 0 })
+  })
+
+  it('is immovable when no handler is supplied', () => {
+    render(<GexDashboard data={makeData()} stale={false} metric="gamma" />)
+    const header = screen.getByText(/GEX Levels/).closest('div') as HTMLElement
+    expect(header.className).not.toContain('cursor-grab')
   })
 })

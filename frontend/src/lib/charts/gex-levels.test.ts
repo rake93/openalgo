@@ -47,6 +47,22 @@ describe('GexLevelsManager settings', () => {
     expect(restored.config).toEqual(manager.config)
   })
 
+  it('carries the card offset through a snapshot round-trip', () => {
+    const { manager } = make()
+    expect(manager.config.cardOffset).toEqual({ x: 0, y: 0 })
+
+    manager.setConfig({ cardOffset: { x: -240, y: 120 } })
+    const { manager: restored } = make()
+    restored.restore(manager.snapshot())
+    expect(restored.config.cardOffset).toEqual({ x: -240, y: 120 })
+  })
+
+  it('fills the card offset from the defaults for a layout saved before it existed', () => {
+    const { manager } = make()
+    manager.restore({ enabled: true })
+    expect(manager.config.cardOffset).toEqual({ x: 0, y: 0 })
+  })
+
   it('fills unknown keys from the defaults when restoring a partial snapshot', () => {
     const { manager } = make()
     manager.restore({ enabled: true })

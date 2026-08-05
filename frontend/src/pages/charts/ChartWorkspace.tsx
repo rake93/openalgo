@@ -712,6 +712,11 @@ export default function ChartWorkspace() {
               data={gexSnapshot}
               stale={controllerRef.current?.gexLevels.stale ?? false}
               metric={gex.metric}
+              offset={gex.cardOffset}
+              onOffsetChange={(cardOffset) => {
+                controllerRef.current?.gexLevels.setConfig({ cardOffset })
+                setGex((s) => ({ ...s, cardOffset }))
+              }}
               onHide={() => {
                 controllerRef.current?.gexLevels.setConfig({ showDashboard: false })
                 setGex((s) => ({ ...s, showDashboard: false }))

@@ -12,10 +12,46 @@
  * recalculating.
  */
 
+import { useCallback, useRef } from 'react'
 import type { GEXLevelsResponse, GEXSentimentSignal, GexMetric } from '@/api/gex'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { formatGexMoney } from '@/lib/charts/gex-levels-geometry'
 import { cn } from '@/lib/utils'
+
+export interface GexCardOffset {
+  x: number
+  y: number
+}
+
+/** Card inset from the pane's top-right corner, matching `right-2 top-2`. */
+const CARD_INSET_PX = 8
+
+/**
+ * Keep a dragged card inside its pane.
+ *
+ * The card is anchored top-right, so its natural left edge is
+ * `container.width - inset - card.width` and its natural top is `inset`; the
+ * offset translates from there. Clamping to "fully inside" rather than
+ * "partly visible" is deliberate: a card that can be dragged half off the
+ * edge looks broken rather than moved, and the header - the only drag
+ * surface - would be the part that leaves first, stranding it.
+ *
+ * Pure and exported so the arithmetic is testable without a DOM.
+ */
+export function clampGexCardOffset(
+  offset: GexCardOffset,
+  card: { width: number; height: number },
+  container: { width: number; height: number }
+): GexCardOffset {
+  const minX = -Math.max(0, container.width - CARD_INSET_PX - card.width)
+  const maxX = CARD_INSET_PX
+  const minY = -CARD_INSET_PX
+  const maxY = Math.max(minY, container.height - CARD_INSET_PX - card.height)
+  return {
+    x: Math.min(maxX, Math.max(minX, offset.x)),
+    y: Math.min(maxY, Math.max(minY, offset.y)),
+  }
+}
 
 export interface GexDashboardProps {
   data: GEXLevelsResponse | null
@@ -35,6 +71,16 @@ export interface GexDashboardProps {
    * back on. Omit to render no close control.
    */
   onHide?(): void
+  /**
+   * Where the card sits relative to its default top-right anchor. Zero means
+   * the anchor itself, so an existing layout renders exactly as before.
+   */
+  offset?: GexCardOffset
+  /**
+   * Called as the header is dragged, and on a double-click of the header with
+   * `{x: 0, y: 0}` to reset. Omit to make the card immovable.
+   */
+  onOffsetChange?(offset: GexCardOffset): void
 }
 
 const GREEN = 'text-emerald-600 dark:text-emerald-400'
@@ -82,7 +128,71 @@ function Row({
   )
 }
 
-export function GexDashboard({ data, stale, metric, onHide }: GexDashboardProps) {
+export function GexDashboard({
+  data,
+  stale,
+  metric,
+  onHide,
+  offset,
+  onOffsetChange,
+}: GexDashboardProps) {
+  const cardRef = useRef<HTMLElement | null>(null)
+  // Where the pointer grabbed, relative to the offset at that moment, so the
+  // card tracks the cursor instead of jumping its corner to it.
+  const grabRef = useRef<{ pointerX: number; pointerY: number; from: GexCardOffset } | null>(null)
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!onOffsetChange || e.button !== 0) return
+      grabRef.current = {
+        pointerX: e.clientX,
+        pointerY: e.clientY,
+        from: offset ?? { x: 0, y: 0 },
+      }
+      // Capture so a fast drag that outruns the header keeps delivering moves.
+      // Guarded because it is absent in jsdom and on older engines, and a
+      // throw here would lose the drag entirely rather than degrade it - the
+      // drag still works without capture, it just stops if the cursor
+      // outruns the handle.
+      e.currentTarget.setPointerCapture?.(e.pointerId)
+      e.preventDefault()
+    },
+    [offset, onOffsetChange]
+  )
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const grab = grabRef.current
+      if (!grab || !onOffsetChange) return
+      const card = cardRef.current
+      const container = card?.offsetParent as HTMLElement | null
+      const next = {
+        x: grab.from.x + (e.clientX - grab.pointerX),
+        y: grab.from.y + (e.clientY - grab.pointerY),
+      }
+      onOffsetChange(
+        card && container
+          ? clampGexCardOffset(
+              next,
+              { width: card.offsetWidth, height: card.offsetHeight },
+              { width: container.clientWidth, height: container.clientHeight }
+            )
+          : next
+      )
+    },
+    [onOffsetChange]
+  )
+
+  const endDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    grabRef.current = null
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      e.currentTarget.releasePointerCapture?.(e.pointerId)
+    }
+  }, [])
+
+  // The only recovery if a layout change strands the card somewhere useless.
+  const onDoubleClick = useCallback(() => onOffsetChange?.({ x: 0, y: 0 }), [onOffsetChange])
+
   if (!data || data.status !== 'success') return null
 
   const regime = data.regime
@@ -131,9 +241,34 @@ export function GexDashboard({ data, stale, metric, onHide }: GexDashboardProps)
   const qualityTone = quality ? (quality.verdict === 'good' ? GREEN : AMBER) : undefined
 
   return (
-    <aside className="pointer-events-none absolute right-2 top-2 z-20 w-[216px] rounded-md border border-border bg-popover/90 text-[11.5px] leading-snug shadow-lg backdrop-blur">
-      <div className="flex items-center gap-2 border-b border-border px-2.5 py-1.5">
-        <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+    <aside
+      ref={cardRef}
+      style={
+        offset && (offset.x !== 0 || offset.y !== 0)
+          ? { transform: `translate(${offset.x}px, ${offset.y}px)` }
+          : undefined
+      }
+      className="pointer-events-none absolute right-2 top-2 z-20 w-[216px] rounded-md border border-border bg-popover/90 text-[11.5px] leading-snug shadow-lg backdrop-blur"
+    >
+      {/* The header is the drag handle, and the only part besides the close
+          button that takes pointer events - the body carries a tooltip trigger
+          and numbers worth selecting, and making all of it draggable would
+          break both. */}
+      <div
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onDoubleClick={onDoubleClick}
+        className={cn(
+          'flex items-center gap-2 border-b border-border px-2.5 py-1.5',
+          onOffsetChange && 'pointer-events-auto cursor-grab active:cursor-grabbing'
+        )}
+      >
+        <span
+          className="min-w-0 flex-1 truncate font-medium text-foreground"
+          title={onOffsetChange ? 'Drag to move, double-click to reset' : undefined}
+        >
           GEX Levels{data.underlying ? ` · ${data.underlying}` : ''}
         </span>
         {onHide && (
