@@ -152,6 +152,17 @@ export class GexLevelsManager {
     return this.staleValue
   }
 
+  /**
+   * True when `snapshotValue` actually has bar data - a successful response
+   * with at least one strike. Read by `captionOptions()`; see
+   * `GexMetricCaptionOptions.hasBars` for why the caption needs this and
+   * `showBars` (a user setting, not a data fact) is not enough on its own.
+   */
+  private get hasBars(): boolean {
+    const s = this.snapshotValue
+    return s !== null && s.status === 'success' && (s.strikes?.length ?? 0) > 0
+  }
+
   setConfig(patch: Partial<GexLevelsConfig>): void {
     const prev = this.settings
     this.settings = { ...prev, ...patch }
@@ -202,6 +213,15 @@ export class GexLevelsManager {
     this.staleValue = false
     this.cb.onSnapshot?.(null)
     this.primitive?.setData(null)
+    // The snapshot just went to null - re-push captionOptions() so the
+    // caption's hasBars gate reflects that immediately rather than waiting
+    // for a fetch that may never come. An instrument with no option chain is
+    // exactly that case: fetchNow() below returns before ever calling
+    // fetchLevels(), so its .then() never runs, and without this call the
+    // caption would stay pinned to whatever the previous instrument left it
+    // showing - bars, walls and the readout card all gone, one caption left
+    // floating on a chart with no GEX on it at all.
+    this.syncPrimitive()
     if (this.settings.enabled) {
       this.restartTimer()
       this.fetchNow()
@@ -249,6 +269,11 @@ export class GexLevelsManager {
         this.staleValue = false
         this.cb.onSnapshot?.(response)
         this.primitive?.setData(response)
+        // hasBars is derived from snapshotValue, which just changed - re-push
+        // captionOptions() so the caption's gate reflects the new response
+        // (success with strikes, success with none, or an error body)
+        // instead of whatever it showed as of the previous refresh.
+        this.syncPrimitive()
       })
       .catch(() => {
         if (this.disposed || epoch !== this.epoch) return
@@ -367,14 +392,18 @@ export class GexLevelsManager {
   }
 
   /**
-   * Mirrors `primitiveOptions()`, trimmed to the subset `GexMetricCaptionPrimitive`
-   * actually needs to place and word its label - it has no walls, no
-   * `columnWidth`-scaled bars, nothing else to configure.
+   * Mostly mirrors `primitiveOptions()`, trimmed to the subset
+   * `GexMetricCaptionPrimitive` actually needs to place and word its label -
+   * it has no walls, no `columnWidth`-scaled bars, nothing else to configure
+   * - plus one field `primitiveOptions()` has no reason to carry: `hasBars`,
+   * a fact about the snapshot rather than a setting, computed fresh on every
+   * call so it is never one refresh behind.
    */
   private captionOptions(): Partial<GexMetricCaptionOptions> {
     const c = this.settings
     return {
       showBars: c.showBars,
+      hasBars: this.hasBars,
       side: c.side,
       columnWidth: c.columnWidth,
       metric: c.metric,

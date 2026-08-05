@@ -67,10 +67,30 @@ const LABEL_FONT_PX = 11
 const EDGE_MARKER_INSET_PX = 12
 /** Horizontal reach of an off-screen stub - short on purpose, so it reads as "not really here" rather than a full-width line. */
 const EDGE_MARKER_LENGTH_PX = 72
-/** Bar-row thickness floor and ceiling in px (before dpr scaling); see `computeGexBarGeometry`. */
+/**
+ * Bar-row thickness floor in px (before dpr scaling): prevents neighbouring
+ * bars from smearing into an overlapping mass when the chart is zoomed out
+ * and the pixel gap between strikes shrinks toward 0. See `strikeRowHeightPx`.
+ */
 const MIN_BAR_ROW_HEIGHT_PX = 1
 const DEFAULT_BAR_ROW_HEIGHT_PX = 6
-const MAX_BAR_ROW_HEIGHT_PX = 14
+/**
+ * Bar-row thickness ceiling, as a fraction of the pane height rather than a
+ * fixed px value.
+ *
+ * This used to be a flat 14px, which has no relationship to the actual
+ * pixel gap between strikes and so caps bar thickness far below it at almost
+ * any zoom level except fully zoomed out - a 50-point NIFTY strike spacing
+ * is routinely 150-200px on screen once zoomed in even moderately, so a
+ * 14px bar sits as an isolated sliver in the middle of that gap instead of
+ * tiling into a continuous profile the way the bars either side of it do.
+ * The ceiling's actual job is the opposite failure mode: at extreme zoom,
+ * when only two or three strikes are visible at all, an unbounded row height
+ * would let a single strike's bar swallow most of the pane. Scaling with
+ * `plotHeight` keeps that guard proportional at every pane size instead of
+ * being calibrated for one specific one.
+ */
+const MAX_BAR_ROW_HEIGHT_FRACTION = 0.25
 /**
  * Gap in px (before dpr scaling) between the plot bottom and the metric
  * caption. Bottom, not top: the top band is where the pane legend's row 0
@@ -111,10 +131,19 @@ export function formatGexPrice(price: number): string {
  * additionally inverts the frame of reference. DEX is the open-interest
  * book's delta (see `services/gex_levels/delta_exposure.py`), so a positive
  * (call-coloured) bar means the book is long, where under gamma the same
- * colour means dealers are long. When the bar column itself is not drawn -
- * no strikes, none visible, or switched off - `GexMetricCaptionPrimitive`
- * draws no caption either, and that absence is fine: there is then nothing
- * on screen for it to disambiguate.
+ * colour means dealers are long.
+ *
+ * `GexMetricCaptionPrimitive` draws no caption when the bar column is
+ * switched off (`showBars`) or when the manager's most recent snapshot has
+ * nothing to show (`hasBars` - no data yet, an error response, or an
+ * instrument with no option chain: see `GexLevelsManager.captionOptions()`),
+ * and that absence is fine - there is then nothing on screen for it to
+ * disambiguate. It does NOT cover a viewport panned or zoomed away from
+ * every strike in an otherwise-good snapshot: telling visible strikes from
+ * off-screen ones needs the price scale, which is genuine draw-time
+ * knowledge the options-level `hasBars` gate does not have - and that case
+ * is the benign one anyway, since the walls stay on screen and the study is
+ * plainly still live.
  */
 const GEX_METRIC_CAPTIONS: Record<GexMetric, string> = {
   gamma: 'Gamma · dealer sign',
@@ -217,20 +246,23 @@ export function computeGexBarGeometry(
     positive: exposureOf(s) >= 0,
   }))
 
-  return { bars, rowHeight: strikeRowHeightPx(strikes, priceToY) }
+  return { bars, rowHeight: strikeRowHeightPx(strikes, priceToY, plotHeight) }
 }
 
 /**
- * Typical pixel gap between adjacent strikes, used to cap bar thickness so
- * rows never grow into an overlapping smear when the chart is zoomed out.
- * Computed from the full chain rather than just the visible slice, so the row
- * height stays stable as the viewport pans; the median (rather than the first
- * pair) guards against one odd gap - a strike missing at the edge of the
- * chain - skewing the whole column's thickness.
+ * Typical pixel gap between adjacent strikes - bars are supposed to tile
+ * into a continuous profile, so a row's thickness tracks this gap directly,
+ * clamped only at the two ends documented on `MIN_BAR_ROW_HEIGHT_PX` /
+ * `MAX_BAR_ROW_HEIGHT_FRACTION`. Computed from the full chain rather than
+ * just the visible slice, so the row height stays stable as the viewport
+ * pans; the median (rather than the first pair) guards against one odd gap
+ * - a strike missing at the edge of the chain - skewing the whole column's
+ * thickness.
  */
 function strikeRowHeightPx(
   strikes: readonly GEXStrikeLevel[],
-  priceToY: (price: number) => number
+  priceToY: (price: number) => number,
+  plotHeight: number
 ): number {
   if (strikes.length < 2) return DEFAULT_BAR_ROW_HEIGHT_PX
   const gaps: number[] = []
@@ -239,7 +271,8 @@ function strikeRowHeightPx(
   }
   gaps.sort((a, b) => a - b)
   const median = gaps[Math.floor(gaps.length / 2)]
-  return Math.max(MIN_BAR_ROW_HEIGHT_PX, Math.min(MAX_BAR_ROW_HEIGHT_PX, median - 1))
+  const maxRowHeight = plotHeight * MAX_BAR_ROW_HEIGHT_FRACTION
+  return Math.max(MIN_BAR_ROW_HEIGHT_PX, Math.min(maxRowHeight, median - 1))
 }
 
 /**
@@ -453,6 +486,18 @@ export class GexLevelsPrimitive implements IPrimitive {
 export interface GexMetricCaptionOptions {
   /** Mirrors `GexLevelsPrimitiveOptions.showBars` - no bar column, nothing to caption. */
   showBars: boolean
+  /**
+   * True when the manager's most recent snapshot actually has bar data - see
+   * `GexLevelsManager.captionOptions()`. Independent of `showBars`: `showBars`
+   * is a user setting (draw the column at all), `hasBars` is a data fact (is
+   * there anything in it right now). Both must be true for the caption to
+   * draw - without this, switching to an instrument with no option chain
+   * leaves the caption pinned to an empty chart with no bars, no walls and no
+   * readout card under it, and no way to dismiss it short of switching
+   * instrument again (`gexAvailable === false` disables the Studies-panel
+   * toggle too).
+   */
+  hasBars: boolean
   side: 'left' | 'right'
   columnWidth: number
   metric: GexMetric
@@ -461,6 +506,12 @@ export interface GexMetricCaptionOptions {
 
 export const DEFAULT_GEX_METRIC_CAPTION_OPTIONS: GexMetricCaptionOptions = {
   showBars: true,
+  // false, not true: the constructor always runs one setOptions() behind a
+  // real GexLevelsManager.captionOptions() call in the same synchronous
+  // syncPrimitive() pass (see gex-levels.ts), so this default never actually
+  // reaches a draw() call in practice - but "nothing to show" is the correct
+  // default to fail toward if that ever stops being true.
+  hasBars: false,
   side: 'right',
   columnWidth: 120,
   metric: 'gamma',
@@ -483,9 +534,13 @@ export const DEFAULT_GEX_METRIC_CAPTION_OPTIONS: GexMetricCaptionOptions = {
  * primitive - see `syncPrimitive()`.
  *
  * Deliberately has no `setData`: unlike `GexLevelsPrimitive`, this primitive
- * never reads the snapshot itself, only `showBars` and `metric` from options
- * - so there is nothing to blank between refreshes, and the manager never
- * needs to keep two primitives' data in sync.
+ * never holds the snapshot itself. It still depends on the data - `hasBars`
+ * says whether the most recent snapshot has anything worth captioning - but
+ * the manager reduces that snapshot to a single boolean and passes it as a
+ * plain option (`captionOptions()`), the same as `metric` or `side`. So
+ * there is still nothing to blank between refreshes and no second copy of
+ * the snapshot for the manager to keep in sync - only one more field on an
+ * options object it was already re-pushing on every change.
  */
 export class GexMetricCaptionPrimitive implements IPrimitive {
   private opts: GexMetricCaptionOptions
@@ -513,7 +568,7 @@ export class GexMetricCaptionPrimitive implements IPrimitive {
   }
 
   draw(ctx: CanvasRenderingContext2D, rc: PrimitiveRenderContext): void {
-    if (!this.opts.showBars) return
+    if (!this.opts.showBars || !this.opts.hasBars) return
     const dpr = rc.dpr
     const axisX = gexColumnAxisX(
       rc.plotWidth,

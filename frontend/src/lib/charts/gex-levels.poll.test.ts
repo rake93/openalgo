@@ -345,4 +345,92 @@ describe('GexLevelsManager primitive lifecycle', () => {
     expect(setOptionsSpy).toHaveBeenCalledWith(expect.objectContaining({ columnInset: 150 }))
     setOptionsSpy.mockRestore()
   })
+
+  it('sets hasBars true once a response with strikes arrives, false while none has yet', async () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const fetchLevels = vi
+      .fn()
+      .mockResolvedValue({ status: 'success', strikes: [{ strike: 24_200, net_gex: 100 }] })
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+      fetchLevels,
+    })
+    manager.attachChart(chart as never)
+
+    // Before the fetch resolves - the moment right after enabling - there is
+    // no snapshot yet, so the caption must not claim there are bars.
+    manager.setConfig({ enabled: true })
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ hasBars: false }))
+
+    await vi.runOnlyPendingTimersAsync()
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ hasBars: true }))
+
+    setOptionsSpy.mockRestore()
+  })
+
+  it('sets hasBars false for a successful response with an empty strikes array', async () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+      fetchLevels: vi.fn().mockResolvedValue({ status: 'success', strikes: [] }),
+    })
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    await vi.runOnlyPendingTimersAsync()
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ hasBars: false }))
+    setOptionsSpy.mockRestore()
+  })
+
+  it('sets hasBars false for an error-status response, even though the fetch resolved rather than rejected', async () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+      fetchLevels: vi.fn().mockResolvedValue({ status: 'error', message: 'no option chain' }),
+    })
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    await vi.runOnlyPendingTimersAsync()
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ hasBars: false }))
+    setOptionsSpy.mockRestore()
+  })
+
+  it('drops hasBars back to false the instant the instrument changes, without waiting on a fetch that will never come', async () => {
+    // The Blocking-2 scenario: switching from an underlying with an option
+    // chain to one without (or onto an option's own chart). instrument()
+    // starts returning null, so fetchNow() inside instrumentChanged() bails
+    // before ever calling fetchLevels() - there is no then()/catch() coming
+    // to clear hasBars, so instrumentChanged() must clear it itself.
+    let instrument: { underlying: string; exchange: string } | null = {
+      underlying: 'NIFTY',
+      exchange: 'NFO',
+    }
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => instrument,
+      fetchLevels: vi
+        .fn()
+        .mockResolvedValue({ status: 'success', strikes: [{ strike: 24_200, net_gex: 100 }] }),
+    })
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    await vi.runOnlyPendingTimersAsync()
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ hasBars: true }))
+
+    instrument = null
+    manager.instrumentChanged()
+    // Synchronous: no await. fetchNow() returns immediately for a null
+    // instrument, so if hasBars only ever updated from a fetch response,
+    // this assertion would still see the stale `true` from the NIFTY snapshot.
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ hasBars: false }))
+
+    setOptionsSpy.mockRestore()
+  })
 })
