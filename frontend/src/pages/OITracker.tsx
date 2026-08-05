@@ -44,6 +44,12 @@ function formatNumber(num: number): string {
   return num.toString()
 }
 
+// The broker reports open interest in units, already lot-multiplied. This page
+// displays OI in lots throughout, so every OI figure divides by the lot size.
+function formatLots(oi: number, lotSize: number): string {
+  return formatNumber(Math.round(oi / (lotSize || 1)))
+}
+
 export default function OITracker() {
   const { mode, appMode } = useThemeStore()
   const {
@@ -218,7 +224,7 @@ export default function OITracker() {
         type: 'bar' as const,
         name: 'Call Options OI (lots)',
         marker: { color: themeColors.ceBar },
-        hovertemplate: 'Strike %{text}<br>CE OI: %{y:,}<extra></extra>',
+        hovertemplate: 'Strike %{text}<br>CE OI: %{y:,} lots<extra></extra>',
         text: tickLabels,
         textposition: 'none' as const,
       },
@@ -228,7 +234,7 @@ export default function OITracker() {
         type: 'bar' as const,
         name: 'Put Options OI (lots)',
         marker: { color: themeColors.peBar },
-        hovertemplate: 'Strike %{text}<br>PE OI: %{y:,}<extra></extra>',
+        hovertemplate: 'Strike %{text}<br>PE OI: %{y:,} lots<extra></extra>',
         text: tickLabels,
         textposition: 'none' as const,
       },
@@ -304,7 +310,7 @@ export default function OITracker() {
         tickangle: -45,
       },
       yaxis: {
-        title: { text: 'Open Interest', font: { color: themeColors.text, size: 12 } },
+        title: { text: 'Open Interest (lots)', font: { color: themeColors.text, size: 12 } },
         tickfont: { color: themeColors.text, size: 10 },
         gridcolor: themeColors.grid,
       },
@@ -440,10 +446,10 @@ export default function OITracker() {
             ATM: {oiData.atm_strike}
           </Badge>
           <Badge variant="secondary" className="text-sm px-3 py-1">
-            Total CE OI: {formatNumber(oiData.total_ce_oi || 0)}
+            Total CE OI (lots): {formatLots(oiData.total_ce_oi || 0, oiData.lot_size || 1)}
           </Badge>
           <Badge variant="secondary" className="text-sm px-3 py-1">
-            Total PE OI: {formatNumber(oiData.total_pe_oi || 0)}
+            Total PE OI (lots): {formatLots(oiData.total_pe_oi || 0, oiData.lot_size || 1)}
           </Badge>
         </div>
       )}
