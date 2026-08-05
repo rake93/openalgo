@@ -220,8 +220,8 @@ def price_exposures(
             )
         call_iv = ivs.call.get(row.strike)
         put_iv = ivs.put.get(row.strike)
-        call_weight = _finite(row.call_volume if use_volume else row.call_oi)
-        put_weight = _finite(row.put_volume if use_volume else row.put_oi)
+        call_weight = finite_weight(row.call_volume if use_volume else row.call_oi)
+        put_weight = finite_weight(row.put_volume if use_volume else row.put_oi)
 
         call_sigma = call_iv if call_iv is not None else ivs.fallback
         put_sigma = put_iv if put_iv is not None else ivs.fallback
@@ -304,7 +304,7 @@ def compute_exposures(
     )
 
 
-def _finite(weight: float) -> float:
+def finite_weight(weight: float) -> float:
     """
     A weight of NaN or infinity is treated as no position at all.
 
