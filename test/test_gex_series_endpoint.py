@@ -322,3 +322,41 @@ def test_a_recorder_sync_failure_does_not_lose_the_watchlist_change(authed_clien
         )
 
     assert res.status_code == 201
+
+
+def test_a_series_added_from_an_index_chart_is_stored_on_the_options_exchange(authed_client):
+    """The panel's "Record this series" button fires from a chart whose exchange
+    is NSE_INDEX. Storing that verbatim would create a series that no lookup
+    keyed on NFO could ever find again - the recorder would poll happily and
+    nothing would ever read what it wrote."""
+    with (
+        patch("blueprints.gex.gex_history_db.list_series", return_value=[]),
+        patch(
+            "blueprints.gex.gex_history_db.add_series", return_value=(True, "ok", _series())
+        ) as add,
+        patch("blueprints.gex.get_gex_recorder"),
+    ):
+        response = authed_client.post(
+            "/gex/api/gex-series", json={"underlying": "NIFTY", "exchange": "NSE_INDEX"}
+        )
+
+    assert response.status_code == 201
+    assert add.call_args.kwargs["exchange"] == "NFO"
+
+
+def test_a_bse_series_is_not_moved_to_nfo(authed_client):
+    """get_option_exchange is not idempotent - handed BFO it falls through to a
+    catch-all and returns NFO. normalize_options_exchange exists because of
+    that, and this pins it: a BSE contract must stay on BFO."""
+    with (
+        patch("blueprints.gex.gex_history_db.list_series", return_value=[]),
+        patch(
+            "blueprints.gex.gex_history_db.add_series", return_value=(True, "ok", _series())
+        ) as add,
+        patch("blueprints.gex.get_gex_recorder"),
+    ):
+        authed_client.post(
+            "/gex/api/gex-series", json={"underlying": "SENSEX", "exchange": "BFO"}
+        )
+
+    assert add.call_args.kwargs["exchange"] == "BFO"

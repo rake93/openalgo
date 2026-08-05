@@ -395,6 +395,17 @@ export class GexLevelsManager {
 
   /* ── recorded history (Gamma Bands) ────────────────────────────────────── */
 
+  /**
+   * Re-fetch recorded history now, out of band with the timer.
+   *
+   * For the moment after the watchlist changes: starting or stopping recording
+   * changes what the next response will say, and waiting out a five-interval
+   * poll to reflect a button the user just pressed reads as a dead control.
+   */
+  refreshHistory(): void {
+    this.fetchHistoryNow()
+  }
+
   private stopHistoryTimer(): void {
     if (this.historyTimer) clearInterval(this.historyTimer)
     this.historyTimer = null

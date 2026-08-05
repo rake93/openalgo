@@ -255,3 +255,61 @@ def test_the_read_path_never_calls_the_recorder_or_the_chain(gexdb, monkeypatch)
     ok, _, _ = get_gex_history("NIFTY", "NFO", "11AUG26", "oi", 0, 2_000_000_000)
 
     assert ok is True
+
+
+# ------------------------------------------------- the exchange-mismatch defect
+
+
+def test_the_charted_exchange_finds_a_series_stored_on_the_options_exchange(gexdb):
+    """Found by looking at a real chart, not by a test.
+
+    The /charts study sends the CHARTED instrument's exchange - NSE_INDEX for a
+    NIFTY index chart - while the recorder's watchlist stores the options
+    exchange, NFO. Matching those two by string returned nothing, so Bands drew
+    nothing and the recorded fast path never fired, both of which look exactly
+    like a feature that is simply switched off.
+
+    Every test before this one passed the same exchange on both sides, which is
+    why none of them caught it.
+    """
+    _seed(gexdb, count=3)
+
+    _, by_options, _ = get_gex_history("NIFTY", "NFO", "11AUG26", "oi", 0, 2_000_000_000)
+    _, by_chart, _ = get_gex_history("NIFTY", "NSE_INDEX", "11AUG26", "oi", 0, 2_000_000_000)
+
+    assert len(by_options["points"]) == 3
+    assert len(by_chart["points"]) == 3
+
+
+def test_the_response_echoes_the_normalised_exchange(gexdb):
+    _seed(gexdb, count=1)
+
+    _, payload, _ = get_gex_history("NIFTY", "NSE_INDEX", "11AUG26", "oi", 0, 2_000_000_000)
+
+    assert payload["exchange"] == "NFO"
+
+
+def test_the_response_reports_whether_the_contract_is_recorded(gexdb):
+    """The UI asks this to decide between "Record this series" and "Recording".
+    Answered here so it never has to re-derive the exchange mapping itself -
+    that duplication is what produced the defect above."""
+    _seed(gexdb, count=2)
+
+    _, recorded, _ = get_gex_history("NIFTY", "NSE_INDEX", "11AUG26", "oi", 0, 2_000_000_000)
+    _, unknown, _ = get_gex_history("BANKNIFTY", "NSE_INDEX", "11AUG26", "oi", 0, 2_000_000_000)
+
+    assert recorded["recorded"] is True
+    assert recorded["series_id"] is not None
+    assert unknown["recorded"] is False
+    assert unknown["series_id"] is None
+
+
+def test_a_recorded_series_with_no_points_in_the_window_still_reports_recorded(gexdb):
+    """The first minute after switching recording on. "Recording, nothing yet"
+    and "not recorded" must not look the same to the panel."""
+    _seed(gexdb, count=2)
+
+    _, payload, _ = get_gex_history("NIFTY", "NSE_INDEX", "11AUG26", "oi", 1, 2)
+
+    assert payload["recorded"] is True
+    assert payload["points"] == []

@@ -526,6 +526,40 @@ def get_option_exchange(underlying_exchange: str) -> str:
         return "NFO"
 
 
+# Exchanges options are actually listed on. Anything here is already the answer
+# and must pass through `normalize_options_exchange` untouched.
+OPTIONS_EXCHANGES: set[str] = {"NFO", "BFO", "MCX", "NCDEX", "CDS", "BCD"} | CRYPTO_EXCHANGES
+
+
+def normalize_options_exchange(exchange: str) -> str:
+    """Resolve any exchange to the one options are LISTED on, idempotently.
+
+    `get_option_exchange` above maps an *underlying's* exchange (NSE_INDEX, NSE,
+    ...) to its options exchange, but it is **not safe to apply twice**: handed
+    an exchange that is already an options exchange it falls through to the
+    catch-all and returns NFO, so `BFO -> NFO` silently moves a BSE contract to
+    the wrong exchange. This wrapper is the idempotent version, for callers that
+    receive an exchange from a source which may give either.
+
+    That is not hypothetical. The /charts GEX study sends the CHARTED
+    instrument's exchange (`NSE_INDEX` for a NIFTY index chart), while the
+    snapshot recorder's watchlist stores the options exchange (`NFO`). Anything
+    matching one against the other by string - the recorded fast path, the
+    Gamma Bands history lookup - silently finds nothing and falls back, which
+    looks exactly like a feature that is simply switched off.
+
+    Args:
+        exchange: Either an underlying exchange or an options exchange.
+
+    Returns:
+        The options exchange. Unchanged if one was already given.
+    """
+    normalized = (exchange or "").strip().upper()
+    if normalized in OPTIONS_EXCHANGES:
+        return normalized
+    return get_option_exchange(normalized)
+
+
 def get_option_symbol(
     underlying: str,
     exchange: str,

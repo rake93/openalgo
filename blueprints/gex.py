@@ -31,6 +31,7 @@ from services.gex_recorder_service import (
 )
 from services.gex_recorder_service import get_gex_recorder
 from services.gex_service import get_gex_data
+from services.option_symbol_service import normalize_options_exchange
 from utils.logging import get_logger
 from utils.session import check_session_validity
 
@@ -278,7 +279,15 @@ def gex_levels():
         # before the recorder existed rather than take the study down. A series
         # nobody chose to record has no row at all and must still render.
         try:
-            snapshot = gex_history_db.get_latest_snapshot(underlying, exchange, expiry_date)
+            # Normalised, because the study sends the CHARTED instrument's
+            # exchange (NSE_INDEX on a NIFTY index chart) while the watchlist
+            # stores the options exchange (NFO). Matching those two by string
+            # never hits, so the fast path silently never fired on an index
+            # chart and every tab kept paying for its own broker call - the
+            # feature looked switched off rather than broken.
+            snapshot = gex_history_db.get_latest_snapshot(
+                underlying, normalize_options_exchange(exchange), expiry_date
+            )
             if snapshot and (int(time.time()) - snapshot["ts"]) < FAST_PATH_MAX_AGE_SECONDS:
                 return jsonify(_recorded_payload(snapshot, weight_by)), 200
         except Exception:
@@ -441,6 +450,12 @@ def gex_series_add():
 
         if not re.match(r"^[A-Z0-9]+$", underlying) or not re.match(r"^[A-Z0-9_]+$", exchange):
             return jsonify({"status": "error", "message": "Invalid input format"}), 400
+
+        # Stored as the OPTIONS exchange whatever the caller sent. The /charts
+        # panel offers "Record this series" from an index chart, whose exchange
+        # is NSE_INDEX; storing that verbatim would create a series no lookup
+        # keyed on NFO could ever find again.
+        exchange = normalize_options_exchange(exchange)
 
         if expiry_rule.lower() == "nearest":
             expiry_rule = "nearest"

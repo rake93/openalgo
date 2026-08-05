@@ -25,6 +25,7 @@ design took.
 from typing import Any
 
 from database import gex_history_db
+from services.option_symbol_service import normalize_options_exchange
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -108,18 +109,33 @@ def get_gex_history(
         )
 
     try:
+        # The caller may send the CHARTED instrument's exchange (NSE_INDEX for a
+        # NIFTY index chart) while the watchlist stores the options exchange
+        # (NFO). Matching one against the other by string finds nothing and
+        # looks exactly like a feature that is switched off - which is how this
+        # went unnoticed until the bands were looked at on a real chart.
+        options_exchange = normalize_options_exchange(exchange)
+
         empty = {
             "status": "success",
             "underlying": underlying,
-            "exchange": exchange,
+            "exchange": options_exchange,
             "expiry_date": expiry_date,
             "weight_by": weight_by,
             "resolution": NATIVE_RESOLUTION,
             "downsampled": False,
+            # Whether this contract is on the recorder's watchlist at all, and
+            # which series it belongs to. Reported here so the UI never has to
+            # re-derive the exchange mapping to answer the same question - the
+            # duplication that caused the bug this normalisation fixes.
+            "recorded": False,
+            "series_id": None,
             "points": [],
         }
 
-        series = gex_history_db.get_series_by_contract(underlying, exchange, expiry_date)
+        series = gex_history_db.get_series_by_contract(
+            underlying, options_exchange, expiry_date
+        )
         if series is None:
             return True, empty, 200
 
@@ -127,7 +143,16 @@ def get_gex_history(
             series["id"], from_ts, to_ts, expiry_date=expiry_date
         )
 
-        return True, {**empty, "points": [_point(row, weight_by) for row in rows]}, 200
+        return (
+            True,
+            {
+                **empty,
+                "recorded": True,
+                "series_id": series["id"],
+                "points": [_point(row, weight_by) for row in rows],
+            },
+            200,
+        )
 
     except Exception:
         logger.exception("Error reading GEX history")

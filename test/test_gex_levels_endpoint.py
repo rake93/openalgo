@@ -555,3 +555,26 @@ def test_the_live_path_is_still_consulted_before_validation_passes(authed_client
 
     assert response.status_code == 400
     lookup.assert_not_called()
+
+
+def test_the_fast_path_matches_a_series_stored_on_the_options_exchange(authed_client):
+    """The study posts the CHARTED exchange (NSE_INDEX on a NIFTY index chart);
+    the watchlist stores NFO. Before this was normalised the lookup never hit,
+    so every tab kept paying for its own broker call while the feature looked
+    merely switched off. Caught on a real chart, not by a test."""
+    with (
+        patch("blueprints.gex.get_api_key_for_tradingview", return_value="key"),
+        patch(
+            "blueprints.gex.gex_history_db.get_latest_snapshot",
+            return_value=_recorded_snapshot(),
+        ) as lookup,
+        patch("blueprints.gex.get_gex_levels") as live,
+    ):
+        response = authed_client.post(
+            "/gex/api/gex-levels", json=body(exchange="NSE_INDEX")
+        )
+
+    live.assert_not_called()
+    assert response.get_json()["source"] == "recorded"
+    # The DB is asked for NFO, not for what the chart sent.
+    assert lookup.call_args[0][1] == "NFO"

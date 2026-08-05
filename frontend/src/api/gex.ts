@@ -167,6 +167,20 @@ export interface GEXHistoryResponse {
    */
   resolution?: string
   downsampled?: boolean
+  /**
+   * Whether this contract is on the recorder's watchlist, and which series it
+   * belongs to.
+   *
+   * Answered by the server so the UI never re-derives the exchange mapping to
+   * work it out. A chart sends its OWN exchange (`NSE_INDEX` for a NIFTY index
+   * chart) while the watchlist stores the options exchange (`NFO`); matching
+   * those client-side is exactly the duplication that made Bands draw nothing.
+   *
+   * `recorded: true` with an empty `points` is normal - it is the first minute
+   * after switching recording on, and must not look like "not recorded".
+   */
+  recorded?: boolean
+  series_id?: number | null
   /** Empty for a contract nobody chose to record - an ordinary state, not an error. */
   points?: GEXHistoryPoint[]
 }
@@ -227,21 +241,6 @@ export const gexApi = {
     const response = await webClient.post<GEXHistoryResponse>('/gex/api/gex-history', params, {
       signal,
     })
-    return response.data
-  },
-
-  /** The snapshot recorder's watchlist - what the server polls on a schedule. */
-  getGEXSeries: async (): Promise<{
-    status: string
-    data?: Array<{
-      id: number
-      underlying: string
-      exchange: string
-      expiry_rule: string
-      enabled: boolean
-    }>
-  }> => {
-    const response = await webClient.get('/gex/api/gex-series')
     return response.data
   },
 

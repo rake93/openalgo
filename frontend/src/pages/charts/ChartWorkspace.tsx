@@ -157,10 +157,6 @@ export default function ChartWorkspace() {
   const [gex, setGex] = useState<GexLevelsConfig>(DEFAULT_GEX_LEVELS_SETTINGS)
   const [gexSnapshot, setGexSnapshot] = useState<GEXLevelsResponse | null>(null)
   const [gexHistory, setGexHistory] = useState<GEXHistoryResponse | null>(null)
-  // Whether the charted contract is on the recorder's watchlist. Undefined
-  // until the first watchlist read, so the panel can say "checking" rather
-  // than guessing "not recorded" and offering a button that would 400.
-  const [gexRecording, setGexRecording] = useState<boolean | undefined>(undefined)
   const [gexRecorderBusy, setGexRecorderBusy] = useState(false)
   const [trading, setTrading] = useState<TradingViewState>(EMPTY_TRADING)
 
@@ -185,39 +181,18 @@ export default function ChartWorkspace() {
   /* ── the GEX snapshot recorder's watchlist ─────────────────────────────── */
 
   /**
-   * Whether the charted underlying is on the recorder's watchlist.
+   * Whether the charted contract is being recorded comes from the HISTORY
+   * response, not from a separate watchlist read.
    *
-   * Matched on underlying and exchange rather than on the resolved expiry: a
-   * `nearest` series records whichever contract is front-month, so it covers
-   * this chart even though its `expiry_rule` names no expiry at all.
+   * The obvious implementation - fetch the watchlist and match on underlying
+   * and exchange - is what shipped first and it never matched: a chart sends
+   * its own exchange (NSE_INDEX for a NIFTY index chart) while the watchlist
+   * stores the options exchange (NFO). Re-deriving that mapping here would put
+   * a second copy of the rule in TypeScript. The server already resolved the
+   * series to answer the history query, so it reports the answer instead.
    */
-  const refreshGexRecording = useCallback(async () => {
-    const instrument = controllerRef.current?.gexUnderlying()
-    if (!instrument) {
-      setGexRecording(undefined)
-      return
-    }
-    try {
-      const response = await gexApi.getGEXSeries()
-      const match = (response.data ?? []).find(
-        (s) =>
-          s.underlying === instrument.underlying && s.exchange === instrument.exchange && s.enabled
-      )
-      setGexRecording(Boolean(match))
-    } catch {
-      // Leave the panel in its "checking" state rather than claiming the
-      // contract is not recorded - offering a Record button that would then
-      // fail on a duplicate is worse than saying nothing.
-      setGexRecording(undefined)
-    }
-  }, [])
-
-  // Only read the watchlist when Bands is actually on. It is the only control
-  // that needs the answer, and most sessions never turn it on.
-  useEffect(() => {
-    if (!gex.enabled || !gex.showBands) return
-    void refreshGexRecording()
-  }, [gex.enabled, gex.showBands, refreshGexRecording])
+  const gexRecording = gexHistory ? Boolean(gexHistory.recorded) : undefined
+  const gexSeriesId = gexHistory?.series_id ?? null
 
   const startRecordingGex = useCallback(async () => {
     const instrument = controllerRef.current?.gexUnderlying()
@@ -225,42 +200,34 @@ export default function ChartWorkspace() {
     setGexRecorderBusy(true)
     try {
       // `nearest` rather than the chart's resolved expiry: a pinned series
-      // would stop being useful the moment the contract rolls, and the reader
-      // asked to record "this series", not "this week".
+      // stops being useful the moment the contract rolls, and the reader asked
+      // to record this series, not this week. The server normalises the
+      // exchange to the one options are listed on.
       await gexApi.addGEXSeries({
         underlying: instrument.underlying,
         exchange: instrument.exchange,
         expiry_rule: 'nearest',
       })
-      await refreshGexRecording()
-    } catch {
-      // The panel re-reads the watchlist either way, so a failure shows up as
-      // the state simply not changing rather than as a false confirmation.
-      await refreshGexRecording()
+      // The next history poll reports the new state; nudge it rather than
+      // waiting out the interval.
+      controllerRef.current?.gexLevels.refreshHistory()
     } finally {
       setGexRecorderBusy(false)
     }
-  }, [refreshGexRecording])
+  }, [])
 
   const stopRecordingGex = useCallback(async () => {
-    const instrument = controllerRef.current?.gexUnderlying()
-    if (!instrument) return
+    if (gexSeriesId == null) return
     setGexRecorderBusy(true)
     try {
-      const response = await gexApi.getGEXSeries()
-      const match = (response.data ?? []).find(
-        (s) => s.underlying === instrument.underlying && s.exchange === instrument.exchange
-      )
       // DELETE takes the recorded history with it - there is no source to
       // rebuild from. The panel says so above the button.
-      if (match) await gexApi.removeGEXSeries(match.id)
-      await refreshGexRecording()
-    } catch {
-      await refreshGexRecording()
+      await gexApi.removeGEXSeries(gexSeriesId)
+      controllerRef.current?.gexLevels.refreshHistory()
     } finally {
       setGexRecorderBusy(false)
     }
-  }, [refreshGexRecording])
+  }, [gexSeriesId])
 
   /* ── boot ──────────────────────────────────────────────────────────────── */
 
