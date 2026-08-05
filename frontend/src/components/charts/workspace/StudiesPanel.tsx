@@ -38,6 +38,14 @@ export interface StudiesPanelProps {
   gex: GexLevelsConfig
   /** Quality notes from the newest snapshot, shown under the settings. */
   gexNotes?: string[]
+  /** How many recorded points the current contract has, or null before the first history fetch. */
+  gexHistoryPoints?: number | null
+  /** Whether this contract is on the recorder's watchlist. */
+  gexRecording?: boolean
+  /** A watchlist mutation is in flight - disables the buttons rather than double-firing. */
+  gexRecorderBusy?: boolean
+  onGexRecord?(): void
+  onGexStopRecording?(): void
   /** False when the charted instrument has no option chain. */
   gexAvailable?: boolean
   onGex(patch: Partial<GexLevelsConfig>): void
@@ -456,6 +464,42 @@ export function StudiesPanel(p: StudiesPanelProps) {
               )}
             </>
           )}
+          <Field label="Gamma bands" hint="The same three levels, through time">
+            <TinySelect
+              value={p.gex.showBands ? 'show' : 'hide'}
+              onChange={(e) => p.onGex({ showBands: e.target.value === 'show' })}
+            >
+              <option value="hide">Hide</option>
+              <option value="show">Show</option>
+            </TinySelect>
+          </Field>
+          {/* Bands draw from RECORDED history, so unlike every other control
+           * here they can be switched on and legitimately show nothing. The
+           * block below is what stops that reading as a broken feature: it says
+           * whether this contract is being recorded and offers to start. */}
+          {p.gex.showBands && (
+            <>
+              <Field label="Look back" hint="How far the bands reach">
+                <TinySelect
+                  value={String(p.gex.bandsLookbackHours)}
+                  onChange={(e) => p.onGex({ bandsLookbackHours: Number(e.target.value) })}
+                >
+                  <option value="1">1 hour</option>
+                  <option value="3">3 hours</option>
+                  <option value="6">6 hours</option>
+                  <option value="24">1 day</option>
+                  <option value="72">3 days</option>
+                </TinySelect>
+              </Field>
+              <GexRecorderNotice
+                pointCount={p.gexHistoryPoints}
+                recording={p.gexRecording}
+                busy={p.gexRecorderBusy}
+                onRecord={p.onGexRecord}
+                onStopRecording={p.onGexStopRecording}
+              />
+            </>
+          )}
           <Field label="Readout card" hint="The numbers panel over the chart">
             <TinySelect
               value={p.gex.showDashboard ? 'show' : 'hide'}
@@ -503,6 +547,85 @@ export function StudiesPanel(p: StudiesPanelProps) {
           </dl>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Says whether the charted contract is being recorded, and offers to start.
+ *
+ * Gamma Bands is the only control in this panel that can be switched on and
+ * legitimately draw nothing: the levels come from the server's snapshot
+ * recorder, whose watchlist ships EMPTY so an upgrade never starts polling a
+ * broker on a schedule nobody asked for. Without this block that reads as a
+ * broken feature, and the only way to fix it would be to find the API and curl
+ * it.
+ *
+ * Three states, deliberately distinguishable: not recorded (offer to start),
+ * recording but nothing stored yet (the first minute, so say so rather than
+ * looking identical to "not recorded"), and recording with history.
+ */
+function GexRecorderNotice({
+  pointCount,
+  recording,
+  busy,
+  onRecord,
+  onStopRecording,
+}: {
+  pointCount?: number | null
+  recording?: boolean
+  busy?: boolean
+  onRecord?(): void
+  onStopRecording?(): void
+}) {
+  // null means no history request has come back yet - saying "not recorded"
+  // during that window would be a guess, and a wrong one most of the time.
+  if (pointCount == null && !recording) {
+    return (
+      <p className="rounded-md border border-border bg-muted/40 px-2.5 py-2 text-[11px] leading-snug text-muted-foreground">
+        Checking whether this contract is being recorded...
+      </p>
+    )
+  }
+
+  if (!recording) {
+    return (
+      <div className="space-y-1.5 rounded-md border border-border bg-muted/40 px-2.5 py-2">
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          Bands are drawn from recorded history, and this contract is not being recorded yet.
+          Recording adds one option-chain snapshot a minute during market hours.
+        </p>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onRecord}
+          className="rounded border border-border bg-background px-2 py-1 text-[11px] font-medium hover:bg-muted disabled:opacity-50"
+        >
+          {busy ? 'Starting...' : 'Record this series'}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-border bg-muted/40 px-2.5 py-2">
+      <p className="text-[11px] leading-snug text-muted-foreground">
+        {pointCount
+          ? `Recording. ${pointCount} snapshot${pointCount === 1 ? '' : 's'} in the selected window.`
+          : 'Recording. Nothing stored for this window yet - the first snapshot lands within a minute of the next market open.'}
+      </p>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onStopRecording}
+        className="rounded border border-border bg-background px-2 py-1 text-[11px] font-medium hover:bg-muted disabled:opacity-50"
+      >
+        {busy ? 'Stopping...' : 'Stop recording'}
+      </button>
+      <p className="text-[11px] leading-snug text-muted-foreground">
+        Stopping also deletes what has been recorded. There is no way to rebuild it - the option
+        chain API returns only current open interest and volume.
+      </p>
     </div>
   )
 }

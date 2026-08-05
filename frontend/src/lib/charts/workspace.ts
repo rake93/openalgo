@@ -38,7 +38,7 @@ import {
   TickBarAggregator,
 } from 'openalgo-charts'
 import { runTransform } from 'openalgo-charts/transform'
-import { type GEXLevelsResponse, gexApi } from '@/api/gex'
+import { type GEXHistoryResponse, type GEXLevelsResponse, gexApi } from '@/api/gex'
 import { getScript, getVersion } from '@/api/indicators'
 import { buildChartTheme, isLightTheme, volumeColor } from '@/lib/trading/chartTheme'
 import { displayDp, fmtPrice, money, snapTick, tickSize } from '@/lib/trading/format'
@@ -62,7 +62,6 @@ import { type DirectionVerdict, readDirection } from './direction'
 import { DrawingManager, type DrawingSnapshot } from './drawing'
 import { EventMarkerLayer, expiryEvent, type TradeRow, tradeMarkers } from './event-markers'
 import { type GexInstrument, type GexLevelsConfig, GexLevelsManager } from './gex-levels'
-import { isSilentFallback } from './indicator-profile'
 import {
   type DataWindowRow,
   IndicatorHost,
@@ -72,6 +71,7 @@ import {
   type StyleOverrides,
   type TimeframeVisibility,
 } from './indicator-host'
+import { isSilentFallback } from './indicator-profile'
 import {
   type LibraryIndicatorInstance,
   type LibraryIndicatorSnapshot,
@@ -210,6 +210,13 @@ export interface WorkspaceCallbacks {
   onProfileHover?(hover: ProfileHover | null): void
   /** A new GEX snapshot arrived, or null when the instrument has none. */
   onGexSnapshot?(snapshot: GEXLevelsResponse | null): void
+  /**
+   * Recorded GEX history arrived for Gamma Bands, or null when the instrument
+   * changed. The host uses it to tell the reader whether the current contract
+   * is being recorded at all - an empty `points` list is the normal answer for
+   * anything not on the recorder's watchlist.
+   */
+  onGexHistory?(history: GEXHistoryResponse | null): void
   /** A pane legend's gear was pressed — the host opens its settings dialog. */
   onIndicatorSettings?(instanceId: string, source: 'engine' | 'library'): void
   /** Confirm an order when the trading panel is not armed. */
@@ -258,6 +265,7 @@ function resolveCallbacks(cb: WorkspaceCallbacks): ResolvedCallbacks {
     onTrading: cb.onTrading ?? noop,
     onProfileHover: cb.onProfileHover ?? noop,
     onGexSnapshot: cb.onGexSnapshot ?? noop,
+    onGexHistory: cb.onGexHistory ?? noop,
     onIndicatorSettings: cb.onIndicatorSettings ?? noop,
     confirmOrder: cb.confirmOrder ?? (() => Promise.resolve(false)),
     onDirty: cb.onDirty ?? noop,
@@ -410,7 +418,9 @@ export class ChartWorkspaceController {
       onChange: () => this.cb.onDirty(),
       instrument: () => this.gexInstrument(),
       fetchLevels: (params, signal) => gexApi.getGEXLevels(params, signal),
+      fetchHistory: (params, signal) => gexApi.getGEXHistory(params, signal),
       onSnapshot: (snap) => this.cb.onGexSnapshot(snap),
+      onHistory: (history) => this.cb.onGexHistory(history),
       volumeProfileWidthOnSide: (side) => {
         const v = this.profiles.config.volume
         return v.enabled && v.side === side ? v.width : 0
@@ -483,6 +493,18 @@ export class ChartWorkspaceController {
    */
   get gexAvailable(): boolean {
     return this.gexInstrument() !== null
+  }
+
+  /**
+   * The underlying GEX is computed for, or null if this chart has none.
+   *
+   * Public so the host can match the charted instrument against the snapshot
+   * recorder's watchlist. Goes through the same private resolver as
+   * {@link gexAvailable}, so the panel can never offer to record a symbol the
+   * study itself would refuse to run on.
+   */
+  gexUnderlying(): GexInstrument | null {
+    return this.gexInstrument()
   }
 
   /**
@@ -1307,9 +1329,7 @@ export class ChartWorkspaceController {
       valueArea: vas.current,
       prevValueArea: vas.previous,
       barDelta: last?.delta,
-      barVolume: last
-        ? last.cells.reduce((a, c) => a + c.bidVol + c.askVol, 0)
-        : undefined,
+      barVolume: last ? last.cells.reduce((a, c) => a + c.bidVol + c.askVol, 0) : undefined,
       cvdSeries: tape.length > 0 ? cvdSeries : undefined,
     })
   }
@@ -1844,8 +1864,8 @@ export class ChartWorkspaceController {
       const version = await getVersion(item.script.scriptId, item.script.versionId)
       if (!version) {
         // The VERSION is named because a layout pins one: the script may well
- // still exist and compile fine, and "not found" without the number sends
- // people to look at the wrong thing.
+        // still exist and compile fine, and "not found" without the number sends
+        // people to look at the wrong thing.
         return {
           error: `${describeRestoreEntry(item)}: saved version ${item.script.versionId} not found`,
         }
