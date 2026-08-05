@@ -14,6 +14,7 @@ from services.gex_levels.exposure import (
     WeightBy,
     price_exposures,
     resolve_ivs,
+    weighted_legs,
 )
 
 
@@ -109,7 +110,11 @@ def scan_zero_gamma(
 
     Volatility is held at each strike's own IV, inverted once at the real
     forward. Re-inverting at every scan level would be both far more expensive
-    and wrong: the premiums observed are the ones at today's forward.
+    and wrong: the premiums observed are the ones at today's forward. The same
+    holds for the per-strike weights and strike order `weighted_legs` builds -
+    none of it depends on the hypothetical forward either, so it too is built
+    once, outside the loop, and only `price_exposures` - the part that
+    genuinely depends on F - re-runs at each of the `SCAN_STEPS` samples.
 
     Args:
         black76: The opengreeks.black76 module.
@@ -142,6 +147,12 @@ def scan_zero_gamma(
         atm_strike=atm_strike,
     )
 
+    # weighted_legs is forward-independent too - order, weights and sigmas do
+    # not change as F moves - so it is built ONCE here rather than once per
+    # scan sample. Only price_exposures, which genuinely depends on F, reruns
+    # below.
+    legs = weighted_legs(rows, ivs, weight_by)
+
     lo = forward * (1.0 - SCAN_RANGE_PCT)
     hi = forward * (1.0 + SCAN_RANGE_PCT)
     step = (hi - lo) / (SCAN_STEPS - 1)
@@ -158,12 +169,10 @@ def scan_zero_gamma(
             e.net_gex
             for e in price_exposures(
                 black76,
-                rows,
-                ivs,
+                legs,
                 forward=level,
                 t_years=t_years,
                 r=r,
-                weight_by=weight_by,
             )
         )
 

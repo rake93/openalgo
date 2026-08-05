@@ -41,7 +41,7 @@ import math
 from dataclasses import dataclass
 
 from services.gex_levels.blackscholes import safe_delta
-from services.gex_levels.exposure import ChainRow, ResolvedIVs, WeightBy, weighted_legs
+from services.gex_levels.exposure import WeightedLeg
 
 
 @dataclass(frozen=True)
@@ -68,50 +68,43 @@ class StrikeDeltaExposure:
 
 def price_delta_exposures(
     black76,
-    rows: list[ChainRow],
-    ivs: ResolvedIVs,
+    legs: list[WeightedLeg],
     forward: float,
     t_years: float,
     r: float,
-    weight_by: WeightBy,
 ) -> list[StrikeDeltaExposure]:
     """
-    Signed DEX at `forward`, using PRE-RESOLVED volatilities.
+    Signed DEX at `forward`, pricing PRE-BUILT per-strike legs.
 
-    Takes `ivs` rather than resolving its own so that a caller computing both
-    gamma and delta pays for the Black-76 inversion once. That solve is the
-    expensive half of this pipeline - two solver calls per strike - and it is
-    identical for both metrics, since `resolve_ivs` does not depend on the Greek
-    being priced.
-
-    Weighting, sorting, IV substitution and the mismatched-rows guard live in
-    `weighted_legs` (in `exposure.py`), shared with `price_exposures` - see its
-    docstring for why that sharing makes position alignment across metrics
-    structural rather than coincidental.
+    Takes `legs` - built once by `weighted_legs` in `exposure.py` - rather
+    than `rows` and `ivs` directly. `weighted_legs`' work (sorting, weighting,
+    IV substitution) does not depend on `forward`, so a caller that reprices
+    at many hypothetical forwards builds `legs` once and calls a pricer many
+    times, the way `price_exposures`' zero-gamma-scan caller does. It also
+    means a caller pricing both GEX and DEX from the same chain can pass the
+    identical `legs` list to both pricers, so the two outputs are aligned by
+    identity - one list, one order - rather than by two independently built
+    lists that merely happen to agree; see `weighted_legs`'s docstring.
 
     Args:
         black76: The opengreeks.black76 module.
-        rows: Chain rows, any order.
-        ivs: Volatilities from `resolve_ivs`, inverted at the real forward, and
-            resolved from this exact same `rows` list.
+        legs: Per-strike pricing inputs from `weighted_legs`, sorted by strike
+            ascending. This function trusts that order and does not re-sort
+            or re-validate against a chain.
         forward: The price to evaluate delta at.
         t_years: Time to expiry in years.
         r: Risk-free rate as a decimal.
-        weight_by: 'oi' for the standing book, 'volume' for today's flow.
 
     Returns:
-        One StrikeDeltaExposure per input row, sorted by strike ascending,
-        matching `price_exposures` so the two can be zipped by position.
-
-    Raises:
-        ValueError: Propagated from `weighted_legs` - see there for when.
+        One StrikeDeltaExposure per input leg, in the same order, matching
+        `price_exposures` so the two can be zipped by position.
     """
     # A non-finite forward yields no exposure rather than a profile of NaN,
     # matching price_exposures' handling of the same case.
     scale = forward if math.isfinite(forward) else 0.0
 
     out: list[StrikeDeltaExposure] = []
-    for leg in weighted_legs(rows, ivs, weight_by):
+    for leg in legs:
         call_delta = safe_delta(black76, "c", forward, leg.strike, t_years, r, leg.call_sigma)
         put_delta = safe_delta(black76, "p", forward, leg.strike, t_years, r, leg.put_sigma)
 

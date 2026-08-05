@@ -193,12 +193,17 @@ def weighted_legs(
     `delta_exposure.py`, and whatever comes after - needs the same four things
     per strike: a stable strike order, a weight per leg (OI or volume, with
     NaN/inf treated as no position), and a volatility per leg (the strike's own
-    IV where it inverted, the chain-wide fallback where it did not). Computing
-    that once here rather than once per metric means position alignment across
-    metrics - e.g. a caller zipping GEX and DEX output lists by index - holds
-    structurally, because every caller iterates the SAME sorted, validated
-    list. It is not a coincidence of two independently maintained loops that
-    happen to use the same sort key today.
+    IV where it inverted, the chain-wide fallback where it did not). Both
+    metrics derive order and membership from this one function rather than
+    from two separately maintained loops that merely happen to agree today.
+
+    That does not, by itself, guarantee two metrics stay aligned - two calls
+    to `weighted_legs`, even with identical inputs, return equal but distinct
+    lists. Alignment becomes an identity guarantee only when a caller that
+    prices more than one metric calls `weighted_legs` ONCE and passes that
+    same list to every pricer, as `scan_zero_gamma` does for its 60 samples of
+    `price_exposures`. That is the pattern any future caller zipping two
+    metrics' outputs by index should follow.
 
     A strike whose own premium would not invert is still priced, with the
     chain's fallback volatility, rather than dropped. Dropping it would move
@@ -260,53 +265,42 @@ def weighted_legs(
 
 def price_exposures(
     black76,
-    rows: list[ChainRow],
-    ivs: ResolvedIVs,
+    legs: list[WeightedLeg],
     forward: float,
     t_years: float,
     r: float,
-    weight_by: WeightBy,
 ) -> list[StrikeExposure]:
     """
-    Signed GEX at `forward`, using PRE-RESOLVED volatilities.
+    Signed GEX at `forward`, pricing PRE-BUILT per-strike legs.
 
-    `forward` is what gamma is evaluated at and may be hypothetical; `ivs` must
-    have been resolved at the real forward. That asymmetry is the whole point of
-    the seam. Gamma genuinely depends on where the underlying sits, so the scan
-    has to move F. Implied volatility does not: it was inverted out of premiums
-    the market quoted at one particular forward, and re-deriving it against a
-    price the market never traded at yields a number with no meaning - and, far
-    enough away, no solution at all.
-
-    Weighting, sorting, IV substitution and the mismatched-rows guard live in
-    `weighted_legs`, shared with every other exposure metric priced from the
-    same chain - see its docstring for why that sharing matters.
+    `forward` is what gamma is evaluated at and may be hypothetical; `legs`
+    must have come from `weighted_legs` run at the real forward. That
+    asymmetry is the whole point of the seam. Gamma genuinely depends on where
+    the underlying sits, so a scan across hypothetical forwards has to move F.
+    Nothing `weighted_legs` computes does: the strike order, weights and
+    volatilities were derived from premiums the market quoted at one real
+    forward, so they are built once and this function alone re-runs per
+    sample - see `scan_zero_gamma`, which calls `weighted_legs` once and this
+    function `SCAN_STEPS` times.
 
     Args:
         black76: The opengreeks.black76 module.
-        rows: Chain rows, any order.
-        ivs: Volatilities from `resolve_ivs`, inverted at the real forward.
-            MUST have been resolved from this exact same `rows` list -
-            `forward` here may be hypothetical (the zero-gamma scan moves it),
-            but `ivs` may not: it is only ever valid at the real forward it was
-            inverted at.
+        legs: Per-strike pricing inputs from `weighted_legs`, sorted by strike
+            ascending. This function trusts that order and does not re-sort
+            or re-validate against a chain.
         forward: The price to evaluate gamma at. May be hypothetical.
         t_years: Time to expiry in years.
         r: Risk-free rate as a decimal.
-        weight_by: 'oi' for the standing book, 'volume' for today's flow.
 
     Returns:
-        One StrikeExposure per input row, sorted by strike ascending.
-
-    Raises:
-        ValueError: Propagated from `weighted_legs` - see there for when.
+        One StrikeExposure per input leg, in the same order.
     """
     # Converts unit gamma into currency delta change per 1% move. A non-finite
     # forward yields no exposure rather than a profile of NaN.
     scale_per_percent = forward * forward * _ONE_PERCENT if math.isfinite(forward) else 0.0
 
     out: list[StrikeExposure] = []
-    for leg in weighted_legs(rows, ivs, weight_by):
+    for leg in legs:
         call_gamma = safe_gamma(black76, "c", forward, leg.strike, t_years, r, leg.call_sigma)
         put_gamma = safe_gamma(black76, "p", forward, leg.strike, t_years, r, leg.put_sigma)
 
@@ -345,11 +339,11 @@ def compute_exposures(
     weight_by: WeightBy,
 ) -> list[StrikeExposure]:
     """
-    Resolve and price at the same forward - the single-shot path.
+    Resolve, weight and price at the same forward - the single-shot path.
 
     This is what every caller wants except the zero-gamma scan, which needs to
-    resolve once and price many times; see `price_exposures` for why the two
-    halves must not share a forward there.
+    resolve and weight once and price many times; see `price_exposures` for
+    why that split exists and holds no forward of its own.
 
     Args:
         black76: The opengreeks.black76 module.
@@ -364,7 +358,8 @@ def compute_exposures(
         One StrikeExposure per input row, sorted by strike ascending.
 
     Raises:
-        ValueError: If `weight_by` is neither 'oi' nor 'volume'.
+        ValueError: If `weight_by` is neither 'oi' nor 'volume'. Propagated
+            from `weighted_legs`.
     """
     ivs = resolve_ivs(
         black76,
@@ -374,14 +369,13 @@ def compute_exposures(
         r=r,
         atm_strike=atm_strike,
     )
+    legs = weighted_legs(rows, ivs, weight_by)
     return price_exposures(
         black76,
-        rows,
-        ivs,
+        legs,
         forward=forward,
         t_years=t_years,
         r=r,
-        weight_by=weight_by,
     )
 
 

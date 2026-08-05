@@ -6,7 +6,7 @@ import pytest
 
 from services.gex_levels.blackscholes import safe_delta
 from services.gex_levels.delta_exposure import StrikeDeltaExposure, price_delta_exposures
-from services.gex_levels.exposure import ChainRow, resolve_ivs
+from services.gex_levels.exposure import ChainRow, resolve_ivs, weighted_legs
 
 
 class _Delta:
@@ -130,9 +130,8 @@ def _priced(rows=None, weight_by="oi", stub=None):
     stub = stub or _Delta()
     rows = rows if rows is not None else _rows()
     ivs = resolve_ivs(stub, rows, forward=FORWARD, t_years=T_YEARS, r=RATE, atm_strike=24600.0)
-    return price_delta_exposures(
-        stub, rows, ivs, forward=FORWARD, t_years=T_YEARS, r=RATE, weight_by=weight_by
-    )
+    legs = weighted_legs(rows, ivs, weight_by)
+    return price_delta_exposures(stub, legs, forward=FORWARD, t_years=T_YEARS, r=RATE)
 
 
 def test_the_worked_example_is_exact():
@@ -198,31 +197,18 @@ def test_a_non_finite_forward_yields_no_exposure_rather_than_nan():
     stub = _Delta()
     rows = _rows()
     ivs = resolve_ivs(stub, rows, forward=FORWARD, t_years=T_YEARS, r=RATE, atm_strike=24600.0)
-    out = price_delta_exposures(
-        stub, rows, ivs, forward=math.nan, t_years=T_YEARS, r=RATE, weight_by="oi"
-    )
+    legs = weighted_legs(rows, ivs, weight_by="oi")
+    out = price_delta_exposures(stub, legs, forward=math.nan, t_years=T_YEARS, r=RATE)
     assert all(e.net_dex == 0.0 for e in out)
 
 
-def test_rows_not_matching_the_resolved_ivs_raise():
-    stub = _Delta()
-    ivs = resolve_ivs(stub, _rows(), forward=FORWARD, t_years=T_YEARS, r=RATE, atm_strike=24600.0)
-    stranger = [
-        ChainRow(
-            strike=99999.0,
-            call_price=1.0,
-            put_price=1.0,
-            call_oi=1,
-            put_oi=1,
-            call_volume=1,
-            put_volume=1,
-            lot_size=75,
-        )
-    ]
-    with pytest.raises(ValueError, match="resolve"):
-        price_delta_exposures(
-            stub, stranger, ivs, forward=FORWARD, t_years=T_YEARS, r=RATE, weight_by="oi"
-        )
+# The "rows do not match the resolved ivs" guard used to be tested here
+# directly against price_delta_exposures. It now lives entirely in
+# weighted_legs (services/gex_levels/exposure.py) - price_delta_exposures
+# takes weighted_legs' output and no longer sees rows or ivs at all, so the
+# mismatch can no longer even be constructed at this level. Coverage moved to
+# test_weighted_legs_rejects_rows_that_do_not_match_the_resolved_ivs in
+# test_gex_levels_exposure.py, which is shared by both metrics.
 
 
 def test_the_raw_deltas_are_carried_through_for_display():
@@ -235,11 +221,14 @@ def test_the_raw_deltas_are_carried_through_for_display():
 class _SigmaSensitiveDelta:
     """Delta scales with sigma, unlike `_Delta`, so IV-fallback substitution is
     observable in the output value rather than passing regardless of whether
-    the fallback actually reached `safe_delta`."""
+    the fallback actually reached `safe_delta`.
+
+    `implied_volatility` never has to handle a non-positive price itself:
+    `safe_iv` returns None for `price <= 0` before this stub is ever called,
+    which is why the 24500 put below (priced at 0.0) does not invert.
+    """
 
     def implied_volatility(self, price, F, K, r, t, flag):
-        if price <= 0:
-            return None
         return 0.30 if flag == "c" else 0.50
 
     def delta(self, flag, F, K, t, r, sigma):
@@ -310,9 +299,8 @@ def test_the_fallback_volatility_reaches_delta_for_an_unpriced_leg():
     assert ivs.put[24500.0] is None, "the put must not have inverted"
     assert ivs.fallback == pytest.approx(0.40)
 
-    out = price_delta_exposures(
-        stub, rows, ivs, forward=FORWARD, t_years=T_YEARS, r=RATE, weight_by="oi"
-    )
+    legs = weighted_legs(rows, ivs, weight_by="oi")
+    out = price_delta_exposures(stub, legs, forward=FORWARD, t_years=T_YEARS, r=RATE)
     at_24500 = next(e for e in out if e.strike == 24500.0)
     assert at_24500.put_delta == pytest.approx(-0.4 * 0.40)
 
@@ -336,6 +324,7 @@ def test_delta_is_forwarded_with_the_correct_argument_order_at_the_pricer():
         )
     ]
     ivs = resolve_ivs(stub, rows, forward=FORWARD, t_years=T_YEARS, r=RATE, atm_strike=24500.0)
-    price_delta_exposures(stub, rows, ivs, forward=FORWARD, t_years=T_YEARS, r=RATE, weight_by="oi")
+    legs = weighted_legs(rows, ivs, weight_by="oi")
+    price_delta_exposures(stub, legs, forward=FORWARD, t_years=T_YEARS, r=RATE)
     assert stub.calls[0] == ("c", FORWARD, 24500.0, T_YEARS, RATE, 0.20)
     assert stub.calls[1] == ("p", FORWARD, 24500.0, T_YEARS, RATE, 0.20)
