@@ -23,7 +23,11 @@ from flask_cors import cross_origin
 
 from database import gex_history_db
 from database.auth_db import get_api_key_for_tradingview
+from services.gex_history_service import get_gex_history
 from services.gex_levels_service import get_gex_levels
+from services.gex_recorder_service import (
+    CADENCE_SECONDS as RECORDER_CADENCE_SECONDS,
+)
 from services.gex_recorder_service import get_gex_recorder
 from services.gex_service import get_gex_data
 from utils.logging import get_logger
@@ -48,6 +52,19 @@ _EXPIRY_RULE_RE = re.compile(r"^\d{2}[A-Z]{3}\d{2}$")
 # that would undo the point of the recorder - while a recorder that is down must
 # not freeze the study on stale numbers.
 FAST_PATH_MAX_AGE_SECONDS = 120
+
+# `get_snapshots_in_range` has no row limit of its own, so the ceiling lives
+# here. At the recorder's one-per-minute cadence 20,000 points is about 53
+# sessions - far more than any band a reader can resolve on screen, and still
+# small enough to serialise. A wider window is refused by name rather than
+# streamed: a year-wide request would otherwise build ~140,000 rows in memory
+# and ship them to a browser that will draw them 3 pixels apart.
+MAX_HISTORY_POINTS = 20_000
+
+# The recorder's cadence, used only to turn a requested window into an upper
+# bound on the point count. Imported rather than restated so the two cannot
+# drift if the cadence is ever retuned.
+_CADENCE_SECONDS = max(1, RECORDER_CADENCE_SECONDS)
 
 
 def _recorded_payload(snapshot: dict, weight_by: str) -> dict:
@@ -278,6 +295,101 @@ def gex_levels():
 
     except Exception as e:
         logger.exception(f"Error in GEX Levels API: {e}")
+        return (
+            jsonify({"status": "error", "message": "An error occurred processing your request"}),
+            500,
+        )
+
+
+@gex_bp.route("/gex/api/gex-history", methods=["POST"])
+@cross_origin()
+@check_session_validity
+def gex_history():
+    """Recorded GEX levels for one contract over a time window.
+
+    Backs Gamma Bands. Reads only what the recorder already wrote - this route
+    can never cause a broker call, which is why the read service is a separate
+    module from the recorder.
+    """
+    try:
+        login_username = session.get("user")
+        if not login_username:
+            return jsonify({"status": "error", "message": "Authentication required"}), 401
+
+        data = request.get_json(silent=True) or {}
+        underlying = str(data.get("underlying") or "").strip().upper()[:20]
+        exchange = str(data.get("exchange") or "").strip().upper()[:20]
+        expiry_date = str(data.get("expiry_date") or "").strip().upper()[:10]
+        weight_by = str(data.get("weight_by") or "oi").strip().lower()[:10]
+        fields = str(data.get("fields") or "levels").strip().lower()[:10]
+
+        if not underlying or not exchange or not expiry_date:
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "underlying, exchange, and expiry_date are required",
+                }
+            ), 400
+
+        if not re.match(r"^[A-Z0-9]+$", underlying) or not re.match(r"^[A-Z0-9_]+$", exchange):
+            return jsonify({"status": "error", "message": "Invalid input format"}), 400
+
+        # A RESOLVED contract, never a rule: "nearest" identifies no single book,
+        # and history spliced across a roll would show wall jumps that are the
+        # book changing rather than the market moving.
+        if not re.match(r"^\d{2}[A-Z]{3}\d{2}$", expiry_date):
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "Invalid expiry_date format. Expected a resolved DDMMMYY expiry",
+                }
+            ), 400
+
+        try:
+            from_ts = int(data.get("from_ts"))
+            to_ts = int(data.get("to_ts"))
+        except (TypeError, ValueError):
+            return jsonify(
+                {"status": "error", "message": "from_ts and to_ts must be epoch seconds"}
+            ), 400
+
+        if from_ts < 0 or to_ts < 0:
+            return jsonify(
+                {"status": "error", "message": "from_ts and to_ts must be epoch seconds"}
+            ), 400
+
+        if from_ts > to_ts:
+            return jsonify({"status": "error", "message": "from_ts must not be after to_ts"}), 400
+
+        # Bounded here rather than in the query, and by the WINDOW rather than by
+        # truncating the result: silently returning the first N points of a wider
+        # window would draw a band that simply stops, which reads as the market
+        # going quiet. Refusing by name tells the caller to narrow it instead.
+        if (to_ts - from_ts) // _CADENCE_SECONDS > MAX_HISTORY_POINTS:
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Requested window is too wide; it could hold more than "
+                        f"{MAX_HISTORY_POINTS} recorded points. Narrow the range."
+                    ),
+                }
+            ), 400
+
+        success, response, status_code = get_gex_history(
+            underlying=underlying,
+            exchange=exchange,
+            expiry_date=expiry_date,
+            weight_by=weight_by,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            fields=fields,
+        )
+
+        return jsonify(response), status_code
+
+    except Exception as e:
+        logger.exception(f"Error in GEX History API: {e}")
         return (
             jsonify({"status": "error", "message": "An error occurred processing your request"}),
             500,
