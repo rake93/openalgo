@@ -7,8 +7,8 @@ chain, using the shared maths in `services/gex_levels/`:
     GEX_k = gamma_k(call) * OI_k(call) * F^2 * 0.01
           - gamma_k(put)  * OI_k(put)  * F^2 * 0.01
 
-This module is the IO boundary - chain fetch, forward resolution, futures
-price - and `services/gex_levels/exposure.py` is the pure maths. It is the
+This module is the IO boundary - chain fetch and forward resolution - and
+`services/gex_levels/exposure.py` is the pure maths. It is the
 same pipeline the GEX Levels chart study runs, deliberately: before this, the
 Tools page computed the same quantity three ways worse.
 
@@ -40,7 +40,6 @@ from typing import Any
 
 from services.gex_levels.expiry import expiry_datetime
 from services.gex_levels.exposure import ChainRow, compute_exposures
-from services.oi_tracker_service import _get_nearest_futures_price
 from services.option_chain_service import get_option_chain
 from services.option_greeks_service import (
     DEFAULT_INTEREST_RATES,
@@ -169,13 +168,6 @@ def get_gex_data(
                 }
             )
 
-        futures_price = _get_nearest_futures_price(
-            underlying=underlying,
-            exchange=exchange,
-            expiry_date=expiry_date,
-            api_key=api_key,
-        )
-
         total_ce_oi = sum(item["ce_oi"] for item in gex_chain)
         total_pe_oi = sum(item["pe_oi"] for item in gex_chain)
         total_ce_gex = round(sum(e.call_gex for e in exposures), 2)
@@ -190,7 +182,11 @@ def get_gex_data(
                 "status": "success",
                 "underlying": base_symbol,
                 "spot_price": spot_price,
-                "futures_price": futures_price,
+                # The forward the GEX above was actually priced off, not a
+                # separate lookup: the badge and the maths cannot disagree.
+                # None when the synthetic could not be built, which is the same
+                # condition under which F fell back to spot.
+                "forward_price": round(forward, 2) if forward else None,
                 # Display only. The page divides OI by it to show lots; it is
                 # deliberately NOT a factor in the GEX maths - see the module
                 # docstring and the note in gex_levels/exposure.py.

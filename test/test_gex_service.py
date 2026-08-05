@@ -74,7 +74,7 @@ def _chain_response(strikes=(24400, 24500, 24600, 24700, 24800), ce_oi=100000, p
 
 @contextmanager
 def _patched(chain=None, forward=FORWARD, gamma=None):
-    """Patch every IO boundary: chain fetch, forward, futures price.
+    """Patch every IO boundary: chain fetch and forward.
 
     `gamma` swaps the real black76 for a flat-gamma stub. It is patched on the
     `opengreeks` package rather than on this service because the service
@@ -88,7 +88,6 @@ def _patched(chain=None, forward=FORWARD, gamma=None):
             return_value=(True, chain_response, 200),
         ),
         patch("services.gex_service._resolve_forward_price", return_value=forward),
-        patch("services.gex_service._get_nearest_futures_price", return_value=24700.0),
     ):
         if gamma is None:
             yield
@@ -114,7 +113,6 @@ def test_the_chain_is_fetched_at_forty_five_strikes():
             return_value=(True, _chain_response(), 200),
         ) as fetch,
         patch("services.gex_service._resolve_forward_price", return_value=FORWARD),
-        patch("services.gex_service._get_nearest_futures_price", return_value=None),
     ):
         _call()
 
@@ -135,7 +133,7 @@ def test_the_payload_carries_every_field_the_frontend_reads():
         "status",
         "underlying",
         "spot_price",
-        "futures_price",
+        "forward_price",
         "lot_size",
         "atm_strike",
         "expiry_date",
@@ -152,7 +150,7 @@ def test_the_payload_carries_every_field_the_frontend_reads():
     assert payload["status"] == "success"
     assert payload["underlying"] == "NIFTY"
     assert payload["spot_price"] == SPOT
-    assert payload["futures_price"] == 24700.0
+    assert payload["forward_price"] == FORWARD
     assert payload["lot_size"] == LOT_SIZE
     assert payload["atm_strike"] == 24600.0
     assert payload["expiry_date"] == EXPIRY
@@ -270,6 +268,24 @@ def test_greeks_are_computed_against_the_forward_not_spot():
     assert [item["ce_gamma"] for item in at_forward["chain"]] != [
         item["ce_gamma"] for item in at_spot["chain"]
     ]
+
+
+def test_the_reported_forward_is_the_one_the_greeks_used():
+    """The badge used to come from a separate listed-futures lookup that could
+    disagree with the pricing forward - and in practice returned nothing at all,
+    because it filtered on SymToken.name, which is NULL for NFO rows on at least
+    one broker. It now reports the resolved forward itself, so the two cannot
+    drift apart, and it stays None rather than quietly showing spot when the
+    synthetic could not be built."""
+    with _patched(forward=FORWARD):
+        _, resolved, _ = _call()
+    with _patched(forward=None):
+        _, unresolved, _ = _call()
+
+    assert resolved["forward_price"] == FORWARD
+    assert unresolved["forward_price"] is None
+    # Not spot wearing a forward's label.
+    assert unresolved["spot_price"] == SPOT
 
 
 def test_pcr_is_put_over_call_open_interest():

@@ -16,7 +16,7 @@ export interface GEXDataResponse {
   message?: string
   underlying?: string
   spot_price?: number
-  futures_price?: number | null
+  forward_price?: number | null
   lot_size?: number
   atm_strike?: number
   expiry_date?: string

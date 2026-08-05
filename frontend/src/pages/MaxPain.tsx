@@ -398,9 +398,9 @@ export default function MaxPain() {
           <Badge variant="secondary" className="text-sm px-3 py-1">
             Spot: {maxPainData.spot_price?.toFixed(1)}
           </Badge>
-          {maxPainData.futures_price && (
+          {maxPainData.forward_price && (
             <Badge variant="secondary" className="text-sm px-3 py-1">
-              Futures: {maxPainData.futures_price.toFixed(1)}
+              Forward: {maxPainData.forward_price.toFixed(1)}
             </Badge>
           )}
           <Badge variant="secondary" className="text-sm px-3 py-1">

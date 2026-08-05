@@ -601,9 +601,9 @@ export default function GEXDashboard() {
           <Badge variant="secondary" className="text-sm px-3 py-1">
             Spot: {gexData.spot_price?.toFixed(1)}
           </Badge>
-          {gexData.futures_price && (
+          {gexData.forward_price && (
             <Badge variant="secondary" className="text-sm px-3 py-1">
-              Futures: {gexData.futures_price.toFixed(1)}
+              Forward: {gexData.forward_price.toFixed(1)}
             </Badge>
           )}
           <Badge variant="secondary" className="text-sm px-3 py-1">

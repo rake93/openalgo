@@ -11,7 +11,7 @@ export interface OIDataResponse {
   message?: string
   underlying?: string
   spot_price?: number
-  futures_price?: number | null
+  forward_price?: number | null
   lot_size?: number
   pcr_oi?: number
   pcr_volume?: number
@@ -35,7 +35,7 @@ export interface MaxPainResponse {
   message?: string
   underlying?: string
   spot_price?: number
-  futures_price?: number | null
+  forward_price?: number | null
   atm_strike?: number
   max_pain_strike?: number
   lot_size?: number

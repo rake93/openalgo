@@ -5,7 +5,7 @@ Provides Open Interest data aggregation and Max Pain calculation
 for option chains. Reuses the existing option chain service for OI data.
 
 Functions:
-    get_oi_data() - Get OI data for all strikes with PCR and futures price
+    get_oi_data() - Get OI data for all strikes with PCR and forward price
     calculate_max_pain() - Calculate max pain strike and pain distribution
 """
 
@@ -13,22 +13,34 @@ from typing import Any
 
 from database.auth_db import get_auth_token_broker
 from database.token_db_enhanced import fno_search_symbols
+from services.gex_levels.expiry import expiry_datetime
 from services.option_chain_service import get_option_chain
-from services.quotes_service import get_quotes, import_broker_module
+from services.option_greeks_service import _resolve_forward_price, get_underlying_exchange
+from services.quotes_service import import_broker_module
 from utils.constants import CRYPTO_EXCHANGES, INSTRUMENT_PERPFUT
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def _get_nearest_futures_price(
+def _resolve_display_forward(
     underlying: str, exchange: str, expiry_date: str, api_key: str
 ) -> float | None:
     """
-    Get the nearest month futures price for an underlying.
+    Per-expiry forward price, for display on OI Tracker, Max Pain and OI Range.
 
-    Searches for futures contracts matching the underlying and expiry,
-    then fetches the LTP.
+    Every F&O exchange resolves the SYNTHETIC future via the shared
+    `_resolve_forward_price` - the same number `option_greeks_service` prices
+    Black-76 off, so the badge agrees with the Greeks. CRYPTO keeps its
+    perpetual lookup, which has no expiry to build a synthetic from.
+
+    This replaced a lookup of the listed FUT contract, which never returned
+    anything on Indian exchanges. It filtered `fno_search_symbols(underlying=)`,
+    which matches on `SymToken.name`, and `name` is NULL for NFO rows on at
+    least one broker's master contract - so the primary lookup AND the
+    nearest-month fallback both came back empty and the pages silently dropped
+    the badge. A weekly expiry could never have matched the primary lookup
+    anyway: weeklies have no listed future. Put-call parity has neither problem.
 
     Args:
         underlying: Base symbol (e.g., NIFTY, BANKNIFTY)
@@ -37,7 +49,7 @@ def _get_nearest_futures_price(
         api_key: OpenAlgo API key
 
     Returns:
-        Futures LTP or None if not found
+        Forward price, or None when it cannot be resolved (pages hide the badge)
     """
     try:
         if exchange.upper() in CRYPTO_EXCHANGES:
@@ -55,7 +67,7 @@ def _get_nearest_futures_price(
             # CRYPTO: bypass validate_symbol_exchange (in-memory cache miss → 400)
             auth_token, broker = get_auth_token_broker(api_key)
             if auth_token is None:
-                logger.warning(f"Could not retrieve auth token for CRYPTO futures quote")
+                logger.warning("Could not retrieve auth token for CRYPTO futures quote")
                 return None
             logger.info(f"Fetching perpetual futures price for {fut_symbol} on {fut_exchange} via broker={broker}")
             broker_module = import_broker_module(broker)
@@ -65,55 +77,16 @@ def _get_nearest_futures_price(
                 return quote_response["data"].get("ltp")
             return None
 
-        # Indian exchanges: convert DDMMMYY to DD-MMM-YY for database lookup
-        expiry_formatted = f"{expiry_date[:2]}-{expiry_date[2:5]}-{expiry_date[5:]}".upper()
-
-        # Search for futures contract matching this expiry
-        futures = fno_search_symbols(
-            underlying=underlying,
-            exchange=exchange,
-            instrumenttype="FUT",
-            expiry=expiry_formatted,
-            limit=1,
+        expiry_dt = expiry_datetime(expiry_date, exchange)
+        return _resolve_forward_price(
+            underlying,
+            exchange,
+            get_underlying_exchange(underlying, exchange),
+            expiry_dt,
+            api_key,
         )
-
-        if not futures:
-            # Try without expiry filter to get nearest futures
-            futures = fno_search_symbols(
-                underlying=underlying,
-                exchange=exchange,
-                instrumenttype="FUT",
-                limit=10,
-            )
-            if not futures:
-                logger.warning(f"No futures contracts found for {underlying} on {exchange}")
-                return None
-
-            # Sort by expiry to get nearest
-            from datetime import datetime
-
-            def parse_expiry(exp_str: str) -> datetime:
-                try:
-                    return datetime.strptime(exp_str, "%d-%b-%y")
-                except (ValueError, TypeError):
-                    return datetime.max
-
-            futures.sort(key=lambda f: parse_expiry(f.get("expiry", "")))
-
-        fut_symbol = futures[0]["symbol"]
-        fut_exchange = futures[0]["exchange"]
-
-        logger.info(f"Fetching futures price for {fut_symbol} on {fut_exchange}")
-        success, quote_response, _ = get_quotes(
-            symbol=fut_symbol, exchange=fut_exchange, api_key=api_key
-        )
-
-        if success and "data" in quote_response:
-            return quote_response["data"].get("ltp")
-
-        return None
     except Exception as e:
-        logger.warning(f"Error fetching futures price: {e}")
+        logger.warning(f"Error resolving forward price: {e}")
         return None
 
 
@@ -194,9 +167,9 @@ def get_oi_data(
                 }
             )
 
-        # Get futures price (single get_quotes call)
+        # Per-expiry forward for display.
         # exchange is already the options exchange (NFO/BFO) from the frontend
-        futures_price = _get_nearest_futures_price(
+        forward_price = _resolve_display_forward(
             underlying=underlying,
             exchange=exchange,
             expiry_date=expiry_date,
@@ -209,7 +182,7 @@ def get_oi_data(
                 "status": "success",
                 "underlying": chain_response.get("underlying", underlying),
                 "spot_price": spot_price,
-                "futures_price": futures_price,
+                "forward_price": forward_price,
                 "lot_size": lot_size or 1,
                 "pcr_oi": pcr_oi,
                 "pcr_volume": pcr_volume,
@@ -319,7 +292,7 @@ def calculate_max_pain(
                 "status": "success",
                 "underlying": oi_response.get("underlying", underlying),
                 "spot_price": oi_response.get("spot_price"),
-                "futures_price": oi_response.get("futures_price"),
+                "forward_price": oi_response.get("forward_price"),
                 "atm_strike": oi_response.get("atm_strike"),
                 "max_pain_strike": max_pain_strike,
                 "lot_size": lot_size,

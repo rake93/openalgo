@@ -428,9 +428,9 @@ export default function OITracker() {
           <Badge variant="secondary" className="text-sm px-3 py-1">
             Spot: {oiData.spot_price?.toFixed(1)}
           </Badge>
-          {oiData.futures_price && (
+          {oiData.forward_price && (
             <Badge variant="secondary" className="text-sm px-3 py-1">
-              Futures: {oiData.futures_price.toFixed(1)}
+              Forward: {oiData.forward_price.toFixed(1)}
             </Badge>
           )}
           <Badge variant="secondary" className="text-sm px-3 py-1">
