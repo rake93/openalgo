@@ -23,8 +23,9 @@ directly - so this module follows that same shape.
 from dataclasses import asdict
 from typing import Any
 
+from services.gex_levels.delta_exposure import price_delta_exposures
 from services.gex_levels.expiry import expiry_datetime
-from services.gex_levels.exposure import ChainRow, compute_exposures
+from services.gex_levels.exposure import ChainRow, price_exposures, resolve_ivs, weighted_legs
 from services.gex_levels.levels import find_walls, scan_zero_gamma
 from services.gex_levels.quality import assess_quality
 from services.gex_levels.sentiment import read_sentiment
@@ -149,15 +150,24 @@ def get_gex_levels(
 
         rows = _build_chain_rows(full_chain)
 
-        exposures = compute_exposures(
+        # Resolved once and priced twice. resolve_ivs does not depend on which
+        # Greek is being priced, and it is the expensive half of this pipeline
+        # - two solver calls per strike - so delta exposure costs no extra
+        # inversion and no extra broker call.
+        ivs = resolve_ivs(
             black76,
             rows,
             forward=F,
             t_years=t_years,
             r=r,
             atm_strike=atm_strike,
-            weight_by=weight_by,
         )
+        # Built ONCE and handed to both pricers. The zip below then walks two
+        # lists derived from the same object rather than two merely equal ones,
+        # so a strike's gamma and its delta cannot drift apart.
+        legs = weighted_legs(rows, ivs, weight_by)
+        exposures = price_exposures(black76, legs, forward=F, t_years=t_years, r=r)
+        delta_exposures = price_delta_exposures(black76, legs, forward=F, t_years=t_years, r=r)
         walls = find_walls(exposures)
         zero_gamma = scan_zero_gamma(
             black76,
@@ -210,14 +220,20 @@ def get_gex_levels(
                 # The per-strike profile the chart's bar column is drawn from.
                 # Without it the study renders levels but no distribution, so a
                 # trader cannot see how concentrated a wall actually is.
+                # Both metrics on every strike. Both pricers walk the same
+                # `legs` list, so zip pairs them correctly; strict=True because
+                # a length mismatch is a bug, not something to truncate.
                 "strikes": [
                     {
                         "strike": e.strike,
                         "call_gex": round(e.call_gex, 2),
                         "put_gex": round(e.put_gex, 2),
                         "net_gex": round(e.net_gex, 2),
+                        "call_dex": round(d.call_dex, 2),
+                        "put_dex": round(d.put_dex, 2),
+                        "net_dex": round(d.net_dex, 2),
                     }
-                    for e in exposures
+                    for e, d in zip(exposures, delta_exposures, strict=True)
                 ],
                 "total_call_gex": round(total_call_gex, 2),
                 "total_put_gex": round(total_put_gex, 2),

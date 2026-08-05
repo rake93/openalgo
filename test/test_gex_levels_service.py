@@ -235,7 +235,15 @@ def test_the_strike_profile_is_returned_with_one_entry_per_strike():
 
     assert len(payload["strikes"]) == payload["quality"]["strikes_used"]
     for row in payload["strikes"]:
-        assert set(row) == {"strike", "call_gex", "put_gex", "net_gex"}
+        assert set(row) == {
+            "strike",
+            "call_gex",
+            "put_gex",
+            "net_gex",
+            "call_dex",
+            "put_dex",
+            "net_dex",
+        }
 
 
 def test_the_totals_agree_with_the_per_strike_profile():
@@ -254,3 +262,38 @@ def test_the_totals_agree_with_the_per_strike_profile():
     assert payload["net_gex"] == pytest.approx(
         payload["total_call_gex"] + payload["total_put_gex"], rel=1e-6
     )
+
+
+def test_every_strike_carries_delta_exposure_alongside_gamma():
+    """The Metric toggle switches which field the bar column reads, so both
+    must be present on every strike of the same payload - not fetched twice."""
+    chain, forward = _patched()
+    with chain, forward:
+        ok, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
+
+    assert ok is True
+    assert payload["strikes"]
+    for item in payload["strikes"]:
+        assert set(item) == {
+            "strike",
+            "call_gex",
+            "put_gex",
+            "net_gex",
+            "call_dex",
+            "put_dex",
+            "net_dex",
+        }
+
+
+def test_delta_exposure_is_signed_by_leg_not_by_dealer_convention():
+    """Deep strikes must straddle zero: a low strike is call-dominant (both
+    deltas near +1 and 0) and a high strike put-dominant (near 0 and -1). If
+    the dealer sign flip is ever applied to delta, every strike turns positive
+    and this fails."""
+    chain, forward = _patched()
+    with chain, forward:
+        _, payload, _ = get_gex_levels("NIFTY", "NFO", EXPIRY, "key", weight_by="oi")
+
+    net = [item["net_dex"] for item in payload["strikes"]]
+    assert any(v < 0 for v in net), f"no negative net_dex in {net}"
+    assert any(v > 0 for v in net), f"no positive net_dex in {net}"
