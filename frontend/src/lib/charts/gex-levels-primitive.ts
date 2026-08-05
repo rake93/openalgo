@@ -66,6 +66,8 @@ const EDGE_MARKER_LENGTH_PX = 72
 const MIN_BAR_ROW_HEIGHT_PX = 1
 const DEFAULT_BAR_ROW_HEIGHT_PX = 6
 const MAX_BAR_ROW_HEIGHT_PX = 14
+/** Gap in px (before dpr scaling) between the plot top and the metric caption drawn above the bar column. */
+const BAR_CAPTION_TOP_PX = 14
 
 /**
  * Format a price the way the rest of the GEX dashboard does: an index/stock
@@ -75,6 +77,23 @@ const MAX_BAR_ROW_HEIGHT_PX = 14
  */
 export function formatGexPrice(price: number): string {
   return Number.isInteger(price) ? price.toFixed(0) : price.toFixed(2)
+}
+
+/**
+ * Caption drawn above the bar column so the active metric is never left to
+ * be inferred from bar shape or colour.
+ *
+ * Every other line in the study - Call Wall, Put Wall, Zero-Gamma - is
+ * computed server-side from gamma regardless of this setting; only the bar
+ * column's source flips. Delta additionally inverts the frame of reference:
+ * DEX is the open-interest book's delta (see
+ * `services/gex_levels/delta_exposure.py`), so a positive (call-coloured)
+ * bar means the book is long, where under gamma the same colour means
+ * dealers are long. Always returning a label - not just for delta - means
+ * its absence never has to be interpreted as "this is gamma".
+ */
+export function gexMetricCaption(metric: GexMetric): string {
+  return metric === 'delta' ? 'Delta (book)' : 'Gamma (dealer)'
 }
 
 export interface GexLevelPlacement {
@@ -341,6 +360,17 @@ export class GexLevelsPrimitive implements IPrimitive {
     const barThickness = Math.max(1, rowHeight * dpr - dpr)
 
     ctx.save()
+
+    // Metric caption, at full opacity and drawn before the alpha below is
+    // touched - see gexMetricCaption for why this label is not optional.
+    // Centred on axisX (the same x the zero-reference dashed line below
+    // uses) so it reads as the header of the column beneath it.
+    ctx.font = `${LABEL_FONT_PX * dpr}px system-ui, -apple-system, sans-serif`
+    ctx.textBaseline = 'top'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = rc.theme.axisText
+    ctx.fillText(gexMetricCaption(this.opts.metric), axisX, BAR_CAPTION_TOP_PX * dpr)
+
     ctx.globalAlpha = 0.75
     for (const b of bars) {
       const y = b.y * dpr

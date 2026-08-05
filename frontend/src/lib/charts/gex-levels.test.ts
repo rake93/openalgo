@@ -60,4 +60,23 @@ describe('GexLevelsManager settings', () => {
     config.weightBy = 'volume'
     expect(manager.config.weightBy).toBe('oi')
   })
+
+  it('defaults to gamma and carries the metric through a snapshot round-trip', () => {
+    const { manager } = make()
+    expect(DEFAULT_GEX_LEVELS_SETTINGS.metric).toBe('gamma')
+    expect(manager.config.metric).toBe('gamma')
+
+    manager.setConfig({ metric: 'delta' })
+    expect(manager.config.metric).toBe('delta')
+
+    const { manager: restored } = make()
+    restored.restore(manager.snapshot())
+    expect(restored.config.metric).toBe('delta')
+  })
+
+  it('fills the metric from the defaults when restoring a snapshot saved before it existed', () => {
+    const { manager } = make()
+    manager.restore({ enabled: true })
+    expect(manager.config.metric).toBe('gamma')
+  })
 })

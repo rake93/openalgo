@@ -11,7 +11,28 @@ import {
   computeGexBarGeometry,
   computeGexLevelPlacement,
   formatGexPrice,
+  gexMetricCaption,
 } from './gex-levels-primitive'
+
+describe('gexMetricCaption', () => {
+  it('labels gamma with the dealer frame', () => {
+    expect(gexMetricCaption('gamma')).toBe('Gamma (dealer)')
+  })
+
+  it('labels delta with the book frame, not the dealer frame', () => {
+    // DEX is the open-interest book's delta, not the dealer's - dealers hold
+    // the negation (services/gex_levels/delta_exposure.py). Getting this
+    // label backwards would make the caption actively mislead rather than
+    // just being absent.
+    expect(gexMetricCaption('delta')).toBe('Delta (book)')
+  })
+
+  it('always returns a non-empty label for both metrics, so absence is never mistaken for gamma', () => {
+    for (const metric of ['gamma', 'delta'] as const) {
+      expect(gexMetricCaption(metric).length).toBeGreaterThan(0)
+    }
+  })
+})
 
 describe('formatGexPrice', () => {
   it('drops decimals for a whole-number price', () => {

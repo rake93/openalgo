@@ -264,4 +264,22 @@ describe('GexLevelsManager primitive lifecycle', () => {
     expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ columnInset: 0 }))
     setOptionsSpy.mockRestore()
   })
+
+  it('propagates the metric setting to the primitive - a select that updates state but never reaches primitiveOptions() would pass every other test while doing nothing on screen', () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexLevelsPrimitive.prototype, 'setOptions')
+    const { manager } = make()
+    manager.attachChart(chart as never)
+
+    // Default (gamma) must reach the primitive on creation, not just live in
+    // manager.config.
+    manager.setConfig({ enabled: true })
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ metric: 'gamma' }))
+
+    // And an explicit change to delta must reach it too.
+    manager.setConfig({ metric: 'delta' })
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(expect.objectContaining({ metric: 'delta' }))
+
+    setOptionsSpy.mockRestore()
+  })
 })

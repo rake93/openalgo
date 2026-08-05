@@ -20,7 +20,7 @@
  */
 
 import type { Chart } from 'openalgo-charts'
-import type { GEXLevelsResponse, GEXWeightBy } from '@/api/gex'
+import type { GEXLevelsResponse, GEXWeightBy, GexMetric } from '@/api/gex'
 import { GexLevelsPrimitive, type GexLevelsPrimitiveOptions } from './gex-levels-primitive'
 
 export interface GexLevelsConfig {
@@ -33,6 +33,12 @@ export interface GexLevelsConfig {
    * not a fix for staleness, so it is an opt-in rather than the default.
    */
   weightBy: GEXWeightBy
+  /**
+   * Which Greek the strike-bar profile is drawn from. Gamma says how hard
+   * dealers must hedge; delta says which way the book already leans. Both
+   * arrive in one payload, so switching costs no refetch.
+   */
+  metric: GexMetric
   /** Empty string means the nearest expiry, resolved server-side. */
   expiry: string
   showBars: boolean
@@ -48,6 +54,7 @@ export interface GexLevelsConfig {
 export const DEFAULT_GEX_LEVELS_SETTINGS: GexLevelsConfig = {
   enabled: false,
   weightBy: 'oi',
+  metric: 'gamma',
   expiry: '',
   showBars: true,
   showCallWall: true,
@@ -318,6 +325,7 @@ export class GexLevelsManager {
       showZeroGamma: c.showZeroGamma,
       side: c.side,
       columnWidth: c.columnWidth,
+      metric: c.metric,
       // Volume Profile anchors to the same edge at 150px by default; the bar
       // column steps inward by that width so the two do not overlap. The
       // manager does not know about Volume Profile itself, so this is left to

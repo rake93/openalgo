@@ -406,6 +406,15 @@ export function StudiesPanel(p: StudiesPanelProps) {
               it — its price axis is premium, not the underlying's price.
             </p>
           )}
+          <Field label="Metric" hint="Gamma is hedging pressure; delta is which way the book leans">
+            <TinySelect
+              value={p.gex.metric}
+              onChange={(e) => p.onGex({ metric: e.target.value as GexLevelsConfig['metric'] })}
+            >
+              <option value="gamma">Gamma (GEX)</option>
+              <option value="delta">Delta (DEX)</option>
+            </TinySelect>
+          </Field>
           <Field label="Weight by" hint="OI is the standing book; volume is today's flow">
             <TinySelect
               value={p.gex.weightBy}
