@@ -554,6 +554,62 @@ unit for OI across the whole page.
 the same state `/gex` was in before this work. The units convention above is
 currently pinned by nothing.
 
+### The Futures badge was dead on four pages — found live, fixed 2026-08-05
+
+Running the units check against a live chain returned `futures_price=None`, and
+the badge is rendered `{oiData.futures_price && ...}`, so it had been silently
+absent rather than visibly broken.
+
+`_get_nearest_futures_price` looked up the **listed FUT contract** and failed
+two independent ways:
+
+1. It filtered `fno_search_symbols(underlying=...)`, which matches on
+   `SymToken.name` (`database/symbol.py:174`). **`name` is NULL for this
+   broker's NFO rows**, so the primary lookup and the nearest-month fallback
+   both returned zero rows — the fallback that exists for exactly this case was
+   dead too. Measured: `fno_search_symbols_db(underlying='NIFTY', exchange='NFO',
+   instrumenttype='FUT')` returns 0, the same call without `underlying` returns
+   10.
+2. Weeklies have no listed future at all, so the primary lookup could never
+   match on a weekly expiry regardless of (1).
+
+Both are structural, not broker-specific bad luck, and neither applies to the
+synthetic future. Same underlying, same weekly expiry, live:
+
+```
+_get_nearest_futures_price('NIFTY','NFO','11AUG26')      -> None
+_resolve_forward_price('NIFTY','NFO','NSE_INDEX',11AUG26) -> 24612.7
+```
+
+**Blast radius was four pages, including `/gex` itself.** `gex_service.py`
+imported `_get_nearest_futures_price` from `oi_tracker_service` for its display
+field while separately resolving a forward for its own pricing — so the migrated
+page spent a broker round-trip to display nothing, and could in principle have
+shown a number that disagreed with the forward its GEX was computed from.
+OI Tracker, Max Pain and OI Range all read the same `get_oi_data` field.
+
+The fix:
+
+- `_get_nearest_futures_price` became `_resolve_display_forward`, delegating to
+  the shared `_resolve_forward_price`. **The CRYPTO perpetual branch is kept
+  verbatim** — a perpetual has no expiry to build a synthetic from, and it could
+  not be tested here.
+- `gex_service` now reports the forward it already resolved, deleting both the
+  import and the redundant broker call. The badge and the maths can no longer
+  disagree.
+- The response key is **`forward_price`, not `futures_price`**, and the badge
+  reads "Forward:". On a weekly there is no future, and the number is a synthetic
+  built from put-call parity — labelling it "Futures" would repeat the OI Tracker
+  mistake in a different place. This also aligns the `/gex` page with the GEX
+  Levels study response, which already used `forward_price`.
+- `forward_price` stays `None` when the synthetic cannot be built, so the badge
+  hides rather than showing spot under a forward's label. Pinned by
+  `test_the_reported_forward_is_the_one_the_greeks_used`.
+
+Worth noting how this was found: it is invisible to every test that stubs the
+chain, and invisible on the page because the badge is conditionally rendered.
+Only a live call surfaced it.
+
 ### What is left
 
 - `services/gamma_density_service.py` is largely unaffected: it already
