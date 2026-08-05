@@ -14,6 +14,7 @@ import {
   formatGexPrice,
   GexLevelsPrimitive,
   GexMetricCaptionPrimitive,
+  gexHitTestStrike,
   gexMetricCaption,
 } from './gex-levels-primitive'
 
@@ -228,6 +229,48 @@ describe('computeGexBarGeometry', () => {
     const delta = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'delta')
     expect(delta.bars.find((b) => b.strike === 24_200)?.length).toBe(120)
     expect(delta.bars.find((b) => b.strike === 24_400)?.length).toBe(60)
+  })
+})
+
+describe('gexHitTestStrike', () => {
+  const bars = [
+    { strike: 24_500, y: 100, length: 60, positive: true },
+    { strike: 24_600, y: 200, length: 120, positive: true },
+  ]
+
+  it('returns the strike whose row band contains the point', () => {
+    // rowHeight 40 means each band is +/-20px around its y.
+    expect(gexHitTestStrike(bars, 40, 300, 120, 'right', 0, 290, 195)?.strike).toBe(24_600)
+  })
+
+  it('returns null above and below every band', () => {
+    expect(gexHitTestStrike(bars, 40, 300, 120, 'right', 0, 290, 150)).toBeNull()
+  })
+
+  it('returns null outside the column horizontally', () => {
+    // axisX for plotWidth 300, columnWidth 120, right side is 180; the column
+    // spans 60..300. A point at x=20 is in the chart body, not the column.
+    expect(gexHitTestStrike(bars, 40, 300, 120, 'right', 0, 20, 195)).toBeNull()
+  })
+
+  it('picks the nearer row when two bands touch', () => {
+    const touching = [
+      { strike: 24_500, y: 100, length: 60, positive: true },
+      { strike: 24_600, y: 140, length: 60, positive: true },
+    ]
+    expect(gexHitTestStrike(touching, 40, 300, 120, 'right', 0, 290, 121)?.strike).toBe(24_600)
+    expect(gexHitTestStrike(touching, 40, 300, 120, 'right', 0, 290, 119)?.strike).toBe(24_500)
+  })
+
+  it('returns null for an empty bar list', () => {
+    expect(gexHitTestStrike([], 40, 300, 120, 'right', 0, 290, 195)).toBeNull()
+  })
+
+  it('hit-tests the left-anchored column too', () => {
+    // side 'left' puts the axis at columnInset + columnWidth = 120, so the
+    // column spans 0..240 and a point at x=290 is now OUTSIDE it.
+    expect(gexHitTestStrike(bars, 40, 300, 120, 'left', 0, 290, 195)).toBeNull()
+    expect(gexHitTestStrike(bars, 40, 300, 120, 'left', 0, 200, 195)?.strike).toBe(24_600)
   })
 })
 

@@ -299,6 +299,62 @@ export function gexColumnAxisX(
   )
 }
 
+/**
+ * Which strike row (if any) sits under a pointer position - the pure
+ * geometry a later task uses to show a hover readout for the bar column.
+ *
+ * Works entirely in **CSS-pixel space**, dpr-independent: `x`/`y` are meant
+ * to be the same coordinates a pointer/mouse event already carries relative
+ * to the plot, and they line up directly with `GexBarGeometry.y`/`.length`
+ * as `computeGexBarGeometry` produces them - both are pre-dpr-scaling
+ * values, the same as `rowHeight`. `drawBars` only multiplies by `dpr` at
+ * the point it actually issues canvas calls, so nothing here needs a dpr
+ * argument; internally it calls `gexColumnAxisX(..., 1)` to get that same
+ * axis position back in CSS pixels rather than the device-pixel value
+ * `drawBars` uses.
+ *
+ * Delegates the column's horizontal extent to `gexColumnAxisX` instead of
+ * re-deriving `side`/`columnInset`/`columnWidth` into an axis position here
+ * - the same reason `GexMetricCaptionPrimitive` shares it with `drawBars`
+ * rather than recomputing its own: two independent formulas for "where is
+ * the axis" are two things that can silently drift apart, one of which
+ * would leave the hover region misaligned with the bars actually painted.
+ *
+ * A bar's row band is `rowHeight` tall, centred on its `y` (matching how
+ * `drawBars` centres `barThickness` on `b.y * dpr`). When a point falls in
+ * more than one band - adjacent bands can touch or, at extreme zoom,
+ * overlap - the band whose centre is nearest the point wins, rather than
+ * whichever bar happens to come first in the array.
+ */
+export function gexHitTestStrike(
+  bars: readonly GexBarGeometry[],
+  rowHeight: number,
+  plotWidth: number,
+  columnWidth: number,
+  side: 'left' | 'right',
+  columnInset: number,
+  x: number,
+  y: number
+): GexBarGeometry | null {
+  if (bars.length === 0) return null
+
+  const axisX = gexColumnAxisX(plotWidth, side, columnInset, columnWidth, 1)
+  if (x < axisX - columnWidth || x > axisX + columnWidth) return null
+
+  const halfRow = rowHeight / 2
+  let best: GexBarGeometry | null = null
+  let bestDistance = Infinity
+  for (const bar of bars) {
+    if (y < bar.y - halfRow || y > bar.y + halfRow) continue
+    const distance = Math.abs(y - bar.y)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = bar
+    }
+  }
+  return best
+}
+
 export class GexLevelsPrimitive implements IPrimitive {
   private opts: GexLevelsPrimitiveOptions
   private data: GEXLevelsResponse | null = null
