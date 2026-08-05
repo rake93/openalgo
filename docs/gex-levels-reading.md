@@ -23,6 +23,14 @@ than a contradiction. The one reading that is **never** available is direction
 from Regime: Amplifying means moves extend in *both* directions, so it is not a
 short signal.
 
+Both verdicts are gamma-only, always — that holds even if the chart's strike
+bars are currently set to delta. Switching the bar column to delta does not
+switch what is underneath it: Regime, the walls and Sentiment keep reading the
+gamma profile described in this document. See
+[Metric: gamma or delta](chart-workspace-studies.md#metric-gamma-or-delta) for
+what the bar-column setting does and does not change, and for the sign flip
+between the open-interest book's delta and the dealer's.
+
 ---
 
 ## 2. Why Regime flips back and forth — the number is a near-cancellation

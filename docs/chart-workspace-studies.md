@@ -244,6 +244,54 @@ Open interest is the default because NSE and BSE disseminate it **live** in the
 tick feed. The US argument for volume-weighted GEX — that official open interest
 is a prior-night snapshot that goes stale intraday — does not apply here.
 
+### Metric: gamma or delta
+
+The strike-bar column can be drawn from either of two exposures. Gamma reads
+how hard dealers must hedge as the underlying moves — the same profile Call
+Wall, Put Wall, Zero-Gamma and Regime are built from. Delta reads which way the
+open-interest book already leans — a snapshot of standing position, not of
+hedging pressure.
+
+| Metric | What the bar shows | Positive means |
+|---|---|---|
+| **Gamma (GEX)** (default) | Dealer hedging pressure at that strike | Dealers are long gamma there — stabilising |
+| **Delta (DEX)** | The open-interest book's own delta at that strike | Calls dominate the strike; the book is net long delta |
+
+Both are computed from the same option-chain fetch and arrive together — every
+strike in the response carries `net_gex` and `net_dex` at once. Switching
+`Metric` just re-renders from data already on the client: no refetch, no extra
+broker call.
+
+**Read the sign the right way round.** DEX is the open-interest **book's**
+delta, not the dealer's. Positive DEX means calls dominate that strike and the
+book is net long delta — dealers are the counterparty, so dealer delta is the
+negation of what the bar shows (see `services/gex_levels/delta_exposure.py`'s
+module docstring). Everything else on this chart, including the walls and
+Regime, speaks in the dealer's frame. Delta bars are the one thing on screen
+that speaks in the opposite frame, so a reader who learned this study on gamma
+will read the delta colours backwards unless they remember the flip.
+
+**Only the bars change.** Call Wall, Put Wall and Zero-Gamma are computed
+server-side from gamma alone, regardless of which metric is selected, and
+Regime is the sign of net GEX, never net DEX. The readout card's Call GEX, Put
+GEX and Net GEX rows stay the same for both settings too. One consequence
+follows directly: under gamma, the longest bar in the column always lands on
+one of the two walls — Call or Put, whichever carries the larger magnitude —
+because a wall is by definition the strike of the profile's algebraic extreme,
+and every bar is scaled against that same peak. Switch to delta and that
+coincidence breaks: the walls stay exactly where gamma put them, but the
+tallest DEX bar sits wherever the open-interest book is most lopsided, which is
+generally a different strike.
+
+Three on-screen labels keep this unambiguous: a `Bars` row in the readout card
+reading `Gamma (GEX)` or `Delta (DEX)`, an amber caveat in the card whenever
+delta is selected, and a caption under the bar column itself reading
+`Gamma · dealer sign` or `Delta · OI-book sign`.
+
+`Metric` sits in the Studies panel directly after `Strike bars`, and disappears
+when `Strike bars` is `Levels only` — with no bars drawn, there is nothing for
+it to affect.
+
 ### What it works on
 
 | Charted instrument | GEX Levels |
