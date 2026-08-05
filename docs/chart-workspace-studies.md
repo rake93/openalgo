@@ -157,6 +157,11 @@ Also available as pure functions for custom overlays or alerts:
 
 ## GEX Levels
 
+> For **how to read** these verdicts — what makes Regime flip, why Sentiment is
+> hard to push bullish on an index, and worked examples from a live chain — see
+> [gex-levels-reading.md](gex-levels-reading.md). This section defines what each
+> level is.
+
 Where dealer gamma is concentrated, drawn on the price axis. Unlike the other
 three studies this is **not derived from the chart's bars at all** — it is a live
 option-chain snapshot for the charted instrument's *underlying*, refreshed on a
