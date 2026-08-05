@@ -264,7 +264,7 @@ def prepare_snapshot(
     # delta exposure and the second weighting both cost no extra inversion and
     # no extra broker call.
     ivs = resolve_ivs(
-        _black76(),
+        load_black76(),
         rows,
         forward=F,
         t_years=t_years,
@@ -417,7 +417,7 @@ def build_snapshot(black76, inputs: SnapshotInputs, weight_by: WeightBy) -> dict
     }
 
 
-def _black76():
+def load_black76():
     """Import the pricing library, or raise a message the caller can surface.
 
     Kept behind a function because `opengreeks` is an optional dependency: the
@@ -477,7 +477,7 @@ def get_gex_levels(
         )
 
     try:
-        black76 = _black76()
+        black76 = load_black76()
         inputs = fetch_snapshot_inputs(
             underlying,
             exchange,
