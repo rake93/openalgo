@@ -29,7 +29,7 @@ Profile**, **Gamma Bands**, **GEX Heatmap**, and **Delta Exposure**.
 
 | Feature | Needs | Why |
 | --- | --- | --- |
-| **Gamma Profile** | Nothing new | The service already returns signed `net_gex` per strike and the chart already draws a thin strike-bar column. This is a renderer upgrade. |
+| **Gamma Profile** | Almost nothing | **Already built.** `gex-levels-primitive.ts:drawBars` already renders the two-sided histogram: bars diverging from a zero axis line, positive right in the call colour, negative left in the put colour, peak-scaled, with a configurable column width. Only the metric toggle is missing. |
 | **Delta Exposure (DEX)** | One pure module | Same pipeline, delta instead of gamma, reusing IVs already inverted. No extra broker call. |
 | **Gamma Bands** | Snapshot history | The three levels plotted through time. Cannot be drawn from one snapshot at any price. |
 | **GEX Heatmap** | Snapshot history | The whole per-strike profile as a time x strike grid. Same. |
@@ -341,24 +341,50 @@ to prevent.
 
 ### The one piece of maths that is not a mechanical port
 
-DEX's sign convention is genuinely contested in the literature, and unlike gamma
-it is **not symmetric between the legs**: call delta is positive, put delta is
-negative, so naively mirroring the GEX formula makes both legs add and yields a
-quantity that is always positive and says nothing directional.
+**Corrected 2026-08-05 during planning.** This section originally said DEX should
+reuse `DEALER_CALL_SIGN` / `DEALER_PUT_SIGN`. Working the algebra shows that
+degenerates, so the rule below replaces it.
 
-The implementation must therefore (a) reuse the same dealer-position assumption
-already encoded in `DEALER_CALL_SIGN` / `DEALER_PUT_SIGN`, (b) pin the resulting
-sign with a **worked numeric example in the test**, not a property assertion, and
-(c) document in the module docstring what a positive DEX means. Getting this
-wrong produces a plausible-looking chart that is directionally inverted — the
-exact failure mode that made Regime deliberately say Suppressive/Amplifying
-instead of bullish/bearish.
+Gamma is positive for both legs, so GEX's sign comes entirely from the
+dealer-position constants. Delta already carries its own sign — measured against
+the live chain, `black76.delta` returns `+0.551` for a call and `-0.448` for the
+matching put. Mirroring the GEX formula therefore gives
+
+```
++1 * delta_call * w_call   ->  positive
+-1 * delta_put  * w_put    ->  negative x negative -> ALSO positive
+```
+
+so every strike contributes positively and the total is **always positive**,
+carrying no directional information at all. That is why no published DEX is
+defined that way: the dealer-long-calls/short-puts approximation exists to make
+*gamma's* sign meaningful and does not transfer.
+
+DEX is therefore defined as the net delta of the open-interest book, with each
+leg's natural delta sign and **no dealer flip**:
+
+```
+DEX_k = (delta_call_k * w_call_k + delta_put_k * w_put_k) * F
+```
+
+Positive means calls dominate at that strike and the book is net long delta;
+negative means puts dominate. Dealers are the counterparty, so dealer delta is
+the negation — which the module docstring must state, because "delta exposure"
+alone does not say whose.
+
+The implementation must (a) use the rule above rather than the exposure module's
+dealer constants, (b) pin the sign with a **worked numeric example** in the test
+rather than a property assertion, and (c) state in the docstring whose delta is
+being reported. Getting this wrong produces a plausible-looking chart that is
+directionally inverted — the exact failure mode that made Regime deliberately say
+Suppressive/Amplifying instead of bullish/bearish.
 
 ## 10. Delivery order
 
 Phased so value lands before the infrastructure is finished:
 
-1. **Gamma Profile** — renderer only, no backend change.
+1. **Gamma Profile** — already built (see §2); only the Metric toggle it feeds is
+   outstanding, so this folds into step 2.
 2. **Delta Exposure** — `delta_exposure.py`, plumbed through the live path and the
    Profile via the Metric toggle.
 3. **Storage and recorder** — `gex_history_db`, `gex_recorder_service`,
