@@ -992,6 +992,17 @@ column of invisible slivers rather than an obviously wrong chart."
 - Modify: `frontend/src/components/charts/workspace/StudiesPanel.tsx`
 - Test: `frontend/src/lib/charts/gex-levels.test.ts`
 
+> **Two requirements added during execution, from Task 6's code review.**
+>
+> **1. The active metric MUST be labelled on screen. This is a blocker, not a nicety.** Everything else in the study stays gamma when the user selects Delta — the Call Wall, Put Wall and Zero-Gamma levels are computed server-side from gamma only, Regime is the sign of net GEX, and the readout card shows gamma totals. Two concrete misreads follow:
+>
+> - Under gamma the Call Wall line lands on the longest bar *by construction*, because `find_walls` takes `max(net_gex)` and the geometry scales the peak to exactly `columnWidth`. Under delta that coincidence breaks: the line sits partway up a mid-length bar while a full-length bar sits elsewhere with no line on it, in the same colour. A user reads that as a second wall the dashboard forgot, or as a broken study.
+> - Worse, **the frame of reference silently inverts.** The whole study speaks in the dealer frame — a Call Wall is a dealer-gamma concentration, Regime describes what dealers do. But DEX is the open-interest *book's* delta (see `delta_exposure.py`'s module docstring), so dealers hold the negation. Green means "dealers long" under gamma and "dealers short" under delta. Someone who learned the palette on gamma reads delta exactly backwards.
+>
+> Layering a delta profile under fixed gamma levels is legitimate — comparing one profile against a stable set of reference levels is useful. Doing it without saying so is not.
+>
+> **2. `primitiveOptions()` in `gex-levels.ts` returns a `Partial<GexLevelsPrimitiveOptions>`, so omitting `metric` there is not a type error.** Adding `metric` to `GexLevelsConfig` and wiring the select without adding the line in `primitiveOptions()` yields a control that compiles, renders, updates state, and does nothing at all. Verify the wiring end to end, not just that it typechecks.
+
 - [ ] **Step 1: Write the failing test**
 
 Append to `frontend/src/lib/charts/gex-levels.test.ts`, inside the existing `describe('GexLevelsManager settings', ...)` block. That file's harness is `make()`, returning `{ manager, onChange, fetchLevels }`; the accessor is `manager.config` and the mutator is `manager.setConfig(...)`:
