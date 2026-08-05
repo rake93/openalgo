@@ -911,6 +911,14 @@ export class GexMetricCaptionPrimitive implements IPrimitive {
    * with a drag callback registered) and would turn a press-and-pan over the
    * bar column into a drag attempt instead. A plain hit only sets hover
    * state - see `_onPointerDown` in `openalgo-charts`' `chart.ts`.
+   *
+   * One inherent side effect of opting into hit-testing at all: drawing
+   * tools are themselves primitives with their own `hitTest`
+   * (`openalgo-charts`' `draw/layer.ts`), and a click that lands on nothing
+   * is how a click deselects the active drawing. A click over the bar column
+   * now always resolves to a non-null hit here, so it no longer reads as
+   * "clicked on nothing" - an active drawing selected elsewhere on the pane
+   * stays selected. Not a bug to fix, just worth not rediscovering.
    */
   hitTest(x: number, y: number, rc: PrimitiveRenderContext): PrimitiveHit | null {
     if (!this.opts.showBars || !this.opts.hasBars) return null
@@ -961,6 +969,15 @@ export class GexMetricCaptionPrimitive implements IPrimitive {
 
     const dpr = rc.dpr
     const headerColor = (rc.theme as { text?: string }).text ?? rc.theme.axisText
+    // Exact float equality, not a fuzzy comparison - correct today because
+    // `gex_levels_service.py` serialises both `strike` (per level) and
+    // `call_wall`/`put_wall` from the same `exposures` list, all unrounded
+    // (`find_walls` selects `call.strike` straight from those objects). It
+    // stops being correct the moment either side of this comparison starts
+    // being rounded or independently recomputed - `zero_gamma` right next to
+    // it in that same service IS rounded, which is exactly the kind of edit
+    // that would make a wall stop matching its strike here with no error,
+    // just a "Call wall"/"Put wall" line that quietly stops appearing.
     const lines = gexReadoutLines({
       strike: bar.strike,
       netGex: strikeData.net_gex,
@@ -969,14 +986,29 @@ export class GexMetricCaptionPrimitive implements IPrimitive {
       isCallWall: this.opts.callWall != null && bar.strike === this.opts.callWall,
       isPutWall: this.opts.putWall != null && bar.strike === this.opts.putWall,
       headerColor,
+      // Reaches across to GexLevelsPrimitive's own option defaults rather
+      // than carrying a second callColor/putColor on this primitive's own
+      // options: neither GexLevelsConfig nor primitiveOptions()/
+      // captionOptions() (gex-levels.ts) ever actually override these two -
+      // they are fixed constants dressed up as options, not real per-instance
+      // config. Duplicating them here would be a second field to keep in
+      // sync with a value that never changes, for a sync path that does not
+      // exist. If callColor/putColor ever become genuinely configurable,
+      // this reach-across is what breaks (readout colours drift from the
+      // bars'), and that is the signal to add them to GexOverlayOptions too.
       callColor: DEFAULT_GEX_PRIMITIVE_OPTIONS.callColor,
       putColor: DEFAULT_GEX_PRIMITIVE_OPTIONS.putColor,
     })
 
     const boxHeight = READOUT_PADDING_PX * 2 + lines.length * READOUT_LINE_HEIGHT_PX
+    // Clamped so a pane narrower than the box's usual width (a small chart,
+    // a stacked multi-pane layout) still fits the box on screen instead of
+    // computeGexReadoutBoxGeometry being handed a boxWidth it can only clamp
+    // the position of, never shrink.
+    const boxWidth = Math.min(READOUT_BOX_WIDTH_PX, rc.plotWidth)
     const box = computeGexReadoutBoxGeometry({
       rowY: bar.y,
-      boxWidth: READOUT_BOX_WIDTH_PX,
+      boxWidth,
       boxHeight,
       plotWidth: rc.plotWidth,
       plotHeight: rc.plotHeight,
@@ -996,15 +1028,31 @@ export class GexMetricCaptionPrimitive implements IPrimitive {
     ctx.fillStyle = rc.theme.background
     ctx.fillRect(bx, by, bw, bh)
     ctx.globalAlpha = 1
+
     ctx.strokeStyle = rc.theme.axisLine
     ctx.lineWidth = Math.max(1, Math.round(dpr))
+    // Crisp 1px border, matching drawLevel/drawBars: snap the origin to a
+    // half-pixel boundary so the stroke lands on a single device pixel
+    // instead of straddling two and blurring, and reset any inherited dash
+    // state before stroking - the same defensive setLineDash([]) drawLevel
+    // does, even though this primitive never dashes anything itself; nothing
+    // here guarantees the canvas arrived in this draw() call un-dashed by
+    // whatever a previous primitive last set.
+    ctx.setLineDash([])
+    ctx.strokeRect(
+      Math.round(bx) + 0.5,
+      Math.round(by) + 0.5,
+      Math.max(1, Math.round(bw)),
+      Math.max(1, Math.round(bh))
+    )
+
+    // Clip to the box before the text loop, after the border (clipping first
+    // would shave the outer half of the border's own stroke) - an overlong
+    // line then truncates at the box edge instead of overflowing bare onto
+    // the chart.
     ctx.beginPath()
-    ctx.moveTo(bx, by)
-    ctx.lineTo(bx + bw, by)
-    ctx.lineTo(bx + bw, by + bh)
-    ctx.lineTo(bx, by + bh)
-    ctx.lineTo(bx, by)
-    ctx.stroke()
+    ctx.rect(bx, by, bw, bh)
+    ctx.clip()
 
     ctx.textAlign = 'left'
     ctx.textBaseline = 'top'

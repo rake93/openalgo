@@ -12,6 +12,7 @@ import {
   computeGexBarGeometry,
   computeGexLevelPlacement,
   computeGexReadoutBoxGeometry,
+  DEFAULT_GEX_PRIMITIVE_OPTIONS,
   formatGexMoney,
   formatGexPrice,
   GexLevelsPrimitive,
@@ -340,10 +341,6 @@ describe('gexStrikeExternalId', () => {
     expect(gexStrikeExternalId(292.5)).toBe('gex-strike-292.5')
   })
 
-  it('is stable for the same strike, so hitTest and the draw-time lookup always agree', () => {
-    expect(gexStrikeExternalId(24_600)).toBe(gexStrikeExternalId(24_600))
-  })
-
   it('does not collide two different strikes', () => {
     expect(gexStrikeExternalId(24_000)).not.toBe(gexStrikeExternalId(24_600))
   })
@@ -494,23 +491,55 @@ describe('computeGexReadoutBoxGeometry', () => {
 
 /**
  * `draw()` only ever calls a handful of `CanvasRenderingContext2D` methods -
- * this records the ones that matter (`fillText`) and no-ops the rest, which
- * is enough to stand in for a real canvas without jsdom needing one.
+ * this records the ones that matter and no-ops the rest, which is enough to
+ * stand in for a real canvas without jsdom needing one.
+ *
+ * `fillText`/`fillRect`/`strokeRect` capture the mutable style state
+ * (`globalAlpha`, `font`, `fillStyle`, `strokeStyle`) at the moment they are
+ * called, not just their own arguments - a real canvas applies whatever the
+ * context's current state is at draw time, and a primitive that sets
+ * `globalAlpha` then draws is only correctly tested if the fake records what
+ * was actually in effect. A version of this fake that dropped that state let
+ * a flipped emphasis ternary (dimming the active row and brightening the
+ * inactive one) pass all 308 tests - only the text content was ever checked.
  */
 function fakeCtx() {
-  const texts: { text: string; x: number; y: number }[] = []
+  const texts: { text: string; x: number; y: number; alpha: number; font: string; fill: string }[] =
+    []
+  const fillRects: { x: number; y: number; w: number; h: number; alpha: number; fill: string }[] =
+    []
+  const strokeRects: {
+    x: number
+    y: number
+    w: number
+    h: number
+    stroke: string
+    dash: readonly number[]
+  }[] = []
+  let dash: readonly number[] = []
   return {
     texts,
+    fillRects,
+    strokeRects,
     save() {},
     restore() {},
     beginPath() {},
     moveTo() {},
     lineTo() {},
     stroke() {},
-    setLineDash() {},
-    fillRect() {},
+    rect() {},
+    clip() {},
+    setLineDash(segments: readonly number[]) {
+      dash = segments
+    },
+    fillRect(x: number, y: number, w: number, h: number) {
+      fillRects.push({ x, y, w, h, alpha: this.globalAlpha, fill: this.fillStyle })
+    },
+    strokeRect(x: number, y: number, w: number, h: number) {
+      strokeRects.push({ x, y, w, h, stroke: this.strokeStyle, dash })
+    },
     fillText(text: string, x: number, y: number) {
-      texts.push({ text, x, y })
+      texts.push({ text, x, y, alpha: this.globalAlpha, font: this.font, fill: this.fillStyle })
     },
     strokeStyle: '',
     lineWidth: 0,
@@ -781,5 +810,74 @@ describe('GexMetricCaptionPrimitive draw hover readout', () => {
     const primitive = makePrimitive({ showBars: false })
     primitive.draw(ctx as never, rc(gexStrikeExternalId(24_200)) as never)
     expect(ctx.texts).toEqual([])
+  })
+
+  it('paints the active metric row at full alpha and the inactive metric row dimmed, and flips which is which when metric flips', () => {
+    // The text-content assertions above pass even if the emphasis->alpha
+    // mapping is inverted, as long as gexReadoutLines' own emphasis boolean
+    // is right - this is the assertion that would actually catch that.
+    const ctxGamma = fakeCtx()
+    makePrimitive({ metric: 'gamma' }).draw(
+      ctxGamma as never,
+      rc(gexStrikeExternalId(24_200)) as never
+    )
+    const [, header, gexRow, dexRow] = ctxGamma.texts
+    expect(header?.alpha).toBe(1)
+    expect(gexRow?.alpha).toBe(1) // GEX is the active row under gamma
+    expect(dexRow?.alpha).toBe(0.6) // DEX is dimmed
+
+    const ctxDelta = fakeCtx()
+    makePrimitive({ metric: 'delta' }).draw(
+      ctxDelta as never,
+      rc(gexStrikeExternalId(24_200)) as never
+    )
+    const [, , gexRow2, dexRow2] = ctxDelta.texts
+    expect(gexRow2?.alpha).toBe(0.6) // now GEX is dimmed
+    expect(dexRow2?.alpha).toBe(1) // DEX is the active row under delta
+  })
+
+  it('sign-codes the GEX and DEX rows independently - the whole point of the feature is that they can point opposite ways for the same strike', () => {
+    const ctx = fakeCtx()
+    const primitive = makePrimitive({
+      strikes: [strike(24_200, -50, 80)], // negative gamma, positive delta
+      callWall: null,
+    })
+    primitive.draw(ctx as never, rc(gexStrikeExternalId(24_200)) as never)
+    const [, , gexRow, dexRow] = ctx.texts
+    expect(gexRow?.fill).toBe(DEFAULT_GEX_PRIMITIVE_OPTIONS.putColor)
+    expect(dexRow?.fill).toBe(DEFAULT_GEX_PRIMITIVE_OPTIONS.callColor)
+  })
+
+  it('pins the readout box rect at dpr 2 - background fill and a pixel-snapped, undashed border', () => {
+    const ctx = fakeCtx()
+    const primitive = makePrimitive()
+    const twoXRc = fakeRc({
+      plotWidth: 300,
+      plotHeight: 400,
+      dpr: 2,
+      priceScale: { priceToY: linearPriceToY },
+      hoverId: gexStrikeExternalId(24_200),
+    })
+    primitive.draw(ctx as never, twoXRc as never)
+
+    // box (CSS px) = {x:0, y:280, width:150, height:80} - see
+    // computeGexReadoutBoxGeometry's own tests for that derivation; here it
+    // is only the *dpr and pixel-snapping* on top of it under scrutiny.
+    expect(ctx.fillRects).toContainEqual({
+      x: 0,
+      y: 560,
+      w: 300,
+      h: 160,
+      alpha: 0.92,
+      fill: '#111111',
+    })
+    expect(ctx.strokeRects).toContainEqual({
+      x: 0.5,
+      y: 560.5,
+      w: 300,
+      h: 160,
+      stroke: '#333333',
+      dash: [],
+    })
   })
 })

@@ -434,7 +434,7 @@ describe('GexLevelsManager primitive lifecycle', () => {
     setOptionsSpy.mockRestore()
   })
 
-  it('feeds the strikes and walls to the caption primitive once a snapshot arrives - the hover readout needs both', () => {
+  it('does not feed the previous (nonexistent) strikes or walls to the caption primitive before the first fetch resolves', () => {
     const chart = chartDouble()
     const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
     const strikes = [{ strike: 24_200, net_gex: 100, net_dex: 40 }]
@@ -453,9 +453,10 @@ describe('GexLevelsManager primitive lifecycle', () => {
     expect(setOptionsSpy).toHaveBeenLastCalledWith(
       expect.objectContaining({ strikes: [], callWall: null, putWall: null })
     )
+    setOptionsSpy.mockRestore()
   })
 
-  it('feeds the strikes and walls to the caption primitive once a snapshot arrives - the hover readout needs both (after refresh)', async () => {
+  it('feeds the strikes and walls to the caption primitive once a snapshot arrives - the hover readout needs both', async () => {
     const chart = chartDouble()
     const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
     const strikes = [{ strike: 24_200, net_gex: 100, net_dex: 40 }]
