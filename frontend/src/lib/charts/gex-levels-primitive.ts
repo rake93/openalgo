@@ -18,7 +18,7 @@
  */
 
 import type { IPrimitive, PrimitiveHost, PrimitiveRenderContext, ZOrder } from 'openalgo-charts'
-import type { GEXLevelsResponse, GEXStrikeLevel } from '@/api/gex'
+import type { GEXLevelsResponse, GEXStrikeLevel, GexMetric } from '@/api/gex'
 
 export interface GexLevelsPrimitiveOptions {
   showBars: boolean
@@ -29,6 +29,8 @@ export interface GexLevelsPrimitiveOptions {
   side: 'left' | 'right'
   /** Maximum single-direction bar length in px (before dpr scaling), like Volume Profile's `width`. */
   columnWidth: number
+  /** Which Greek the bar column is drawn from. */
+  metric: GexMetric
   /** Extra px inset so the column clears a same-side volume profile. */
   columnInset: number
   callColor: string
@@ -43,6 +45,7 @@ export const DEFAULT_GEX_PRIMITIVE_OPTIONS: GexLevelsPrimitiveOptions = {
   showZeroGamma: true,
   side: 'right',
   columnWidth: 120,
+  metric: 'gamma',
   columnInset: 0,
   callColor: '#26a69a',
   putColor: '#ef5350',
@@ -132,7 +135,8 @@ export function computeGexBarGeometry(
   strikes: readonly GEXStrikeLevel[],
   priceToY: (price: number) => number,
   plotHeight: number,
-  columnWidth: number
+  columnWidth: number,
+  metric: GexMetric = 'gamma'
 ): { bars: GexBarGeometry[]; rowHeight: number } {
   // Clipping to the visible range is what replaces an autoscale contribution:
   // the study never asks the pane to widen to fit the strike window, it only
@@ -143,15 +147,21 @@ export function computeGexBarGeometry(
   })
   if (visible.length === 0) return { bars: [], rowHeight: 0 }
 
-  const peak = visible.reduce((max, s) => Math.max(max, Math.abs(s.net_gex)), 0)
+  // One accessor for both the peak and the per-bar value, so the two can never
+  // be scaled against different metrics. Gamma and delta exposure differ by
+  // orders of magnitude, so a mismatch would render every bar as an invisible
+  // sliver rather than as an obviously wrong chart.
+  const exposureOf = (s: GEXStrikeLevel): number => (metric === 'delta' ? s.net_dex : s.net_gex)
+
+  const peak = visible.reduce((max, s) => Math.max(max, Math.abs(exposureOf(s))), 0)
   // An all-zero snapshot has no signal to scale against; dividing by 0 would
   // turn every bar into NaN-width geometry instead of the "nothing to show"
   // it actually is, so a non-positive peak forces every length to 0.
   const bars: GexBarGeometry[] = visible.map((s) => ({
     strike: s.strike,
     y: priceToY(s.strike),
-    length: peak > 0 ? (Math.abs(s.net_gex) / peak) * columnWidth : 0,
-    positive: s.net_gex >= 0,
+    length: peak > 0 ? (Math.abs(exposureOf(s)) / peak) * columnWidth : 0,
+    positive: exposureOf(s) >= 0,
   }))
 
   return { bars, rowHeight: strikeRowHeightPx(strikes, priceToY) }
@@ -307,7 +317,8 @@ export class GexLevelsPrimitive implements IPrimitive {
       strikes,
       priceToY,
       rc.plotHeight,
-      this.opts.columnWidth
+      this.opts.columnWidth,
+      this.opts.metric
     )
     if (bars.length === 0) return
 

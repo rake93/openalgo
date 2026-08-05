@@ -153,4 +153,38 @@ describe('computeGexBarGeometry', () => {
     const { rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
     expect(rowHeight).toBeLessThanOrEqual(14)
   })
+
+  it('reads net_gex under the gamma metric and net_dex under delta', () => {
+    // Opposite signs between the two metrics, so a geometry that ignored the
+    // metric would be caught by the direction flip alone.
+    const strikes = [strike(24_200, 100, -80), strike(24_400, -50, 40)]
+
+    const gamma = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'gamma')
+    expect(gamma.bars.map((b) => b.positive)).toEqual([true, false])
+    // Gamma peak is 100, so 24_200 is the full column.
+    expect(gamma.bars.find((b) => b.strike === 24_200)?.length).toBe(120)
+
+    const delta = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'delta')
+    expect(delta.bars.map((b) => b.positive)).toEqual([false, true])
+    // Delta peak is 80, so 24_200 is full and 24_400 is half.
+    expect(delta.bars.find((b) => b.strike === 24_200)?.length).toBe(120)
+    expect(delta.bars.find((b) => b.strike === 24_400)?.length).toBe(60)
+  })
+
+  it('scales each metric against its own peak, never the other metric', () => {
+    const strikes = [strike(24_200, 1000, 10), strike(24_400, 500, 5)]
+
+    const delta = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'delta')
+    // If the gamma peak of 1000 leaked into the delta scaling these would be
+    // 1.2px and 0.6px - a column of invisible slivers rather than an
+    // obviously wrong chart, which is why it needs pinning.
+    expect(delta.bars.find((b) => b.strike === 24_200)?.length).toBe(120)
+    expect(delta.bars.find((b) => b.strike === 24_400)?.length).toBe(60)
+  })
+
+  it('defaults to the gamma metric when none is passed', () => {
+    const strikes = [strike(24_200, 100, -80)]
+    const { bars } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120)
+    expect(bars[0]?.positive).toBe(true)
+  })
 })
