@@ -76,12 +76,15 @@ describe('computeGexLevelPlacement', () => {
   })
 })
 
-function strike(strikePrice: number, netGex: number): GEXStrikeLevel {
+function strike(strikePrice: number, netGex: number, netDex: number = netGex): GEXStrikeLevel {
   return {
     strike: strikePrice,
     call_gex: Math.max(netGex, 0),
     put_gex: Math.max(-netGex, 0),
     net_gex: netGex,
+    call_dex: Math.max(netDex, 0),
+    put_dex: Math.min(netDex, 0),
+    net_dex: netDex,
   }
 }
 
