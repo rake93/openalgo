@@ -433,4 +433,77 @@ describe('GexLevelsManager primitive lifecycle', () => {
 
     setOptionsSpy.mockRestore()
   })
+
+  it('feeds the strikes and walls to the caption primitive once a snapshot arrives - the hover readout needs both', () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const strikes = [{ strike: 24_200, net_gex: 100, net_dex: 40 }]
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+      fetchLevels: vi
+        .fn()
+        .mockResolvedValue({ status: 'success', strikes, call_wall: 24_800, put_wall: 23_600 }),
+    })
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+
+    // Before the fetch resolves, there is no snapshot yet - the caption must
+    // not be handed the previous (nonexistent) strikes or walls.
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ strikes: [], callWall: null, putWall: null })
+    )
+  })
+
+  it('feeds the strikes and walls to the caption primitive once a snapshot arrives - the hover readout needs both (after refresh)', async () => {
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const strikes = [{ strike: 24_200, net_gex: 100, net_dex: 40 }]
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+      fetchLevels: vi
+        .fn()
+        .mockResolvedValue({ status: 'success', strikes, call_wall: 24_800, put_wall: 23_600 }),
+    })
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    await vi.runOnlyPendingTimersAsync()
+
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ strikes, callWall: 24_800, putWall: 23_600 })
+    )
+    setOptionsSpy.mockRestore()
+  })
+
+  it('clears the strikes and walls fed to the caption primitive the instant the instrument changes', async () => {
+    let instrument: { underlying: string; exchange: string } | null = {
+      underlying: 'NIFTY',
+      exchange: 'NFO',
+    }
+    const chart = chartDouble()
+    const setOptionsSpy = vi.spyOn(GexMetricCaptionPrimitive.prototype, 'setOptions')
+    const strikes = [{ strike: 24_200, net_gex: 100, net_dex: 40 }]
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => instrument,
+      fetchLevels: vi
+        .fn()
+        .mockResolvedValue({ status: 'success', strikes, call_wall: 24_800, put_wall: 23_600 }),
+    })
+    manager.attachChart(chart as never)
+    manager.setConfig({ enabled: true })
+    await vi.runOnlyPendingTimersAsync()
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ strikes, callWall: 24_800 })
+    )
+
+    instrument = null
+    manager.instrumentChanged()
+    expect(setOptionsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ strikes: [], callWall: null, putWall: null })
+    )
+
+    setOptionsSpy.mockRestore()
+  })
 })

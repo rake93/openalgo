@@ -22,7 +22,13 @@
  * other profile overlays.
  */
 
-import type { IPrimitive, PrimitiveHost, PrimitiveRenderContext, ZOrder } from 'openalgo-charts'
+import type {
+  IPrimitive,
+  PrimitiveHit,
+  PrimitiveHost,
+  PrimitiveRenderContext,
+  ZOrder,
+} from 'openalgo-charts'
 import type { GEXLevelsResponse, GEXStrikeLevel, GexMetric } from '@/api/gex'
 
 export interface GexLevelsPrimitiveOptions {
@@ -108,6 +114,45 @@ const BAR_CAPTION_BOTTOM_PX = 12
  */
 export function formatGexPrice(price: number): string {
   return Number.isInteger(price) ? price.toFixed(0) : price.toFixed(2)
+}
+
+/**
+ * Format a GEX/DEX-scale money figure the way the rest of the study does:
+ * quoted in crore - >= 1 crore prints "X.XX Cr", >= 1 lakh prints "X.XX L",
+ * anything smaller a plain grouped integer. Sign is kept on negatives; a
+ * missing or non-finite value is an em dash, never a bare "0" or "NaN" that
+ * could be mistaken for a real reading of zero.
+ *
+ * The single formatter for every crore-scale figure the GEX study shows -
+ * `GexDashboard`'s numeric card imports this rather than keeping its own
+ * copy (it used to define an identical `formatMoney` locally; that copy is
+ * gone), and the canvas hover readout below (`gexReadoutLines`, via
+ * `formatGexSignedMoney`) reuses it too. One implementation, so a fix to the
+ * Cr/L thresholds or the rounding is never made twice.
+ */
+export function formatGexMoney(v: number | null | undefined): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—'
+  const sign = v < 0 ? '-' : ''
+  const abs = Math.abs(v)
+  if (abs >= 1e7) return `${sign}${(abs / 1e7).toFixed(2)} Cr`
+  if (abs >= 1e5) return `${sign}${(abs / 1e5).toFixed(2)} L`
+  return `${sign}${Math.round(abs).toLocaleString('en-IN')}`
+}
+
+/**
+ * Same formatting as {@link formatGexMoney}, but always signed - a leading
+ * "+" on a non-negative value too, not just the "-" `formatGexMoney` already
+ * keeps on negatives. Only the hover readout uses this: it draws GEX and DEX
+ * for the same strike side by side specifically so their signs can be
+ * compared at a glance (see the module doc comment - strike 24000 being
+ * -1318 Cr gamma but +679 Cr delta is the entire point of the feature), and
+ * an unsigned positive number there would read as ambiguous rather than as
+ * "the opposite of the row above it", which is usually the case.
+ */
+function formatGexSignedMoney(v: number | null | undefined): string {
+  const formatted = formatGexMoney(v)
+  if (v === null || v === undefined || !Number.isFinite(v) || v < 0) return formatted
+  return `+${formatted}`
 }
 
 /**
@@ -368,6 +413,142 @@ export function gexHitTestStrike(opts: {
   return best
 }
 
+/**
+ * externalId this primitive reports for a given strike's row via `hitTest`.
+ * `drawHoverReadout` resolves `rc.hoverId` back to a strike by recomputing
+ * this same id for each of the frame's bars and matching by equality, rather
+ * than parsing the id apart - both directions go through this one function,
+ * so they can never drift into disagreeing about what a given id means. (A
+ * plain template literal would in fact round-trip safely even through
+ * `Number(...)` - `String(n)` and `Number(s)` are exact inverses for every
+ * finite JS number, fractional strikes like VEDL's 292.5 included - but
+ * matching by recomputed id avoids leaning on that.)
+ */
+export function gexStrikeExternalId(strike: number): string {
+  return `gex-strike-${strike}`
+}
+
+export interface GexReadoutLine {
+  text: string
+  /**
+   * True for the strike header and whichever metric row is the study's
+   * active one; false (dimmed) for the other metric row and the wall line -
+   * so the reader's eye lands on the number the bar column is currently
+   * drawn from, while the rest still reads as available context rather than
+   * being hidden outright.
+   */
+  emphasis: boolean
+  /** Canvas fillStyle for this line - sign-coded for the metric rows (call/put colour), fixed for the header and wall lines. */
+  color: string
+}
+
+/**
+ * The hover readout's text content for one strike - always both metrics, per
+ * the module doc comment: the readout exists specifically so a trader can
+ * see a strike like 24000 is put-dominant under gamma but call-dominant
+ * under delta without switching `metric` back and forth. A wall line is
+ * appended only when the strike actually is the Call Wall or Put Wall -
+ * checked independently rather than as an if/else, so a data anomaly (both
+ * true at once) does not silently drop one instead of just looking odd.
+ *
+ * Pure and canvas-free so the exact lines can be pinned without a fake ctx;
+ * `drawHoverReadout` positions and paints exactly what this returns.
+ */
+export function gexReadoutLines(opts: {
+  strike: number
+  netGex: number
+  netDex: number
+  metric: GexMetric
+  isCallWall: boolean
+  isPutWall: boolean
+  headerColor: string
+  callColor: string
+  putColor: string
+}): GexReadoutLine[] {
+  const {
+    strike,
+    netGex,
+    netDex,
+    metric,
+    isCallWall,
+    isPutWall,
+    headerColor,
+    callColor,
+    putColor,
+  } = opts
+  const lines: GexReadoutLine[] = [
+    { text: formatGexPrice(strike), emphasis: true, color: headerColor },
+    {
+      text: `GEX  ${formatGexSignedMoney(netGex)}`,
+      emphasis: metric === 'gamma',
+      color: netGex >= 0 ? callColor : putColor,
+    },
+    {
+      text: `DEX  ${formatGexSignedMoney(netDex)}`,
+      emphasis: metric === 'delta',
+      color: netDex >= 0 ? callColor : putColor,
+    },
+  ]
+  if (isCallWall) lines.push({ text: 'Call wall', emphasis: false, color: callColor })
+  if (isPutWall) lines.push({ text: 'Put wall', emphasis: false, color: putColor })
+  return lines
+}
+
+export interface GexReadoutBoxGeometry {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * Where the hover readout box sits, in the same pre-dpr CSS-pixel space as
+ * `gexHitTestStrike` and `GexBarGeometry.y` - `drawHoverReadout` only
+ * multiplies by `dpr` at the point it issues canvas calls, matching every
+ * other geometry helper in this file.
+ *
+ * Horizontally: inset `gap` px from whichever side of the bar column has more
+ * room. The column's own footprint is `[axisX - columnWidth, axisX +
+ * columnWidth]` around its axis (bars extend both ways from it - the same
+ * span `gexHitTestStrike` treats as the column), so "more room" compares the
+ * space outside that footprint, not just an arbitrary left/right split of the
+ * plot.
+ *
+ * Vertically: centred on the hovered row's `rowY`, then clamped so the box
+ * never runs off the plot. The risk is highest at the topmost or bottommost
+ * visible strike, where a naive centred placement would put half the box
+ * outside the pane.
+ *
+ * Both axes clamp into `[0, plotDimension - boxDimension]`, with
+ * `Math.max(0, ...)` on the upper bound so a box larger than the plot still
+ * lands at 0 rather than at a negative coordinate.
+ */
+export function computeGexReadoutBoxGeometry(opts: {
+  rowY: number
+  boxWidth: number
+  boxHeight: number
+  plotWidth: number
+  plotHeight: number
+  side: 'left' | 'right'
+  columnInset: number
+  columnWidth: number
+  gap: number
+}): GexReadoutBoxGeometry {
+  const { rowY, boxWidth, boxHeight, plotWidth, plotHeight, side, columnInset, columnWidth, gap } =
+    opts
+  const axisX = gexColumnAxisX(plotWidth, side, columnInset, columnWidth, 1)
+  const roomLeft = axisX - columnWidth
+  const roomRight = plotWidth - (axisX + columnWidth)
+  const placeLeft = roomLeft > roomRight
+
+  const clamp = (v: number, max: number): number => Math.min(Math.max(v, 0), Math.max(0, max))
+  const xUnclamped = placeLeft ? axisX - columnWidth - gap - boxWidth : axisX + columnWidth + gap
+  const x = clamp(xUnclamped, plotWidth - boxWidth)
+  const y = clamp(rowY - boxHeight / 2, plotHeight - boxHeight)
+
+  return { x, y, width: boxWidth, height: boxHeight }
+}
+
 export class GexLevelsPrimitive implements IPrimitive {
   private opts: GexLevelsPrimitiveOptions
   private data: GEXLevelsResponse | null = null
@@ -571,6 +752,18 @@ export interface GexMetricCaptionOptions {
   columnWidth: number
   metric: GexMetric
   columnInset: number
+  /**
+   * The same strikes `GexLevelsPrimitive.drawBars` draws from - needed so
+   * `hitTest`/`drawHoverReadout` can recompute identical bar geometry
+   * (`computeGexBarGeometry`) and find the strike under the pointer. Not a
+   * second copy of the snapshot: the manager derives this fresh from
+   * `snapshotValue` on every `captionOptions()` call, exactly like `hasBars`
+   * already did before this primitive needed anything more than a boolean.
+   */
+  strikes: readonly GEXStrikeLevel[]
+  /** Wall prices, so the readout can append its "Call wall" / "Put wall" line. */
+  callWall: number | null
+  putWall: number | null
 }
 
 export const DEFAULT_GEX_METRIC_CAPTION_OPTIONS: GexMetricCaptionOptions = {
@@ -585,31 +778,44 @@ export const DEFAULT_GEX_METRIC_CAPTION_OPTIONS: GexMetricCaptionOptions = {
   columnWidth: 120,
   metric: 'gamma',
   columnInset: 0,
+  strikes: [],
+  callWall: null,
+  putWall: null,
 }
 
+/** Hover-readout box: a fixed width and per-row height rather than text-measured, so the box size is deterministic and testable without a canvas - like the DOM sidebar card's own fixed width. */
+const READOUT_BOX_WIDTH_PX = 150
+const READOUT_LINE_HEIGHT_PX = 16
+const READOUT_PADDING_PX = 8
+/** Gap in px between the bar column's footprint and the readout box. */
+const READOUT_GAP_PX = 10
+
 /**
- * Draws only the "which metric" label for the bar column, at `zOrder: 'top'`
- * - deliberately a second, separate `IPrimitive` rather than one more thing
- * `GexLevelsPrimitive.drawBars` paints.
+ * Draws the "which metric" label for the bar column, and - the reason this
+ * primitive now also implements `hitTest` - the per-strike hover readout, at
+ * `zOrder: 'top'`. Deliberately a second, separate `IPrimitive` rather than
+ * either of those being one more thing `GexLevelsPrimitive.drawBars` paints.
  *
  * A primitive's `zOrder()` is fixed for its entire `draw()` call - there is
  * no way for one primitive to paint part of itself behind the candles and
  * part of it in front. `GexLevelsPrimitive` is `zOrder: 'bottom'` so the
  * bars and walls sit behind price action like Volume/Market Profile; the
- * caption is exactly the opposite requirement; it is a warning label, and a
- * warning label that price action can paint over defeats its own purpose.
- * The only way to get both is two primitives. The manager (`gex-levels.ts`)
- * creates, removes and reconfigures this one in lockstep with the main
- * primitive - see `syncPrimitive()`.
+ * caption and the hover readout are exactly the opposite requirement - a
+ * warning label and a readout that price action can paint over both defeat
+ * their own purpose. The only way to get both is two primitives. The manager
+ * (`gex-levels.ts`) creates, removes and reconfigures this one in lockstep
+ * with the main primitive - see `syncPrimitive()`.
  *
- * Deliberately has no `setData`: unlike `GexLevelsPrimitive`, this primitive
- * never holds the snapshot itself. It still depends on the data - `hasBars`
- * says whether the most recent snapshot has anything worth captioning - but
- * the manager reduces that snapshot to a single boolean and passes it as a
- * plain option (`captionOptions()`), the same as `metric` or `side`. So
- * there is still nothing to blank between refreshes and no second copy of
- * the snapshot for the manager to keep in sync - only one more field on an
- * options object it was already re-pushing on every change.
+ * Still deliberately has no `setData`: unlike `GexLevelsPrimitive`, this
+ * primitive never holds the snapshot itself, even now that it needs the
+ * per-strike data (`strikes`) and the walls to hit-test and draw the
+ * readout. The manager derives all of it fresh from `snapshotValue` on every
+ * `captionOptions()` call and passes it as plain options, the same as
+ * `metric` or `side` always were - `hasBars` set this pattern before this
+ * primitive needed anything richer than a boolean. So there is still nothing
+ * to blank between refreshes and no second copy of the snapshot for the
+ * manager to keep in sync - only more fields on an options object it was
+ * already re-pushing on every change.
  */
 export class GexMetricCaptionPrimitive implements IPrimitive {
   private opts: GexMetricCaptionOptions
@@ -663,6 +869,157 @@ export class GexMetricCaptionPrimitive implements IPrimitive {
     // bare `ChartTheme` shape.
     ctx.fillStyle = (rc.theme as { text?: string }).text ?? rc.theme.axisText
     ctx.fillText(gexMetricCaption(this.opts.metric), axisX, y)
+    ctx.restore()
+
+    this.drawHoverReadout(ctx, rc)
+  }
+
+  /**
+   * Bar geometry for the current frame, shared by `hitTest` and
+   * `drawHoverReadout` - the same `computeGexBarGeometry` call
+   * `GexLevelsPrimitive.drawBars` makes (same strikes, `priceToY`,
+   * `plotHeight`, `columnWidth` and `metric`), so the hover hit region and
+   * the readout it feeds can never drift from what `drawBars` actually
+   * painted, or from each other.
+   */
+  private computeBars(rc: PrimitiveRenderContext): { bars: GexBarGeometry[]; rowHeight: number } {
+    const priceToY = (price: number): number => rc.priceScale.priceToY(price)
+    return computeGexBarGeometry(
+      this.opts.strikes,
+      priceToY,
+      rc.plotHeight,
+      this.opts.columnWidth,
+      this.opts.metric
+    )
+  }
+
+  /**
+   * Topmost hit under the pointer, in media px (pre-dpr) - see
+   * `gexHitTestStrike`'s doc comment for the coordinate space. Delegates the
+   * actual point-in-band test to it, over bar geometry recomputed by
+   * `computeBars` so the hit region can never drift from the bars
+   * `GexLevelsPrimitive.drawBars` actually painted.
+   *
+   * `distance` is the pixel gap from the pointer to the row's own y,
+   * matching how `PriceLinePrimitive.hitTest` computes it - `bestHit` picks
+   * the nearest hit across every primitive on the pane before it looks at
+   * z-order, so an actually-closer primitive still wins on a tie rather than
+   * this one winning on z-order alone.
+   *
+   * No `cursor` and no `draggable: true` here, deliberately: either arms a
+   * drag in `chart.ts` (`hit.draggable === true`, or `cursor === 'ns-resize'`
+   * with a drag callback registered) and would turn a press-and-pan over the
+   * bar column into a drag attempt instead. A plain hit only sets hover
+   * state - see `_onPointerDown` in `openalgo-charts`' `chart.ts`.
+   */
+  hitTest(x: number, y: number, rc: PrimitiveRenderContext): PrimitiveHit | null {
+    if (!this.opts.showBars || !this.opts.hasBars) return null
+    const { bars, rowHeight } = this.computeBars(rc)
+    const hit = gexHitTestStrike({
+      bars,
+      rowHeight,
+      plotWidth: rc.plotWidth,
+      columnWidth: this.opts.columnWidth,
+      side: this.opts.side,
+      columnInset: this.opts.columnInset,
+      x,
+      y,
+    })
+    if (!hit) return null
+    return {
+      externalId: gexStrikeExternalId(hit.strike),
+      zOrder: 'top',
+      distance: Math.abs(y - hit.y),
+    }
+  }
+
+  /**
+   * The per-strike readout box - drawn only when `rc.hoverId` names one of
+   * this frame's bars (see `hitTest`). Resolves the id back to a strike by
+   * recomputing bars (`computeBars`) and matching `gexStrikeExternalId` by
+   * equality rather than parsing the id apart, so the two directions can
+   * never disagree about what a given id means (see `gexStrikeExternalId`'s
+   * doc comment).
+   *
+   * Draws nothing when `showBars`/`hasBars` already gated the whole `draw()`
+   * call, when nothing is hovered, or when the hovered id does not resolve
+   * to one of this frame's bars (a stale id from the previous frame's data,
+   * momentarily, while a fresh snapshot is still in flight).
+   */
+  private drawHoverReadout(ctx: CanvasRenderingContext2D, rc: PrimitiveRenderContext): void {
+    const hoverId = rc.hoverId
+    if (!hoverId) return
+
+    const { bars } = this.computeBars(rc)
+    const bar = bars.find((b) => gexStrikeExternalId(b.strike) === hoverId)
+    if (!bar) return
+    // computeGexBarGeometry already reduced each strike to sign/length; the
+    // readout prints the actual GEX/DEX figures, so the source record is
+    // looked up again by strike rather than trying to recover them from bar.
+    const strikeData = this.opts.strikes.find((s) => s.strike === bar.strike)
+    if (!strikeData) return
+
+    const dpr = rc.dpr
+    const headerColor = (rc.theme as { text?: string }).text ?? rc.theme.axisText
+    const lines = gexReadoutLines({
+      strike: bar.strike,
+      netGex: strikeData.net_gex,
+      netDex: strikeData.net_dex,
+      metric: this.opts.metric,
+      isCallWall: this.opts.callWall != null && bar.strike === this.opts.callWall,
+      isPutWall: this.opts.putWall != null && bar.strike === this.opts.putWall,
+      headerColor,
+      callColor: DEFAULT_GEX_PRIMITIVE_OPTIONS.callColor,
+      putColor: DEFAULT_GEX_PRIMITIVE_OPTIONS.putColor,
+    })
+
+    const boxHeight = READOUT_PADDING_PX * 2 + lines.length * READOUT_LINE_HEIGHT_PX
+    const box = computeGexReadoutBoxGeometry({
+      rowY: bar.y,
+      boxWidth: READOUT_BOX_WIDTH_PX,
+      boxHeight,
+      plotWidth: rc.plotWidth,
+      plotHeight: rc.plotHeight,
+      side: this.opts.side,
+      columnInset: this.opts.columnInset,
+      columnWidth: this.opts.columnWidth,
+      gap: READOUT_GAP_PX,
+    })
+
+    const bx = box.x * dpr
+    const by = box.y * dpr
+    const bw = box.width * dpr
+    const bh = box.height * dpr
+
+    ctx.save()
+    ctx.globalAlpha = 0.92
+    ctx.fillStyle = rc.theme.background
+    ctx.fillRect(bx, by, bw, bh)
+    ctx.globalAlpha = 1
+    ctx.strokeStyle = rc.theme.axisLine
+    ctx.lineWidth = Math.max(1, Math.round(dpr))
+    ctx.beginPath()
+    ctx.moveTo(bx, by)
+    ctx.lineTo(bx + bw, by)
+    ctx.lineTo(bx + bw, by + bh)
+    ctx.lineTo(bx, by + bh)
+    ctx.lineTo(bx, by)
+    ctx.stroke()
+
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+    const padX = READOUT_PADDING_PX * dpr
+    let ty = by + READOUT_PADDING_PX * dpr
+    for (const line of lines) {
+      ctx.globalAlpha = line.emphasis ? 1 : 0.6
+      ctx.font = line.emphasis
+        ? `600 ${LABEL_FONT_PX * dpr}px system-ui, -apple-system, sans-serif`
+        : `${LABEL_FONT_PX * dpr}px system-ui, -apple-system, sans-serif`
+      ctx.fillStyle = line.color
+      ctx.fillText(line.text, bx + padX, ty)
+      ty += READOUT_LINE_HEIGHT_PX * dpr
+    }
+    ctx.globalAlpha = 1
     ctx.restore()
   }
 }

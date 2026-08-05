@@ -401,6 +401,7 @@ export class GexLevelsManager {
    */
   private captionOptions(): Partial<GexMetricCaptionOptions> {
     const c = this.settings
+    const s = this.snapshotValue
     return {
       showBars: c.showBars,
       hasBars: this.hasBars,
@@ -408,6 +409,14 @@ export class GexLevelsManager {
       columnWidth: c.columnWidth,
       metric: c.metric,
       columnInset: this.cb.volumeProfileWidthOnSide?.(c.side) ?? 0,
+      // The hover readout's raw material - see GexMetricCaptionOptions.strikes.
+      // Derived fresh from snapshotValue on every call, the same as hasBars,
+      // so it is reachable from every mutation point (fetchNow's success
+      // handler, instrumentChanged) without a new syncPrimitive() call site:
+      // they already re-derive hasBars from this same field.
+      strikes: s?.strikes ?? [],
+      callWall: s?.call_wall ?? null,
+      putWall: s?.put_wall ?? null,
     }
   }
 

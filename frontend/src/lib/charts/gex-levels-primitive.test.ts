@@ -11,11 +11,15 @@ import type { GEXStrikeLevel } from '@/api/gex'
 import {
   computeGexBarGeometry,
   computeGexLevelPlacement,
+  computeGexReadoutBoxGeometry,
+  formatGexMoney,
   formatGexPrice,
   GexLevelsPrimitive,
   GexMetricCaptionPrimitive,
   gexHitTestStrike,
   gexMetricCaption,
+  gexReadoutLines,
+  gexStrikeExternalId,
 } from './gex-levels-primitive'
 
 describe('gexMetricCaption', () => {
@@ -48,6 +52,30 @@ describe('formatGexPrice', () => {
 
   it('rounds to two decimals rather than truncating', () => {
     expect(formatGexPrice(100.126)).toBe('100.13')
+  })
+})
+
+describe('formatGexMoney', () => {
+  it('formats crore-scale values with the Cr suffix', () => {
+    expect(formatGexMoney(13_181_000_000)).toBe('1318.10 Cr')
+  })
+
+  it('keeps the sign on a negative crore-scale value', () => {
+    expect(formatGexMoney(-13_181_000_000)).toBe('-1318.10 Cr')
+  })
+
+  it('formats lakh-scale values with the L suffix', () => {
+    expect(formatGexMoney(6_500_000)).toBe('65.00 L')
+  })
+
+  it('formats anything smaller as a grouped plain integer', () => {
+    expect(formatGexMoney(12_345)).toBe('12,345')
+  })
+
+  it('is an em dash for null, undefined and non-finite values', () => {
+    expect(formatGexMoney(null)).toBe('—')
+    expect(formatGexMoney(undefined)).toBe('—')
+    expect(formatGexMoney(Number.NaN)).toBe('—')
   })
 })
 
@@ -303,6 +331,167 @@ describe('gexHitTestStrike', () => {
   })
 })
 
+describe('gexStrikeExternalId', () => {
+  it('encodes a whole-number strike', () => {
+    expect(gexStrikeExternalId(24_000)).toBe('gex-strike-24000')
+  })
+
+  it('encodes a fractional strike exactly, not rounded or truncated - routine on stock options like VEDL25APR24292.5CE', () => {
+    expect(gexStrikeExternalId(292.5)).toBe('gex-strike-292.5')
+  })
+
+  it('is stable for the same strike, so hitTest and the draw-time lookup always agree', () => {
+    expect(gexStrikeExternalId(24_600)).toBe(gexStrikeExternalId(24_600))
+  })
+
+  it('does not collide two different strikes', () => {
+    expect(gexStrikeExternalId(24_000)).not.toBe(gexStrikeExternalId(24_600))
+  })
+})
+
+describe('gexReadoutLines', () => {
+  const colors = { headerColor: '#eeeeee', callColor: '#26a69a', putColor: '#ef5350' }
+
+  it('shows the strike header and both metric rows, with the active metric emphasised - the whole point is comparing them', () => {
+    // Live-measurement fixture from the plan: strike 24000 is -1318 Cr gamma
+    // but +679 Cr delta - put-dominant under one metric, call-dominant under
+    // the other, and being able to see that without toggling is the feature.
+    const lines = gexReadoutLines({
+      strike: 24_000,
+      netGex: -13_181_000_000,
+      netDex: 6_794_000_000,
+      metric: 'gamma',
+      isCallWall: false,
+      isPutWall: false,
+      ...colors,
+    })
+    expect(lines).toEqual([
+      { text: '24000', emphasis: true, color: colors.headerColor },
+      { text: 'GEX  -1318.10 Cr', emphasis: true, color: colors.putColor },
+      { text: 'DEX  +679.40 Cr', emphasis: false, color: colors.callColor },
+    ])
+  })
+
+  it('flips which row is emphasised when the active metric is delta, not gamma', () => {
+    const lines = gexReadoutLines({
+      strike: 24_000,
+      netGex: -13_181_000_000,
+      netDex: 6_794_000_000,
+      metric: 'delta',
+      isCallWall: false,
+      isPutWall: false,
+      ...colors,
+    })
+    expect(lines[1]?.emphasis).toBe(false) // GEX
+    expect(lines[2]?.emphasis).toBe(true) // DEX
+  })
+
+  it('signs a non-negative reading with an explicit +, unlike formatGexMoney alone', () => {
+    const lines = gexReadoutLines({
+      strike: 24_000,
+      netGex: 0,
+      netDex: 0,
+      metric: 'gamma',
+      isCallWall: false,
+      isPutWall: false,
+      ...colors,
+    })
+    expect(lines[1]?.text).toBe(`GEX  +${formatGexMoney(0)}`)
+    expect(lines[2]?.text).toBe(`DEX  +${formatGexMoney(0)}`)
+  })
+
+  it('has no wall line for a strike that is neither the call wall nor the put wall', () => {
+    const lines = gexReadoutLines({
+      strike: 24_100,
+      netGex: 10,
+      netDex: -10,
+      metric: 'gamma',
+      isCallWall: false,
+      isPutWall: false,
+      ...colors,
+    })
+    expect(lines).toHaveLength(3)
+  })
+
+  it('appends a Call wall line only for the call-wall strike', () => {
+    const lines = gexReadoutLines({
+      strike: 24_800,
+      netGex: 100,
+      netDex: 100,
+      metric: 'gamma',
+      isCallWall: true,
+      isPutWall: false,
+      ...colors,
+    })
+    expect(lines).toHaveLength(4)
+    expect(lines[3]).toEqual({ text: 'Call wall', emphasis: false, color: colors.callColor })
+  })
+
+  it('appends a Put wall line only for the put-wall strike', () => {
+    const lines = gexReadoutLines({
+      strike: 23_500,
+      netGex: -100,
+      netDex: -100,
+      metric: 'gamma',
+      isCallWall: false,
+      isPutWall: true,
+      ...colors,
+    })
+    expect(lines).toHaveLength(4)
+    expect(lines[3]).toEqual({ text: 'Put wall', emphasis: false, color: colors.putColor })
+  })
+})
+
+describe('computeGexReadoutBoxGeometry', () => {
+  const base = {
+    boxWidth: 100,
+    boxHeight: 80,
+    plotWidth: 400,
+    plotHeight: 300,
+    columnInset: 0,
+    columnWidth: 120,
+    gap: 10,
+  }
+
+  it('places the box on the side with more room, vertically centred on a mid-plot row', () => {
+    // side 'right': axisX = 400-120 = 280, roomLeft = 160, roomRight = 0, so
+    // the box goes left of the column: x = 280-120-10-100 = 50.
+    // rowY 150 centred: y = 150 - 80/2 = 110 - well inside [0, 300-80=220].
+    expect(computeGexReadoutBoxGeometry({ ...base, rowY: 150, side: 'right' })).toEqual({
+      x: 50,
+      y: 110,
+      width: 100,
+      height: 80,
+    })
+  })
+
+  it('chooses the other side when the column is left-anchored, without needing a separate code path', () => {
+    // side 'left': axisX = 0+120 = 120, roomLeft = 0, roomRight = 400-240 =
+    // 160, so the box goes right of the column: x = 120+120+10 = 250.
+    const box = computeGexReadoutBoxGeometry({ ...base, rowY: 150, side: 'left' })
+    expect(box.x).toBe(250)
+    expect(box.x).toBeGreaterThan(120) // right of the left-anchored axis
+  })
+
+  it('clamps to the plot top for the topmost visible strike, never a negative y', () => {
+    const box = computeGexReadoutBoxGeometry({ ...base, rowY: 5, side: 'right' })
+    expect(box.y).toBe(0)
+  })
+
+  it('clamps to the plot bottom for the bottommost visible strike, never past plotHeight', () => {
+    const box = computeGexReadoutBoxGeometry({ ...base, rowY: 295, side: 'right' })
+    expect(box.y).toBe(base.plotHeight - base.boxHeight) // 220
+  })
+
+  it('clamps horizontally too, when the box is wider than the room on its chosen side', () => {
+    // Same 'right' setup as the first case, but a box wide enough (250) that
+    // the natural left-of-column position (280-120-10-250 = -100) would run
+    // off the left edge of the plot entirely.
+    const box = computeGexReadoutBoxGeometry({ ...base, rowY: 150, side: 'right', boxWidth: 250 })
+    expect(box.x).toBe(0)
+  })
+})
+
 /**
  * `draw()` only ever calls a handful of `CanvasRenderingContext2D` methods -
  * this records the ones that matter (`fillText`) and no-ops the rest, which
@@ -333,14 +522,22 @@ function fakeCtx() {
   }
 }
 
-/** Only the `PrimitiveRenderContext` fields `draw()` actually reads. */
-function fakeRc(overrides: { plotWidth?: number; plotHeight?: number; dpr?: number } = {}) {
+/** Only the `PrimitiveRenderContext` fields `draw()`/`hitTest()` actually read. */
+function fakeRc(
+  overrides: {
+    plotWidth?: number
+    plotHeight?: number
+    dpr?: number
+    priceScale?: { priceToY: (price: number) => number }
+    hoverId?: string | null
+  } = {}
+) {
   return {
     priceScale: { priceToY: (_price: number) => 200 },
     plotWidth: 400,
     plotHeight: 300,
     dpr: 1,
-    theme: { axisText: '#888888', axisLine: '#333333' },
+    theme: { axisText: '#888888', axisLine: '#333333', background: '#111111' },
     ...overrides,
   }
 }
@@ -443,5 +640,146 @@ describe('GexLevelsPrimitive draw does not draw the caption itself', () => {
     primitive.draw(ctx as never, fakeRc() as never)
     expect(ctx.texts.map((t) => t.text)).not.toContain(gexMetricCaption('delta'))
     expect(ctx.texts.map((t) => t.text)).not.toContain(gexMetricCaption('gamma'))
+  })
+})
+
+describe('GexMetricCaptionPrimitive hitTest', () => {
+  function makePrimitive(overrides: Record<string, unknown> = {}) {
+    return new GexMetricCaptionPrimitive({
+      showBars: true,
+      hasBars: true,
+      side: 'right',
+      columnWidth: 120,
+      columnInset: 0,
+      metric: 'gamma',
+      strikes: [strike(24_200, 100), strike(24_400, -50)],
+      callWall: null,
+      putWall: null,
+      ...overrides,
+    } as never)
+  }
+
+  // linearPriceToY(24_200) = 320, linearPriceToY(24_400) = 240 (see the
+  // fixture above computeGexBarGeometry) - both on-screen for a 400px plot.
+  const rc = fakeRc({ plotWidth: 300, plotHeight: 400, priceScale: { priceToY: linearPriceToY } })
+
+  it('returns a hit with the strike-encoded externalId over a bar', () => {
+    const primitive = makePrimitive()
+    const hit = primitive.hitTest(290, 320, rc as never)
+    expect(hit?.externalId).toBe(gexStrikeExternalId(24_200))
+    expect(hit?.zOrder).toBe('top')
+  })
+
+  it('never arms a drag - no draggable:true, no cursor:ns-resize - so pressing the column still pans', () => {
+    // See chart.ts's _onPointerDown: hit.draggable === true, or cursor ===
+    // 'ns-resize' with a drag callback registered, arms a drag instead of a
+    // pan. A plain hover hit must set neither.
+    const primitive = makePrimitive()
+    const hit = primitive.hitTest(290, 320, rc as never)
+    expect(hit?.draggable).toBeUndefined()
+    expect(hit?.cursor).not.toBe('ns-resize')
+  })
+
+  it('returns null off the column horizontally', () => {
+    const primitive = makePrimitive()
+    expect(primitive.hitTest(20, 320, rc as never)).toBeNull()
+  })
+
+  it('returns null when hasBars is false, even with strikes present', () => {
+    const primitive = makePrimitive({ hasBars: false })
+    expect(primitive.hitTest(290, 320, rc as never)).toBeNull()
+  })
+
+  it('returns null when showBars is false', () => {
+    const primitive = makePrimitive({ showBars: false })
+    expect(primitive.hitTest(290, 320, rc as never)).toBeNull()
+  })
+
+  it('round-trips a fractional strike, like VEDL25APR24292.5CE', () => {
+    // A dedicated priceToY calibrated for a stock-option strike range, not
+    // the 24_000..25_000 index range linearPriceToY assumes.
+    function stockPriceToY(price: number): number {
+      const min = 280
+      const max = 300
+      const plotHeight = 400
+      return plotHeight * (1 - (price - min) / (max - min))
+    }
+    const primitive = makePrimitive({ strikes: [strike(292.5, 40)] })
+    const fractionalRc = fakeRc({
+      plotWidth: 300,
+      plotHeight: 400,
+      priceScale: { priceToY: stockPriceToY },
+    })
+    // stockPriceToY(292.5) = 150 - dead centre of the single strike's row.
+    const hit = primitive.hitTest(290, 150, fractionalRc as never)
+    expect(hit?.externalId).toBe(gexStrikeExternalId(292.5))
+  })
+})
+
+describe('GexMetricCaptionPrimitive draw hover readout', () => {
+  function makePrimitive(overrides: Record<string, unknown> = {}) {
+    return new GexMetricCaptionPrimitive({
+      showBars: true,
+      hasBars: true,
+      side: 'right',
+      columnWidth: 120,
+      columnInset: 0,
+      metric: 'gamma',
+      strikes: [strike(24_200, 100), strike(24_400, -50)],
+      callWall: 24_200,
+      putWall: null,
+      ...overrides,
+    } as never)
+  }
+
+  function rc(hoverId: string | null) {
+    return fakeRc({
+      plotWidth: 300,
+      plotHeight: 400,
+      priceScale: { priceToY: linearPriceToY },
+      hoverId,
+    })
+  }
+
+  it('draws the readout for the hovered strike - both metric rows and the wall line - when hoverId matches', () => {
+    const ctx = fakeCtx()
+    const primitive = makePrimitive()
+    primitive.draw(ctx as never, rc(gexStrikeExternalId(24_200)) as never)
+    const texts = ctx.texts.map((t) => t.text)
+    expect(texts).toContain(formatGexPrice(24_200))
+    expect(texts.some((t) => t.startsWith('GEX'))).toBe(true)
+    expect(texts.some((t) => t.startsWith('DEX'))).toBe(true)
+    expect(texts).toContain('Call wall')
+  })
+
+  it('draws nothing beyond the metric caption when no strike is hovered', () => {
+    const ctx = fakeCtx()
+    const primitive = makePrimitive()
+    primitive.draw(ctx as never, rc(null) as never)
+    expect(ctx.texts.map((t) => t.text)).toEqual([gexMetricCaption('gamma')])
+  })
+
+  it('draws nothing beyond the metric caption when the hovered id does not resolve to a bar this frame', () => {
+    // A stale id from the previous frame's data, momentarily, while a fresh
+    // snapshot is still in flight - must fail closed, not throw or draw a
+    // readout for data that no longer exists.
+    const ctx = fakeCtx()
+    const primitive = makePrimitive()
+    primitive.draw(ctx as never, rc(gexStrikeExternalId(99_999)) as never)
+    expect(ctx.texts.map((t) => t.text)).toEqual([gexMetricCaption('gamma')])
+  })
+
+  it('draws nothing at all - not even the caption - when hasBars is false, regardless of hoverId', () => {
+    const ctx = fakeCtx()
+    const primitive = makePrimitive({ hasBars: false })
+    primitive.draw(ctx as never, rc(gexStrikeExternalId(24_200)) as never)
+    expect(ctx.texts).toEqual([])
+  })
+
+  it('draws nothing at all when showBars is false, regardless of hoverId', () => {
+    const ctx = fakeCtx()
+    const primitive = makePrimitive({ showBars: false })
+    primitive.draw(ctx as never, rc(gexStrikeExternalId(24_200)) as never)
+    expect(ctx.texts).toEqual([])
   })
 })

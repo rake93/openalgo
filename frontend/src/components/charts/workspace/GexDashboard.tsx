@@ -14,6 +14,7 @@
 
 import type { GEXLevelsResponse, GEXSentimentSignal, GexMetric } from '@/api/gex'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { formatGexMoney } from '@/lib/charts/gex-levels-primitive'
 import { cn } from '@/lib/utils'
 
 export interface GexDashboardProps {
@@ -39,21 +40,6 @@ export interface GexDashboardProps {
 const GREEN = 'text-emerald-600 dark:text-emerald-400'
 const RED = 'text-red-600 dark:text-red-400'
 const AMBER = 'text-amber-600 dark:text-amber-400'
-
-/**
- * GEX is quoted in crore. Indian short form: >= 1 crore as "X.XX Cr", >= 1
- * lakh as "X.XX L", otherwise a plain rounded number. Sign is kept on
- * negatives; a missing or non-finite value is an em dash, never a bare "0" or
- * "NaN" that could be mistaken for a real reading of zero.
- */
-function formatMoney(v: number | null | undefined): string {
-  if (v === null || v === undefined || !Number.isFinite(v)) return '—'
-  const sign = v < 0 ? '-' : ''
-  const abs = Math.abs(v)
-  if (abs >= 1e7) return `${sign}${(abs / 1e7).toFixed(2)} Cr`
-  if (abs >= 1e5) return `${sign}${(abs / 1e5).toFixed(2)} L`
-  return `${sign}${Math.round(abs).toLocaleString('en-IN')}`
-}
 
 /** Strike-price levels (Call Wall, Put Wall, Zero-Gamma) — not crore-scale money. */
 function formatPrice(v: number | null | undefined): string {
@@ -189,9 +175,9 @@ export function GexDashboard({ data, stale, metric, onHide }: GexDashboardProps)
 
       <dl className="grid grid-cols-[1fr_auto] gap-x-2 gap-y-0.5 px-2.5 py-2 tabular-nums">
         <Row label="Bars" value={metric === 'delta' ? 'Delta (DEX)' : 'Gamma (GEX)'} />
-        <Row label="Call GEX" value={formatMoney(data.total_call_gex)} tone={GREEN} />
-        <Row label="Put GEX" value={formatMoney(data.total_put_gex)} tone={RED} />
-        <Row label="Net GEX" value={formatMoney(data.net_gex)} tone={regimeTone} emphasis />
+        <Row label="Call GEX" value={formatGexMoney(data.total_call_gex)} tone={GREEN} />
+        <Row label="Put GEX" value={formatGexMoney(data.total_put_gex)} tone={RED} />
+        <Row label="Net GEX" value={formatGexMoney(data.net_gex)} tone={regimeTone} emphasis />
         <Row label="Regime" value={regimeLabel} tone={regimeTone} emphasis />
         {sentiment && (
           <Row
