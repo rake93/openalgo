@@ -214,28 +214,33 @@ export function computeGexBarGeometry(
 const MIN_BAR_ROW_HEIGHT_PX = 1
 const DEFAULT_BAR_ROW_HEIGHT_PX = 6
 /**
- * Bar-row thickness ceiling, as a fraction of the pane height rather than a
- * fixed px value.
+ * Bar-row thickness ceiling, in px.
  *
- * This used to be a flat 14px, which has no relationship to the actual
- * pixel gap between strikes and so caps bar thickness far below it at almost
- * any zoom level except fully zoomed out - a 50-point NIFTY strike spacing
- * is routinely 150-200px on screen once zoomed in even moderately, so a
- * 14px bar sits as an isolated sliver in the middle of that gap instead of
- * tiling into a continuous profile the way the bars either side of it do.
- * The ceiling's actual job is the opposite failure mode: at extreme zoom,
- * when only two or three strikes are visible at all, an unbounded row height
- * would let a single strike's bar swallow most of the pane. Scaling with
- * `plotHeight` keeps that guard proportional at every pane size instead of
- * being calibrated for one specific one.
+ * There is a real trade-off here and no value gets both halves of it. Bars
+ * are meant to tile into a continuous profile, which means a row is as tall
+ * as the gap to the next strike - but a 50-point NIFTY spacing is routinely
+ * 100-200px on screen once the price scale is stretched, and a 150px bar
+ * reads as a slab rather than as a profile.
+ *
+ * Both extremes have been tried and both were reported as wrong. A flat 14px
+ * left each bar an isolated sliver adrift in its own gap. Scaling with the
+ * pane (`0.25 * plotHeight`) fixed that but grew *with* the zoom, so
+ * stretching the y-axis turned the column into giant blocks.
+ *
+ * So: tile exactly while the gap is small, and stop growing past a readable
+ * ribbon. Above this the bars no longer touch, which is the honest outcome -
+ * at that zoom the strikes genuinely are far apart, and a bar that keeps
+ * pace would say more about the zoom level than about the book.
+ *
+ * One number, deliberately easy to tune.
  */
-const MAX_BAR_ROW_HEIGHT_FRACTION = 0.25
+const MAX_BAR_ROW_HEIGHT_PX = 36
 
 /**
  * Typical pixel gap between adjacent strikes - bars are supposed to tile
  * into a continuous profile, so a row's thickness tracks this gap directly,
  * clamped only at the two ends documented on `MIN_BAR_ROW_HEIGHT_PX` /
- * `MAX_BAR_ROW_HEIGHT_FRACTION`. Computed from the full chain rather than
+ * `MAX_BAR_ROW_HEIGHT_PX`. Computed from the full chain rather than
  * just the visible slice, so the row height stays stable as the viewport
  * pans; the median (rather than the first pair) guards against one odd gap
  * - a strike missing at the edge of the chain - skewing the whole column's
@@ -244,7 +249,7 @@ const MAX_BAR_ROW_HEIGHT_FRACTION = 0.25
 function strikeRowHeightPx(
   strikes: readonly GEXStrikeLevel[],
   priceToY: (price: number) => number,
-  plotHeight: number
+  _plotHeight: number
 ): number {
   if (strikes.length < 2) return DEFAULT_BAR_ROW_HEIGHT_PX
   const gaps: number[] = []
@@ -253,8 +258,7 @@ function strikeRowHeightPx(
   }
   gaps.sort((a, b) => a - b)
   const median = gaps[Math.floor(gaps.length / 2)]
-  const maxRowHeight = plotHeight * MAX_BAR_ROW_HEIGHT_FRACTION
-  return Math.max(MIN_BAR_ROW_HEIGHT_PX, Math.min(maxRowHeight, median - 1))
+  return Math.max(MIN_BAR_ROW_HEIGHT_PX, Math.min(MAX_BAR_ROW_HEIGHT_PX, median - 1))
 }
 
 /**

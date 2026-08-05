@@ -192,38 +192,32 @@ describe('computeGexBarGeometry', () => {
     expect(Number.isNaN(rowHeight)).toBe(false)
   })
 
-  it('tiles bars with only a hairline gap at a wide but not extreme strike spacing', () => {
-    // 150 price-units apart on this scale (400px / 1000pt range) is 60px - a
-    // routine on-screen gap once zoomed in past the default view, and well
-    // under the plotHeight/4 = 100px ceiling below. Row height should track
-    // the gap almost exactly (gap - 1, the same -1 hairline the floor case
-    // always had), not be clamped down to some fixed sliver regardless of
-    // how much room the gap actually has.
-    const strikes = [strike(24_200, 10), strike(24_350, -10)]
+  it('tiles bars with only a hairline gap while the strike gap is inside the ceiling', () => {
+    // 75 price-units apart on this scale (400px / 1000pt range) is 30px, under
+    // the 36px ceiling, so the row tracks the gap exactly (gap - 1, the same
+    // hairline the floor case always had) and the bars tile into a continuous
+    // profile rather than sitting as isolated slivers.
+    const strikes = [strike(24_200, 10), strike(24_275, -10)]
     const { rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'gamma')
-    expect(rowHeight).toBe(59)
+    expect(rowHeight).toBe(29)
   })
 
-  it('caps row height at a proportion of the pane height, not a fixed px value, when only two strikes are visible', () => {
-    // 900 price-units apart - near the full width of this fixture's 1000pt
-    // domain, so both strikes land on screen (y=380 and y=20) rather than
-    // one panning off it - maps to a 360px gap, most of the 400px pane.
-    // Without a ceiling this would make one strike's bar swallow nearly the
-    // whole column; with the plotHeight/4 = 100px ceiling, it is capped
-    // instead of filling the pane.
+  it('stops growing at the ceiling once the strikes are far apart on screen', () => {
+    // 900 price-units apart maps to a 360px gap, most of this 400px pane.
+    // Unbounded, one strike's bar would swallow the column; a flat 14px was
+    // the opposite failure and read as debris. It caps at a readable ribbon.
     const strikes = [strike(24_050, 10), strike(24_950, -10)]
     const { rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 400, 120, 'gamma')
-    expect(rowHeight).toBe(100)
+    expect(rowHeight).toBe(36)
   })
 
-  it('scales the ceiling with plotHeight rather than a value fixed at one pane size', () => {
-    // Same strikes and 360px gap as above, but a taller pane: the cap should
-    // grow with it (200px, not still 100px), proving the bound is genuinely
-    // proportional and not just a second fixed constant that happens to
-    // equal 400/4.
+  it('does not let the ceiling grow with the pane, so stretching the y-axis cannot make slabs', () => {
+    // The same strikes in a pane twice as tall. A ceiling scaled to the pane
+    // would double to 72px here - which is exactly the reported defect, where
+    // expanding the price scale turned the column into giant blocks.
     const strikes = [strike(24_050, 10), strike(24_950, -10)]
     const { rowHeight } = computeGexBarGeometry(strikes, linearPriceToY, 800, 120, 'gamma')
-    expect(rowHeight).toBe(200)
+    expect(rowHeight).toBe(36)
   })
 
   it('reads net_gex under the gamma metric and net_dex under delta', () => {
