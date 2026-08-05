@@ -436,8 +436,10 @@ These are choices, not oversights. Do not "fix" them on sight.
 
 ## 11. Migrating the `/tools` options pages onto the shared module
 
-**Status:** `/gex` **done** 2026-08-05. Gamma Density and the remaining Tools
-pages are still open — see "What is left" below.
+**Status:** `/gex` **done** 2026-08-05. Max Pain and OI Tracker **reviewed and
+cleared** 2026-08-05 — see "Max Pain and OI Tracker" below. Gamma Density and
+the central `option_chain_service` normalisation are still open — see "What is
+left".
 
 ### What was wrong
 
@@ -509,13 +511,57 @@ the migration being faithful, and it is now recorded in
 `docs/chart-workspace-studies.md` in place of the old note saying the two
 surfaces disagree.
 
+### Max Pain and OI Tracker — reviewed 2026-08-05, no units defect
+
+Both pages are served by `services/oi_tracker_service.py`, which reads the same
+`get_option_chain` response as `/gex`. **Neither carried the lot-size defect.**
+
+`calculate_max_pain` computes
+
+```
+pain(K) = Σ_{S<K} (K−S)·ce_oi(S) + Σ_{S>K} (S−K)·pe_oi(S)
+```
+
+and never multiplies by `lot_size`. Rupee distance times OI-in-units is already
+rupees, and `total_pain_cr` divides by 1e7 correctly. `lot_size` rides along in
+the response as a display badge only (`MaxPain.tsx:407`) and never enters the
+arithmetic; the frontend plots `total_pain_cr` straight through.
+
+The other two `/gex` defects do not apply either. Max Pain has no option
+pricing, so there is no spot-versus-forward question — it is settlement
+intrinsic value, which is a cash-spot quantity by definition. And it calls no
+Greeks, so there is no per-strike `calculate_greeks` fan-out.
+
+**Worth recording for whoever reviews the next page:** max pain would have
+survived the lot-size bug intact anyway. Lot size is constant across strikes for
+one underlying/expiry, so multiplying every OI by it scales the whole pain curve
+uniformly and **argmin is unchanged** — the max pain *strike* would still have
+been right, and only the y-axis magnitudes would have read 65x high. PCR is a
+ratio and is scale-invariant for the same reason. A units bug is only
+*observable* where the output is an absolute rupee figure, which is exactly why
+it went unnoticed in `/gex` until the chart study computed the same number a
+different way.
+
+What was wrong on OI Tracker was **labelling, not arithmetic**: the chart
+divides OI by the lot size and is labelled "(lots)", while the "Total CE OI" /
+"Total PE OI" badges rendered the raw units figure under the same word "OI" —
+the two disagreeing by the lot size on one screen. The badges now divide through
+a shared `formatLots` helper and are labelled "(lots)", the y-axis title gained
+"(lots)" to match `GEXDashboard.tsx`, and the hover readouts name the unit. One
+unit for OI across the whole page.
+
+**Still untested.** `get_oi_data` and `calculate_max_pain` have no test at all —
+the same state `/gex` was in before this work. The units convention above is
+currently pinned by nothing.
+
 ### What is left
 
 - `services/gamma_density_service.py` is largely unaffected: it already
-  resolves the forward, and it deliberately omits the lot factor because Γ×OI
-  is a density rather than a notional. Its migration is a tidy-up, not a fix.
-- Max Pain and OI Tracker read the same chain and have not been reviewed for
-  the units question.
+  resolves the forward (`_resolve_forward_price`, line 131) and deliberately
+  omits the lot factor because Γ×OI is a density rather than a notional
+  (line 199). Re-verified 2026-08-05. Its migration is a tidy-up, not a fix.
+- A contract test over `get_oi_data` and `calculate_max_pain`, pinning the
+  units convention and the pain formula.
 - Still the better long-term shape: normalising units-versus-lots inside
   `option_chain_service` would fix every consumer at once and stop the next
   tool repeating it. Larger blast radius, so it needs its own regression pass
