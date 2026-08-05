@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** SHIPPED 2026-08-05. All 8 tasks implemented, each through spec and code-quality review, verified against a live NIFTY chain and on the running chart.
+
 **Goal:** Add per-strike Delta Exposure (DEX) to the GEX Levels study and a Gamma/Delta metric toggle that re-renders the existing strike-bar profile against the selected metric.
 
 **Architecture:** A new pure module `services/gex_levels/delta_exposure.py` mirrors `exposure.py` but computes signed delta notional. `gex_levels_service` is refactored to resolve implied volatilities **once** and price both gamma and delta from that single solve, so DEX costs no extra solver calls and no extra broker call. The frontend gains a `metric` setting that selects which field the existing bar geometry reads.

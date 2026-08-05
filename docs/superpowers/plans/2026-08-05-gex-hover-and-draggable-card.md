@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** SHIPPED 2026-08-05. All 3 tasks implemented and confirmed working on the live chart by the user. Two defects only live use surfaced are recorded in the handoff.
+
 **Goal:** Hovering a strike bar shows that strike's numbers on the chart, and the GEX readout card can be dragged anywhere in the pane.
 
 **Architecture:** The existing top-layer caption primitive grows into a full overlay: it gains the strike data, implements `hitTest` over the bar rows, and draws a readout for whichever row the library reports as hovered. The card becomes a pointer-dragged element whose offset persists with the study settings.

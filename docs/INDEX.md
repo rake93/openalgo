@@ -40,6 +40,7 @@ need → drill into the specific file. Don't load everything at once.
 |---|---|
 | Chart Workspace (`/charts`) — chart types, indicators, drawings, profiles, order flow, on-chart trading | [chart-workspace.md](chart-workspace.md) |
 | GEX Levels — reading Regime and Sentiment, why they flip, worked examples | [gex-levels-reading.md](gex-levels-reading.md) |
+| GEX Levels — what shipped, what is pending, and how to resume | [superpowers/HANDOFF-gex-advanced-visualisations.md](superpowers/HANDOFF-gex-advanced-visualisations.md) |
 | Scalping Terminal (`/scalping`) | [scalping/PRD.md](scalping/PRD.md) |
 | Option Target Calculator (`/optiontarget`) — project strike premiums to a futures/spot target, ranking and API contract | [option-target-calculator.md](option-target-calculator.md) |
 | Scanner architecture | [scanner-architecture.md](scanner-architecture.md) |

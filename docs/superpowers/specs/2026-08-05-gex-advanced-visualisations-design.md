@@ -1,7 +1,10 @@
 # GEX Levels: Gamma Profile, Bands, Heatmap and Delta Exposure
 
 **Date:** 2026-08-05
-**Status:** Design approved, not yet implemented
+**Status:** **Phases 1-2 shipped and verified live. Phases 3-5 not started** —
+see [§10 Delivery order](#10-delivery-order) for the split and
+[HANDOFF-gex-advanced-visualisations.md](../HANDOFF-gex-advanced-visualisations.md)
+to pick it up.
 **Builds on:** [2026-08-04-gex-levels-chart-study-design.md](2026-08-04-gex-levels-chart-study-design.md)
 **Reader's guide to the existing study:** [../../gex-levels-reading.md](../../gex-levels-reading.md)
 
@@ -381,18 +384,29 @@ Suppressive/Amplifying instead of bullish/bearish.
 
 ## 10. Delivery order
 
-Phased so value lands before the infrastructure is finished:
+Phased so value lands before the infrastructure is finished.
 
-1. **Gamma Profile** — already built (see §2); only the Metric toggle it feeds is
-   outstanding, so this folds into step 2.
-2. **Delta Exposure** — `delta_exposure.py`, plumbed through the live path and the
-   Profile via the Metric toggle.
-3. **Storage and recorder** — `gex_history_db`, `gex_recorder_service`,
-   `build_snapshot` extraction, watchlist routes, the recorded fast path.
-4. **Gamma Bands** — the first consumer of history; smallest query shape.
-5. **GEX Heatmap** — the grid endpoint, downsampling, and the background renderer.
+| # | Step | Status |
+| --- | --- | --- |
+| 1 | **Gamma Profile** — already built; folded into step 2 | **DONE** 2026-08-05 |
+| 2 | **Delta Exposure** — `delta_exposure.py`, the live path, the Metric toggle | **DONE** 2026-08-05 |
+| 3 | **Storage and recorder** — `gex_history_db`, `gex_recorder_service`, `build_snapshot` extraction, watchlist routes, the recorded fast path | Not started |
+| 4 | **Gamma Bands** — the first consumer of history; smallest query shape | Not started |
+| 5 | **GEX Heatmap** — the grid endpoint, downsampling, the background renderer | Not started |
 
-Steps 1 and 2 ship two of the four features with no recorder at all.
+Steps 1 and 2 shipped two of the four features with no recorder at all, exactly
+as the phasing intended. **Everything from step 3 onward still needs the
+recorder**, and nothing in steps 1-2 pre-empts any of its design decisions — the
+`weighted_legs` seam added during step 2 is in fact what step 3's
+`build_snapshot` extraction will build on.
+
+Two features NOT in the original four were added on top, both requested after
+the delta work landed and both shipped:
+
+- **Hover readout** — hovering a strike bar shows that strike with both metrics
+  at once. Plan: [`2026-08-05-gex-hover-and-draggable-card.md`](../plans/2026-08-05-gex-hover-and-draggable-card.md).
+- **Draggable readout card** — header-drag, clamped, double-click to reset,
+  persisted with the layout.
 
 ## 10a. Follow-ups found during implementation
 
