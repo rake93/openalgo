@@ -133,6 +133,44 @@ export interface GEXLevelsResponse {
   sentiment?: GEXSentiment
 }
 
+/**
+ * One recorded minute of the three levels, from the snapshot recorder.
+ *
+ * Every level is nullable and each null is a READING, not a hole in the
+ * payload: `zero_gamma` is null whenever the gamma profile does not cross zero
+ * near the forward, which the study already labels "No local cross". The band
+ * renderer breaks its line rather than substituting a number.
+ */
+export interface GEXHistoryPoint {
+  /** Epoch seconds, floored to the recorder's cadence. */
+  ts: number
+  call_wall: number | null
+  put_wall: number | null
+  zero_gamma: number | null
+  net_gex: number | null
+  regime: 'suppressive' | 'amplifying' | null
+  /** What the snapshot's quality was WHEN RECORDED, so a reader can dim it. */
+  quality_verdict: 'good' | 'degraded' | 'unusable' | null
+}
+
+export interface GEXHistoryResponse {
+  status: 'success' | 'error'
+  message?: string
+  underlying?: string
+  exchange?: string
+  expiry_date?: string
+  weight_by?: GEXWeightBy
+  /**
+   * The cadence actually returned. Always `1m` today; phase 5's heatmap
+   * downsamples above a column budget, and a series that silently thinned
+   * itself would look like a market that went quiet.
+   */
+  resolution?: string
+  downsampled?: boolean
+  /** Empty for a contract nobody chose to record - an ordinary state, not an error. */
+  points?: GEXHistoryPoint[]
+}
+
 export const gexApi = {
   getGEXData: async (params: {
     underlying: string
@@ -164,6 +202,60 @@ export const gexApi = {
     const response = await webClient.post<GEXLevelsResponse>('/gex/api/gex-levels', params, {
       signal,
     })
+    return response.data
+  },
+
+  /**
+   * Recorded levels for one contract over a window, backing Gamma Bands.
+   *
+   * `expiry_date` must be a RESOLVED DDMMMYY, never a rule: a "nearest" series
+   * rolls weekly, and history spliced across a roll would show wall jumps that
+   * are the book changing rather than the market moving. Callers take it from
+   * the live snapshot they already hold.
+   */
+  getGEXHistory: async (
+    params: {
+      underlying: string
+      exchange: string
+      expiry_date: string
+      weight_by: GEXWeightBy
+      from_ts: number
+      to_ts: number
+    },
+    signal?: AbortSignal
+  ): Promise<GEXHistoryResponse> => {
+    const response = await webClient.post<GEXHistoryResponse>('/gex/api/gex-history', params, {
+      signal,
+    })
+    return response.data
+  },
+
+  /** The snapshot recorder's watchlist - what the server polls on a schedule. */
+  getGEXSeries: async (): Promise<{
+    status: string
+    data?: Array<{
+      id: number
+      underlying: string
+      exchange: string
+      expiry_rule: string
+      enabled: boolean
+    }>
+  }> => {
+    const response = await webClient.get('/gex/api/gex-series')
+    return response.data
+  },
+
+  addGEXSeries: async (params: {
+    underlying: string
+    exchange: string
+    expiry_rule: string
+  }): Promise<{ status: string; message?: string }> => {
+    const response = await webClient.post('/gex/api/gex-series', params)
+    return response.data
+  },
+
+  removeGEXSeries: async (seriesId: number): Promise<{ status: string; message?: string }> => {
+    const response = await webClient.delete(`/gex/api/gex-series/${seriesId}`)
     return response.data
   },
 }

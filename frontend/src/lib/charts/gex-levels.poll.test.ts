@@ -508,3 +508,157 @@ describe('GexLevelsManager primitive lifecycle', () => {
     setOptionsSpy.mockRestore()
   })
 })
+
+/* ── recorded history (Gamma Bands) ─────────────────────────────────────── */
+
+function makeWithHistory(
+  levelsResponse: Partial<GEXLevelsResponse> = { status: 'success', expiry_date: '11AUG26' }
+) {
+  const fetchLevels = vi.fn().mockResolvedValue(levelsResponse)
+  const fetchHistory = vi.fn().mockResolvedValue({ status: 'success', points: [] })
+  const onHistory = vi.fn()
+  const manager = new GexLevelsManager({
+    onChange: vi.fn(),
+    instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+    fetchLevels,
+    fetchHistory,
+    onHistory,
+  })
+  return { manager, fetchLevels, fetchHistory, onHistory }
+}
+
+describe('GexLevelsManager recorded history', () => {
+  it('does not fetch history while Bands is off', async () => {
+    const { manager, fetchHistory } = makeWithHistory()
+    manager.setConfig({ enabled: true })
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(fetchHistory).not.toHaveBeenCalled()
+  })
+
+  it('waits for the live snapshot to resolve the contract before fetching', async () => {
+    // The request must name a RESOLVED expiry, and a study set to the nearest
+    // expiry does not know which contract that is until the server says so.
+    const { manager, fetchHistory } = makeWithHistory()
+    manager.setConfig({ enabled: true, showBands: true })
+    expect(fetchHistory).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(0) // let the levels promise settle
+    expect(fetchHistory).toHaveBeenCalledTimes(1)
+    expect(fetchHistory.mock.calls[0][0].expiry_date).toBe('11AUG26')
+  })
+
+  it('never fetches history for a snapshot that carries no expiry', async () => {
+    const { manager, fetchHistory } = makeWithHistory({ status: 'error' })
+    manager.setConfig({ enabled: true, showBands: true })
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(fetchHistory).not.toHaveBeenCalled()
+  })
+
+  it('refetches history far more lazily than the levels poll', async () => {
+    // History is append-only and its newest point is one cadence interval old
+    // at worst, so re-shipping the whole window every minute is pure waste.
+    const { manager, fetchLevels, fetchHistory } = makeWithHistory()
+    manager.setConfig({ enabled: true, showBands: true, refreshSeconds: 60 })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const historyAfterFirst = fetchHistory.mock.calls.length
+    await vi.advanceTimersByTimeAsync(60_000 * 4)
+
+    expect(fetchLevels.mock.calls.length).toBeGreaterThan(4)
+    expect(fetchHistory.mock.calls.length).toBe(historyAfterFirst)
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fetchHistory.mock.calls.length).toBeGreaterThan(historyAfterFirst)
+  })
+
+  it('asks for the configured lookback window', async () => {
+    const { manager, fetchHistory } = makeWithHistory()
+    manager.setConfig({ enabled: true, showBands: true, bandsLookbackHours: 3 })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const params = fetchHistory.mock.calls[0][0]
+    expect(params.to_ts - params.from_ts).toBe(3 * 3600)
+  })
+
+  it('refetches when the weighting changes, since the columns differ', async () => {
+    const { manager, fetchHistory } = makeWithHistory()
+    manager.setConfig({ enabled: true, showBands: true })
+    await vi.advanceTimersByTimeAsync(0)
+    const before = fetchHistory.mock.calls.length
+
+    manager.setConfig({ weightBy: 'volume' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fetchHistory.mock.calls.length).toBeGreaterThan(before)
+    expect(fetchHistory.mock.calls.at(-1)?.[0].weight_by).toBe('volume')
+  })
+
+  it('does not refetch history when only the metric toggles', async () => {
+    // Metric picks which Greek the BAR COLUMN reads. It has nothing to do with
+    // the recorded levels, so switching it must not re-ship the window.
+    const { manager, fetchHistory } = makeWithHistory()
+    manager.setConfig({ enabled: true, showBands: true })
+    await vi.advanceTimersByTimeAsync(0)
+    const before = fetchHistory.mock.calls.length
+
+    manager.setConfig({ metric: 'delta' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fetchHistory.mock.calls.length).toBe(before)
+  })
+
+  it('drops history and stops its timer when the instrument changes', async () => {
+    const { manager, fetchHistory, onHistory } = makeWithHistory()
+    manager.setConfig({ enabled: true, showBands: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(manager.lastHistory).not.toBeNull()
+
+    manager.instrumentChanged()
+
+    // Cleared outright: NIFTY walls hanging over a BANKNIFTY chart until the
+    // next fetch lands is worse than a moment with no bands.
+    expect(manager.lastHistory).toBeNull()
+    expect(onHistory).toHaveBeenCalledWith(null)
+    fetchHistory.mockClear()
+  })
+
+  it('stops the history timer on dispose', async () => {
+    const { manager, fetchHistory } = makeWithHistory()
+    manager.setConfig({ enabled: true, showBands: true })
+    await vi.advanceTimersByTimeAsync(0)
+    fetchHistory.mockClear()
+
+    manager.dispose()
+    await vi.advanceTimersByTimeAsync(600_000)
+
+    expect(fetchHistory).not.toHaveBeenCalled()
+  })
+
+  it('keeps the drawn bands up when a history refresh fails', async () => {
+    // Bands are a record of the past. It does not become wrong because one
+    // request failed, and the levels' own `stale` flag already reports trouble.
+    const { manager, fetchHistory } = makeWithHistory()
+    manager.setConfig({ enabled: true, showBands: true })
+    await vi.advanceTimersByTimeAsync(0)
+    const held = manager.lastHistory
+
+    fetchHistory.mockRejectedValueOnce(new Error('network'))
+    await vi.advanceTimersByTimeAsync(300_000)
+
+    expect(manager.lastHistory).toBe(held)
+  })
+
+  it('works with no fetchHistory callback at all', async () => {
+    // A host that never supplies it simply never draws bands - the same
+    // outcome as an instrument nobody is recording, so there is no second
+    // code path to keep working.
+    const manager = new GexLevelsManager({
+      onChange: vi.fn(),
+      instrument: () => ({ underlying: 'NIFTY', exchange: 'NFO' }),
+      fetchLevels: vi.fn().mockResolvedValue({ status: 'success', expiry_date: '11AUG26' }),
+    })
+    manager.setConfig({ enabled: true, showBands: true })
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(manager.lastHistory).toBeNull()
+  })
+})

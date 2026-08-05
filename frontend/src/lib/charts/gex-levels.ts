@@ -16,7 +16,7 @@
  * `dispose()`. This file also owns the two primitives that paint the study -
  * `GexLevelsPrimitive` (levels and bars) and `GexOverlayPrimitive` (the bar
  * column's metric label and the per-strike hover readout, both painted at a
- * higher zOrder so price action can't cover them - see its doc comment in
+ * higher zOrder so price action cannot cover them - see its doc comment in
  * `gex-levels-primitive.ts`). `attachChart` /
  * `syncPrimitive` mirror `ProfileManager.attachChart` / `rebuild()` exactly,
  * including the "drop, don't remove" handling of a chart rebuild, for both
@@ -25,7 +25,8 @@
  */
 
 import type { Chart } from 'openalgo-charts'
-import type { GEXLevelsResponse, GEXWeightBy, GexMetric } from '@/api/gex'
+import type { GEXHistoryResponse, GEXLevelsResponse, GEXWeightBy, GexMetric } from '@/api/gex'
+import { type GexBandsOptions, GexBandsPrimitive } from './gex-bands-primitive'
 import {
   GexLevelsPrimitive,
   type GexLevelsPrimitiveOptions,
@@ -55,6 +56,22 @@ export interface GexLevelsConfig {
   showCallWall: boolean
   showPutWall: boolean
   showZeroGamma: boolean
+  /**
+   * Draw the three levels through time as well as at their current prices,
+   * from the server's recorded history.
+   *
+   * Off by default, unlike the levels themselves. Bands draw NOTHING until the
+   * instrument is on the recorder's watchlist, and a control that silently does
+   * nothing when switched on is worse than one the user turns on deliberately -
+   * the settings panel explains the state and offers to start recording.
+   */
+  showBands: boolean
+  /**
+   * How far back the bands reach, in hours. Bounded by the server's own
+   * MAX_HISTORY_POINTS, which refuses an over-wide window rather than
+   * truncating it.
+   */
+  bandsLookbackHours: number
   showDashboard: boolean
   refreshSeconds: number
   side: 'left' | 'right'
@@ -71,6 +88,16 @@ export interface GexLevelsConfig {
   cardOffset: { x: number; y: number }
 }
 
+/**
+ * How many levels-poll intervals pass between history fetches.
+ *
+ * Recorded history is append-only and its newest point is at most one cadence
+ * interval old, so a band lagging a few minutes is invisible on a chart whose
+ * bands span hours. Re-fetching the whole window every 60 seconds would ship
+ * thousands of points a minute to redraw a nearly identical picture.
+ */
+const HISTORY_REFRESH_MULTIPLE = 5
+
 export const DEFAULT_GEX_LEVELS_SETTINGS: GexLevelsConfig = {
   enabled: false,
   weightBy: 'oi',
@@ -80,6 +107,8 @@ export const DEFAULT_GEX_LEVELS_SETTINGS: GexLevelsConfig = {
   showCallWall: true,
   showPutWall: true,
   showZeroGamma: true,
+  showBands: false,
+  bandsLookbackHours: 6,
   showDashboard: true,
   refreshSeconds: 60,
   side: 'right',
@@ -101,7 +130,25 @@ export interface GexLevelsCallbacks {
     params: { underlying: string; exchange: string; expiry_date: string; weight_by: GEXWeightBy },
     signal: AbortSignal
   ): Promise<GEXLevelsResponse>
+  /**
+   * Recorded history for Gamma Bands. Optional: a host that does not supply it
+   * simply never draws bands, which is the same outcome as an instrument nobody
+   * is recording, so nothing needs a second code path.
+   */
+  fetchHistory?(
+    params: {
+      underlying: string
+      exchange: string
+      expiry_date: string
+      weight_by: GEXWeightBy
+      from_ts: number
+      to_ts: number
+    },
+    signal: AbortSignal
+  ): Promise<GEXHistoryResponse>
   onSnapshot?(snapshot: GEXLevelsResponse | null): void
+  /** Fired when recorded history arrives, so the panel can say how much there is. */
+  onHistory?(history: GEXHistoryResponse | null): void
   /**
    * Width in px of a volume profile anchored on the same side, if any. The
    * manager does not know about Volume Profile itself - the workspace
@@ -124,6 +171,20 @@ export class GexLevelsManager {
   private chart: Chart | null = null
   private primitive: GexLevelsPrimitive | null = null
   private captionPrimitive: GexOverlayPrimitive | null = null
+  private bandsPrimitive: GexBandsPrimitive | null = null
+
+  /**
+   * The history timer is separate from, and far lazier than, the levels poll.
+   *
+   * Recorded history is append-only and the newest point is at most one cadence
+   * interval old, so a band that is a minute behind is invisible - while
+   * re-fetching a six-hour window every 60 seconds would ship thousands of
+   * points a minute for a picture that barely changed. It runs at
+   * `refreshSeconds * HISTORY_REFRESH_MULTIPLE`.
+   */
+  private historyTimer: ReturnType<typeof setInterval> | null = null
+  private historyController: AbortController | null = null
+  private historyValue: GEXHistoryResponse | null = null
 
   /**
    * Bumped every time the charted instrument changes. Each outgoing request
@@ -157,6 +218,11 @@ export class GexLevelsManager {
   /** Last successfully fetched snapshot, retained across a failed refresh. */
   get lastSnapshot(): GEXLevelsResponse | null {
     return this.snapshotValue
+  }
+
+  /** Last recorded history fetched, or null if none has arrived. */
+  get lastHistory(): GEXHistoryResponse | null {
+    return this.historyValue
   }
 
   /** True when the snapshot being shown is older than the last failed refresh. */
@@ -198,6 +264,10 @@ export class GexLevelsManager {
       return
     }
 
+    const bandsChanged = patch.showBands !== undefined && patch.showBands !== prev.showBands
+    const lookbackChanged =
+      patch.bandsLookbackHours !== undefined && patch.bandsLookbackHours !== prev.bandsLookbackHours
+
     if (enabledChanged || queryChanged) {
       this.restartTimer()
       this.fetchNow()
@@ -207,6 +277,15 @@ export class GexLevelsManager {
       // Enabled already, but no timer running yet - e.g. the instrument only
       // just resolved. Pick the loop back up.
       this.restartTimer()
+    }
+
+    // The history loop keys off a different set of changes than the levels
+    // poll: the weighting and the lookback change what is asked for, and the
+    // refresh interval scales it, but the metric and the drawing toggles do not
+    // touch it at all.
+    this.restartHistoryTimer()
+    if (bandsChanged || queryChanged || lookbackChanged || enabledChanged) {
+      this.fetchHistoryNow()
     }
   }
 
@@ -225,6 +304,16 @@ export class GexLevelsManager {
     this.staleValue = false
     this.cb.onSnapshot?.(null)
     this.primitive?.setData(null)
+    // History belongs to one contract just as firmly as the levels belong to
+    // one underlying. Cleared outright rather than left to be overwritten: a
+    // band of NIFTY walls hanging over a BANKNIFTY chart until the next fetch
+    // lands is worse than a moment with no bands.
+    this.historyController?.abort()
+    this.historyController = null
+    this.historyValue = null
+    this.cb.onHistory?.(null)
+    this.bandsPrimitive?.setData(null)
+    this.stopHistoryTimer()
     // The snapshot just went to null - re-push captionOptions() so the
     // caption's hasBars gate reflects that immediately rather than waiting
     // for a fetch that may never come. An instrument with no option chain is
@@ -277,6 +366,7 @@ export class GexLevelsManager {
       .fetchLevels(params, controller.signal)
       .then((response) => {
         if (this.disposed || epoch !== this.epoch) return // Superseded by an instrument change.
+        const hadExpiry = this.snapshotValue?.expiry_date
         this.snapshotValue = response
         this.staleValue = false
         this.cb.onSnapshot?.(response)
@@ -286,10 +376,93 @@ export class GexLevelsManager {
         // (success with strikes, success with none, or an error body)
         // instead of whatever it showed as of the previous refresh.
         this.syncPrimitive()
+
+        // The history request needs a RESOLVED expiry, which only the live
+        // response carries. Kick it as soon as one arrives, or when the
+        // contract rolls underneath a "nearest" study - the previous
+        // contract's bands would otherwise stay on screen against a chain
+        // that has already moved on.
+        if (response.expiry_date && response.expiry_date !== hadExpiry) {
+          this.restartHistoryTimer()
+          this.fetchHistoryNow()
+        }
       })
       .catch(() => {
         if (this.disposed || epoch !== this.epoch) return
         this.staleValue = true
+      })
+  }
+
+  /* ── recorded history (Gamma Bands) ────────────────────────────────────── */
+
+  private stopHistoryTimer(): void {
+    if (this.historyTimer) clearInterval(this.historyTimer)
+    this.historyTimer = null
+  }
+
+  private restartHistoryTimer(): void {
+    this.stopHistoryTimer()
+    if (!this.settings.enabled || !this.settings.showBands) return
+    if (!this.cb.fetchHistory || !this.cb.instrument()) return
+    const ms = Math.max(1, this.settings.refreshSeconds) * HISTORY_REFRESH_MULTIPLE * 1000
+    this.historyTimer = setInterval(() => this.fetchHistoryNow(), ms)
+  }
+
+  /**
+   * Fetch the recorded window, if there is anything to fetch it for.
+   *
+   * Depends on the LIVE snapshot having resolved first: the request must name a
+   * resolved `expiry_date`, and a study configured for the nearest expiry does
+   * not know which contract that is until the server tells it. So this is a
+   * no-op until `snapshotValue` carries one, and the levels poll that fills it
+   * calls back in here when it lands.
+   */
+  private fetchHistoryNow(): void {
+    if (!this.settings.enabled || !this.settings.showBands) {
+      this.bandsPrimitive?.setData(null)
+      return
+    }
+
+    const instrument = this.cb.instrument()
+    const fetchHistory = this.cb.fetchHistory
+    const expiry = this.snapshotValue?.expiry_date
+    if (!instrument || !fetchHistory || !expiry) return
+
+    this.historyController?.abort()
+    const controller = new AbortController()
+    this.historyController = controller
+    const epoch = this.epoch
+
+    const toTs = Math.floor(Date.now() / 1000)
+    const fromTs = toTs - Math.max(1, this.settings.bandsLookbackHours) * 3600
+
+    fetchHistory(
+      {
+        underlying: instrument.underlying,
+        exchange: instrument.exchange,
+        expiry_date: expiry,
+        weight_by: this.settings.weightBy,
+        from_ts: fromTs,
+        to_ts: toTs,
+      },
+      controller.signal
+    )
+      .then((response) => {
+        // Same guard as fetchNow: a slow history response for NIFTY must never
+        // paint over BANKNIFTY after a symbol switch. The abort signal alone is
+        // not enough once a request is past the point of no return.
+        if (this.disposed || epoch !== this.epoch) return
+        this.historyValue = response
+        this.cb.onHistory?.(response)
+        this.bandsPrimitive?.setData({ points: response.points ?? [] })
+      })
+      .catch(() => {
+        // Deliberately silent, and deliberately NOT clearing what is drawn. A
+        // failed history refresh leaves the existing bands up - they are a
+        // record of the past, which does not become wrong because one request
+        // failed. The levels' own `stale` flag already tells the reader the
+        // study is having trouble.
+        if (this.disposed || epoch !== this.epoch) return
       })
   }
 
@@ -334,6 +507,7 @@ export class GexLevelsManager {
   private dropPrimitiveHandle(): void {
     this.primitive = null
     this.captionPrimitive = null
+    this.bandsPrimitive = null
   }
 
   /**
@@ -376,11 +550,50 @@ export class GexLevelsManager {
       this.captionPrimitive = null
     }
 
+    // The bands are a third primitive, gated on `showBands` as well as
+    // `enabled` - unlike the caption, they are an opt-in overlay and most
+    // sessions will never turn them on. Same try/catch isolation so a chart
+    // that throws removing one still gets the others' handles dropped.
+    const wantBands = this.settings.enabled && this.settings.showBands
+    if (wantBands && !this.bandsPrimitive) {
+      this.bandsPrimitive = new GexBandsPrimitive(this.bandsOptions())
+      chart.addPrimitive(this.bandsPrimitive, 0)
+      // Re-push whatever history is already held: toggling Bands on must not
+      // wait out a fetch interval to show what the manager already has.
+      if (this.historyValue) {
+        this.bandsPrimitive.setData({ points: this.historyValue.points ?? [] })
+      }
+    } else if (!wantBands && this.bandsPrimitive) {
+      try {
+        chart.removePrimitive(this.bandsPrimitive)
+      } catch {
+        // As above: the chart may already be gone.
+      }
+      this.bandsPrimitive = null
+    }
+
     // Re-pushed unconditionally, not just at construction: an options change
     // (column width, side, which lines are shown, or the volume-profile
     // inset) while the study stays enabled must still take effect.
     this.primitive?.setOptions(this.primitiveOptions())
     this.captionPrimitive?.setOptions(this.captionOptions())
+    this.bandsPrimitive?.setOptions(this.bandsOptions())
+  }
+
+  /**
+   * Which bands to draw follows the LEVEL toggles, not a separate set.
+   *
+   * A band is the same object as its level seen through time, so hiding the
+   * Call Wall while leaving its history drawn would put an unlabelled line on
+   * the chart with nothing to explain it.
+   */
+  private bandsOptions(): Partial<GexBandsOptions> {
+    const c = this.settings
+    return {
+      showCallWall: c.showCallWall,
+      showPutWall: c.showPutWall,
+      showZeroGamma: c.showZeroGamma,
+    }
   }
 
   private primitiveOptions(): Partial<GexLevelsPrimitiveOptions> {
@@ -447,18 +660,23 @@ export class GexLevelsManager {
     // to kick off the first fetch, exactly as it would for a freshly toggled
     // study.
     this.stopTimer()
+    this.stopHistoryTimer()
   }
 
   dispose(): void {
     this.disposed = true
     this.stopTimer()
+    this.stopHistoryTimer()
     this.controller?.abort()
     this.controller = null
+    this.historyController?.abort()
+    this.historyController = null
     // Mirrors ProfileManager.dispose(): just drop the handles, do not call
     // removePrimitive - dispose runs during workspace teardown, by which point
     // the chart itself is already on its way out.
     this.primitive = null
     this.captionPrimitive = null
+    this.bandsPrimitive = null
     this.chart = null
   }
 }
