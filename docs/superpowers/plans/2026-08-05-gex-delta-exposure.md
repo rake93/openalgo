@@ -647,7 +647,9 @@ Expected: FAIL — `KeyError` or a set mismatch showing `call_dex` absent
 
 - [ ] **Step 3: Change the import**
 
-In `services/gex_levels_service.py`, find the import of `compute_exposures` from `services.gex_levels.exposure` and replace `compute_exposures` with `price_exposures, resolve_ivs`. Add a new import line:
+> **Amended during execution.** Task 3's code review found that `price_exposures` and `price_delta_exposures` duplicated their whole preamble, and that the position-alignment contract the `zip` below depends on was documented only in prose. The preamble was extracted to `weighted_legs(rows, ivs, weight_by)` in `exposure.py`, and both pricers now take the resulting legs list instead of `(rows, ivs, weight_by)`. Hoisting it out of the 60-step zero-gamma scan also took that scan from 24.46 ms to 12.21 ms. The signatures below reflect the shipped code, not the original plan text.
+
+In `services/gex_levels_service.py`, find the import of `compute_exposures` from `services.gex_levels.exposure` and replace `compute_exposures` with `price_exposures, resolve_ivs, weighted_legs`. Add a new import line:
 
 ```python
 from services.gex_levels.delta_exposure import price_delta_exposures
@@ -684,12 +686,12 @@ with:
             r=r,
             atm_strike=atm_strike,
         )
-        exposures = price_exposures(
-            black76, rows, ivs, forward=F, t_years=t_years, r=r, weight_by=weight_by
-        )
-        delta_exposures = price_delta_exposures(
-            black76, rows, ivs, forward=F, t_years=t_years, r=r, weight_by=weight_by
-        )
+        # Built ONCE and handed to both pricers. The zip below then walks two
+        # lists derived from the same object rather than two merely equal ones,
+        # so a strike's gamma and its delta cannot drift apart.
+        legs = weighted_legs(rows, ivs, weight_by)
+        exposures = price_exposures(black76, legs, forward=F, t_years=t_years, r=r)
+        delta_exposures = price_delta_exposures(black76, legs, forward=F, t_years=t_years, r=r)
 ```
 
 - [ ] **Step 5: Add the DEX fields to the payload**
