@@ -17,9 +17,11 @@ FALLBACK_IV = 0.15
 # Above this, an "IV" is a solver artefact rather than a market volatility.
 _MAX_PLAUSIBLE_IV = 5.0
 
-# Black-76 delta is bounded by +/-1 (call 0..1, put -1..0). Anything well
-# outside that band is a solver artefact rather than a position.
-_MAX_PLAUSIBLE_DELTA = 1.5
+# Black-76 delta is bounded by +/-1 (call 0..1, put -1..0): with a positive
+# rate the discount factor e^-rt is < 1, so the bound is only exceeded under a
+# negative rate. This guard is for order-of-magnitude solver artefacts, not
+# for clipping deep-ITM legs that legitimately sit right at +/-1.
+_MAX_PLAUSIBLE_ABS_DELTA = 1.5
 
 
 def safe_iv(
@@ -112,7 +114,7 @@ def safe_delta(black76, flag: str, F: float, K: float, t: float, r: float, sigma
         d = black76.delta(flag, F, K, t, r, sigma)
     except Exception:
         return 0.0
-    if d is None or not math.isfinite(d) or abs(d) > _MAX_PLAUSIBLE_DELTA:
+    if d is None or not math.isfinite(d) or abs(d) > _MAX_PLAUSIBLE_ABS_DELTA:
         return 0.0
     return d
 
