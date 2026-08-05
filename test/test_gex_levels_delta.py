@@ -5,7 +5,7 @@ import math
 import pytest
 
 from services.gex_levels.blackscholes import safe_delta
-from services.gex_levels.delta_exposure import StrikeDelta, price_delta_exposures
+from services.gex_levels.delta_exposure import StrikeDeltaExposure, price_delta_exposures
 from services.gex_levels.exposure import ChainRow, resolve_ivs
 
 
@@ -229,4 +229,113 @@ def test_the_raw_deltas_are_carried_through_for_display():
     at_atm = next(e for e in _priced() if e.strike == 24600.0)
     assert at_atm.call_delta == pytest.approx(0.6)
     assert at_atm.put_delta == pytest.approx(-0.4)
-    assert isinstance(at_atm, StrikeDelta)
+    assert isinstance(at_atm, StrikeDeltaExposure)
+
+
+class _SigmaSensitiveDelta:
+    """Delta scales with sigma, unlike `_Delta`, so IV-fallback substitution is
+    observable in the output value rather than passing regardless of whether
+    the fallback actually reached `safe_delta`."""
+
+    def implied_volatility(self, price, F, K, r, t, flag):
+        if price <= 0:
+            return None
+        return 0.30 if flag == "c" else 0.50
+
+    def delta(self, flag, F, K, t, r, sigma):
+        base = 0.6 if flag == "c" else -0.4
+        return base * sigma
+
+
+class _RecordingDeltaCalls:
+    """Records every call made to `.delta`, so a call-site argument
+    transposition (e.g. `t_years` and `r`) at the `price_delta_exposures`
+    level is caught, not just inside `safe_delta` - the same trap
+    `test_delta_forwards_its_arguments_in_the_library_order` catches one
+    level down."""
+
+    def __init__(self):
+        self.calls = []
+
+    def implied_volatility(self, price, F, K, r, t, flag):
+        return 0.20
+
+    def delta(self, flag, F, K, t, r, sigma):
+        self.calls.append((flag, F, K, t, r, sigma))
+        return 0.6 if flag == "c" else -0.4
+
+
+def test_the_fallback_volatility_reaches_delta_for_an_unpriced_leg():
+    """The DEX-side counterpart of exposure.py's
+    test_the_fallback_volatility_reaches_gamma_for_an_unpriced_leg.
+
+    Extracting the shared preamble into `weighted_legs` means the fallback
+    VALUE is computed once, and that exposure.py test already pins it
+    reaching `safe_gamma`. This test pins the separate fact that
+    `price_delta_exposures` wires the same substituted sigma into
+    `safe_delta` - a bug local to this function (e.g. reading `leg.call_sigma`
+    for both legs) would not be caught by the exposure.py test at all.
+
+    Two strikes so the ATM strike's own combined IV (0.40, the mean of its
+    priced 0.30 call and 0.50 put) is a genuine chain-wide fallback, distinct
+    from the 24500 strike's own real call IV (0.30). If the unpriced put at
+    24500 were priced with the real call sigma instead of the fallback,
+    put_delta would come out as -0.4 * 0.30 rather than -0.4 * 0.40 - a
+    different, checkable number.
+    """
+    stub = _SigmaSensitiveDelta()
+    rows = [
+        ChainRow(
+            strike=24600.0,
+            call_price=100.0,
+            put_price=100.0,
+            call_oi=1,
+            put_oi=1,
+            call_volume=1,
+            put_volume=1,
+            lot_size=75,
+        ),
+        ChainRow(
+            strike=24500.0,
+            call_price=100.0,
+            put_price=0.0,
+            call_oi=1000,
+            put_oi=1000,
+            call_volume=0,
+            put_volume=0,
+            lot_size=75,
+        ),
+    ]
+    ivs = resolve_ivs(stub, rows, forward=FORWARD, t_years=T_YEARS, r=RATE, atm_strike=24600.0)
+    assert ivs.put[24500.0] is None, "the put must not have inverted"
+    assert ivs.fallback == pytest.approx(0.40)
+
+    out = price_delta_exposures(
+        stub, rows, ivs, forward=FORWARD, t_years=T_YEARS, r=RATE, weight_by="oi"
+    )
+    at_24500 = next(e for e in out if e.strike == 24500.0)
+    assert at_24500.put_delta == pytest.approx(-0.4 * 0.40)
+
+
+def test_delta_is_forwarded_with_the_correct_argument_order_at_the_pricer():
+    """The same argument-transposition trap
+    `test_delta_forwards_its_arguments_in_the_library_order` catches inside
+    `safe_delta`, but one level up: a bug at the `price_delta_exposures` call
+    site (e.g. swapping `t_years` and `r`) would not be caught there."""
+    stub = _RecordingDeltaCalls()
+    rows = [
+        ChainRow(
+            strike=24500.0,
+            call_price=120.0,
+            put_price=80.0,
+            call_oi=1000,
+            put_oi=1000,
+            call_volume=100,
+            put_volume=100,
+            lot_size=75,
+        )
+    ]
+    ivs = resolve_ivs(stub, rows, forward=FORWARD, t_years=T_YEARS, r=RATE, atm_strike=24500.0)
+    price_delta_exposures(stub, rows, ivs, forward=FORWARD, t_years=T_YEARS, r=RATE, weight_by="oi")
+    assert stub.calls[0] == ("c", FORWARD, 24500.0, T_YEARS, RATE, 0.20)
+    assert stub.calls[1] == ("p", FORWARD, 24500.0, T_YEARS, RATE, 0.20)

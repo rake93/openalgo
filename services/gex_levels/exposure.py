@@ -21,6 +21,12 @@ double-count it. See the comment at the multiplication site in
 Units are currency delta change per 1% move in the underlying. The F^2 * 0.01
 factor is constant across strikes, so it moves neither the walls nor the
 zero-gamma level relative to an unscaled profile - it converts units only.
+
+`weighted_legs` below is the shared preamble - sorting, weighting, and IV
+substitution - every exposure metric priced from an option chain needs. GEX is
+one caller; `delta_exposure.py`'s DEX is another. Sharing it, rather than each
+metric re-implementing its own copy, is what makes it structurally safe (not
+just conventional) for a caller to zip two metrics' output lists by position.
 """
 
 import math
@@ -149,6 +155,109 @@ def resolve_ivs(
     )
 
 
+@dataclass(frozen=True)
+class WeightedLeg:
+    """
+    One strike's pricing inputs, after weighting and IV substitution.
+
+    Attributes:
+        strike: The strike.
+        call_iv: The call's own inverted IV, or None if it did not invert.
+        put_iv: The put's own inverted IV, or None if it did not invert.
+        call_weight: Call OI or volume (per `weight_by`), NaN/inf mapped to 0.0.
+        put_weight: Put OI or volume (per `weight_by`), NaN/inf mapped to 0.0.
+        call_sigma: The volatility to price the call with - `call_iv` where
+            present, the chain-wide fallback otherwise.
+        put_sigma: The volatility to price the put with - `put_iv` where
+            present, the chain-wide fallback otherwise.
+    """
+
+    strike: float
+    call_iv: float | None
+    put_iv: float | None
+    call_weight: float
+    put_weight: float
+    call_sigma: float
+    put_sigma: float
+
+
+def weighted_legs(
+    rows: list[ChainRow],
+    ivs: ResolvedIVs,
+    weight_by: WeightBy,
+) -> list[WeightedLeg]:
+    """
+    Sorted, validated per-strike pricing inputs, shared by every exposure metric.
+
+    Every metric priced from an option chain - GEX here, DEX in
+    `delta_exposure.py`, and whatever comes after - needs the same four things
+    per strike: a stable strike order, a weight per leg (OI or volume, with
+    NaN/inf treated as no position), and a volatility per leg (the strike's own
+    IV where it inverted, the chain-wide fallback where it did not). Computing
+    that once here rather than once per metric means position alignment across
+    metrics - e.g. a caller zipping GEX and DEX output lists by index - holds
+    structurally, because every caller iterates the SAME sorted, validated
+    list. It is not a coincidence of two independently maintained loops that
+    happen to use the same sort key today.
+
+    A strike whose own premium would not invert is still priced, with the
+    chain's fallback volatility, rather than dropped. Dropping it would move
+    the walls by removing real open interest from the profile.
+
+    Args:
+        rows: Chain rows, any order.
+        ivs: Volatilities from `resolve_ivs`. MUST have been resolved from this
+            exact same `rows` list.
+        weight_by: 'oi' for the standing book, 'volume' for today's flow.
+
+    Returns:
+        One WeightedLeg per input row, sorted by strike ascending. The sort is
+        a precondition of `find_walls`, which reads the first and last entries
+        to decide whether a wall sits at the window edge, and of any caller
+        that zips two metrics' output lists by position.
+
+    Raises:
+        ValueError: If `weight_by` is neither 'oi' nor 'volume'. An unrecognised
+            weighting must never quietly read as open interest - it would change
+            the meaning of the whole study with no signal to the caller.
+        ValueError: If a row's strike is absent from `ivs.call` (or `ivs.put`).
+            That is a genuine key absence - `rows` does not match what
+            `resolve_ivs` was given - and is not the same thing as a strike
+            that is present but `None`, which means the leg did not invert and
+            is a legitimate, expected case that still takes the fallback.
+    """
+    if weight_by not in ("oi", "volume"):
+        raise ValueError(f"weight_by must be 'oi' or 'volume', got {weight_by!r}")
+
+    ordered = sorted(rows, key=lambda row: row.strike)
+    use_volume = weight_by == "volume"
+
+    out: list[WeightedLeg] = []
+    for row in ordered:
+        if row.strike not in ivs.call or row.strike not in ivs.put:
+            raise ValueError(
+                f"ivs was not resolved for strike {row.strike}; resolve_ivs and "
+                "the pricing call must be given the same rows"
+            )
+        call_iv = ivs.call.get(row.strike)
+        put_iv = ivs.put.get(row.strike)
+        call_weight = finite_weight(row.call_volume if use_volume else row.call_oi)
+        put_weight = finite_weight(row.put_volume if use_volume else row.put_oi)
+
+        out.append(
+            WeightedLeg(
+                strike=row.strike,
+                call_iv=call_iv,
+                put_iv=put_iv,
+                call_weight=call_weight,
+                put_weight=put_weight,
+                call_sigma=call_iv if call_iv is not None else ivs.fallback,
+                put_sigma=put_iv if put_iv is not None else ivs.fallback,
+            )
+        )
+    return out
+
+
 def price_exposures(
     black76,
     rows: list[ChainRow],
@@ -169,9 +278,9 @@ def price_exposures(
     price the market never traded at yields a number with no meaning - and, far
     enough away, no solution at all.
 
-    A strike whose own premium would not invert is still priced, with the
-    chain's fallback volatility, rather than dropped. Dropping it would move the
-    walls by removing real open interest from the profile.
+    Weighting, sorting, IV substitution and the mismatched-rows guard live in
+    `weighted_legs`, shared with every other exposure metric priced from the
+    same chain - see its docstring for why that sharing matters.
 
     Args:
         black76: The opengreeks.black76 module.
@@ -187,47 +296,19 @@ def price_exposures(
         weight_by: 'oi' for the standing book, 'volume' for today's flow.
 
     Returns:
-        One StrikeExposure per input row, sorted by strike ascending. The sort
-        is a precondition of `find_walls`, which reads the first and last
-        entries to decide whether a wall sits at the window edge.
+        One StrikeExposure per input row, sorted by strike ascending.
 
     Raises:
-        ValueError: If `weight_by` is neither 'oi' nor 'volume'. An unrecognised
-            weighting must never quietly read as open interest - it would change
-            the meaning of the whole study with no signal to the caller.
-        ValueError: If a row's strike is absent from `ivs.call` (or `ivs.put`).
-            That is a genuine key absence - `rows` does not match what
-            `resolve_ivs` was given - and is not the same thing as a strike
-            that is present but `None`, which means the leg did not invert and
-            is a legitimate, expected case that still takes the fallback.
+        ValueError: Propagated from `weighted_legs` - see there for when.
     """
-    if weight_by not in ("oi", "volume"):
-        raise ValueError(f"weight_by must be 'oi' or 'volume', got {weight_by!r}")
-
-    ordered = sorted(rows, key=lambda row: row.strike)
-    use_volume = weight_by == "volume"
-
     # Converts unit gamma into currency delta change per 1% move. A non-finite
     # forward yields no exposure rather than a profile of NaN.
     scale_per_percent = forward * forward * _ONE_PERCENT if math.isfinite(forward) else 0.0
 
     out: list[StrikeExposure] = []
-    for row in ordered:
-        if row.strike not in ivs.call or row.strike not in ivs.put:
-            raise ValueError(
-                f"ivs was not resolved for strike {row.strike}; resolve_ivs and "
-                "price_exposures must be given the same rows"
-            )
-        call_iv = ivs.call.get(row.strike)
-        put_iv = ivs.put.get(row.strike)
-        call_weight = finite_weight(row.call_volume if use_volume else row.call_oi)
-        put_weight = finite_weight(row.put_volume if use_volume else row.put_oi)
-
-        call_sigma = call_iv if call_iv is not None else ivs.fallback
-        put_sigma = put_iv if put_iv is not None else ivs.fallback
-
-        call_gamma = safe_gamma(black76, "c", forward, row.strike, t_years, r, call_sigma)
-        put_gamma = safe_gamma(black76, "p", forward, row.strike, t_years, r, put_sigma)
+    for leg in weighted_legs(rows, ivs, weight_by):
+        call_gamma = safe_gamma(black76, "c", forward, leg.strike, t_years, r, leg.call_sigma)
+        put_gamma = safe_gamma(black76, "p", forward, leg.strike, t_years, r, leg.put_sigma)
 
         # No `row.lot_size` factor here, deliberately. The textbook formula
         # multiplies by the contract multiplier because OI is conventionally
@@ -236,17 +317,17 @@ def price_exposures(
         # volume value across a live chain divides evenly by it). Multiplying
         # by lot_size again would double-count it - e.g. 65x too large on
         # NIFTY. `lot_size` is still carried on `ChainRow` for display only.
-        call_gex = DEALER_CALL_SIGN * call_gamma * call_weight * scale_per_percent
-        put_gex = DEALER_PUT_SIGN * put_gamma * put_weight * scale_per_percent
+        call_gex = DEALER_CALL_SIGN * call_gamma * leg.call_weight * scale_per_percent
+        put_gex = DEALER_PUT_SIGN * put_gamma * leg.put_weight * scale_per_percent
 
         out.append(
             StrikeExposure(
-                strike=row.strike,
+                strike=leg.strike,
                 call_gex=call_gex,
                 put_gex=put_gex,
                 net_gex=call_gex + put_gex,
-                call_iv=call_iv,
-                put_iv=put_iv,
+                call_iv=leg.call_iv,
+                put_iv=leg.put_iv,
                 call_gamma=call_gamma,
                 put_gamma=put_gamma,
             )

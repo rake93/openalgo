@@ -456,6 +456,53 @@ def test_the_gammas_are_carried_through_to_the_exposure():
         assert exposure.put_gex == pytest.approx(-exposure.put_gamma * row.put_oi * scale)
 
 
+class _RecordingGammaCalls:
+    """Records every call made to `.gamma`, so a call-site argument
+    transposition (e.g. `t_years` and `r`) at the `price_exposures` level is
+    caught, not just inside `safe_gamma`."""
+
+    def __init__(self):
+        self.calls = []
+
+    def implied_volatility(self, price, F, K, r, t, flag):
+        return 0.20
+
+    def gamma(self, flag, F, K, t, r, sigma):
+        self.calls.append((flag, F, K, t, r, sigma))
+        return 0.001
+
+
+def test_gamma_is_forwarded_with_the_correct_argument_order_at_the_pricer():
+    """exposure.py's suite otherwise only exercises safe_gamma's own argument
+    order (see blackscholes tests), never the price_exposures call site. A
+    transposition there - e.g. swapping t_years and r - would leave every
+    other test in this file green while feeding the real library garbage."""
+    stub = _RecordingGammaCalls()
+    rows = [
+        ChainRow(
+            strike=24500.0,
+            call_price=120.0,
+            put_price=80.0,
+            call_oi=1000,
+            put_oi=1000,
+            call_volume=100,
+            put_volume=100,
+            lot_size=75,
+        )
+    ]
+    compute_exposures(
+        stub,
+        rows,
+        forward=24600.0,
+        t_years=0.02,
+        r=0.065,
+        atm_strike=24500.0,
+        weight_by="oi",
+    )
+    assert stub.calls[0] == ("c", 24600.0, 24500.0, 0.02, 0.065, 0.20)
+    assert stub.calls[1] == ("p", 24600.0, 24500.0, 0.02, 0.065, 0.20)
+
+
 def test_a_gamma_that_cannot_be_computed_is_reported_as_zero_not_omitted():
     """safe_gamma fails to 0.0 rather than raising; that zero must reach the
     payload, because the page's gamma column is read positionally against the
