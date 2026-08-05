@@ -144,51 +144,55 @@ export function GexDashboard({
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!onOffsetChange || e.button !== 0) return
-      grabRef.current = {
+      const grab = {
         pointerX: e.clientX,
         pointerY: e.clientY,
         from: offset ?? { x: 0, y: 0 },
       }
-      // Capture so a fast drag that outruns the header keeps delivering moves.
-      // Guarded because it is absent in jsdom and on older engines, and a
-      // throw here would lose the drag entirely rather than degrade it - the
-      // drag still works without capture, it just stops if the cursor
-      // outruns the handle.
-      e.currentTarget.setPointerCapture?.(e.pointerId)
+      grabRef.current = grab
+
+      // Listen on window rather than relying on setPointerCapture. Capture is
+      // the tidier API but it does not hold for every synthesised pointer, and
+      // when it slips the moves are delivered to whatever is under the cursor -
+      // the chart - so the card silently stops following. Window listeners
+      // track the drag wherever the cursor goes, which is what a drag means.
+      const move = (ev: PointerEvent) => {
+        const card = cardRef.current
+        const container = card?.offsetParent as HTMLElement | null
+        const next = {
+          x: grab.from.x + (ev.clientX - grab.pointerX),
+          y: grab.from.y + (ev.clientY - grab.pointerY),
+        }
+        onOffsetChange(
+          card && container
+            ? clampGexCardOffset(
+                next,
+                { width: card.offsetWidth, height: card.offsetHeight },
+                { width: container.clientWidth, height: container.clientHeight }
+              )
+            : next
+        )
+      }
+      const up = () => {
+        grabRef.current = null
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', up)
+        window.removeEventListener('pointercancel', up)
+      }
+      window.addEventListener('pointermove', move)
+      window.addEventListener('pointerup', up)
+      window.addEventListener('pointercancel', up)
+
+      // stopPropagation, not just preventDefault: this card renders INSIDE the
+      // chart's own container, so without it the press bubbles to the chart's
+      // pointer handler and pans the chart out from under the card while the
+      // card also moves. The close button never needed this because a click
+      // does not pan - only a press-and-drag does.
+      e.stopPropagation()
       e.preventDefault()
     },
     [offset, onOffsetChange]
   )
-
-  const onPointerMove = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      const grab = grabRef.current
-      if (!grab || !onOffsetChange) return
-      const card = cardRef.current
-      const container = card?.offsetParent as HTMLElement | null
-      const next = {
-        x: grab.from.x + (e.clientX - grab.pointerX),
-        y: grab.from.y + (e.clientY - grab.pointerY),
-      }
-      onOffsetChange(
-        card && container
-          ? clampGexCardOffset(
-              next,
-              { width: card.offsetWidth, height: card.offsetHeight },
-              { width: container.clientWidth, height: container.clientHeight }
-            )
-          : next
-      )
-    },
-    [onOffsetChange]
-  )
-
-  const endDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    grabRef.current = null
-    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
-      e.currentTarget.releasePointerCapture?.(e.pointerId)
-    }
-  }, [])
 
   // The only recovery if a layout change strands the card somewhere useless.
   const onDoubleClick = useCallback(() => onOffsetChange?.({ x: 0, y: 0 }), [onOffsetChange])
@@ -255,10 +259,7 @@ export function GexDashboard({
           and numbers worth selecting, and making all of it draggable would
           break both. */}
       <div
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        onPointerDownCapture={onPointerDown}
         onDoubleClick={onDoubleClick}
         className={cn(
           'flex items-center gap-2 border-b border-border px-2.5 py-1.5',
