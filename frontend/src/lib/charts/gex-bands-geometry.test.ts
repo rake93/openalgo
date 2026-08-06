@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  computeBandCoverage,
   DEFAULT_BAND_MAX_GAP_SECONDS,
   type GexBandPoint,
   splitBandSegments,
@@ -182,5 +183,67 @@ describe('splitCorridorSegments', () => {
 
   it('returns nothing when a wall is absent throughout', () => {
     expect(corridor([0, 24700, null], [M, 24700, null])).toEqual([])
+  })
+})
+
+describe('computeBandCoverage', () => {
+  const reading = (ts: number, call: number | null, put: number | null, zg: number | null) => ({
+    ts,
+    call_wall: call,
+    put_wall: put,
+    zero_gamma: zg,
+  })
+
+  it('reports each level’s first and last reading', () => {
+    const coverage = computeBandCoverage([
+      reading(0, 24_800, 24_400, 24_600),
+      reading(M, 24_800, 24_400, 24_610),
+      reading(2 * M, 24_800, 24_400, 24_620),
+    ])
+
+    expect(coverage.call_wall).toEqual({ fromTs: 0, toTs: 2 * M })
+    expect(coverage.zero_gamma).toEqual({ fromTs: 0, toTs: 2 * M })
+  })
+
+  it('returns null for a level that never had a reading', () => {
+    // The case that matters: zero_gamma is null whenever the profile does not
+    // cross zero near the forward, so its band draws nothing and the live line
+    // must NOT be clipped against it.
+    const coverage = computeBandCoverage([
+      reading(0, 24_800, 24_400, null),
+      reading(M, 24_800, 24_400, null),
+    ])
+
+    expect(coverage.call_wall).toEqual({ fromTs: 0, toTs: M })
+    expect(coverage.zero_gamma).toBeNull()
+  })
+
+  it('spans only the minutes a level actually had readings', () => {
+    // A level that appears late must not claim the whole window, or the live
+    // line would be clipped over a span its band never drew.
+    const coverage = computeBandCoverage([
+      reading(0, 24_800, null, null),
+      reading(M, 24_800, 24_400, null),
+      reading(2 * M, 24_800, 24_400, null),
+    ])
+
+    expect(coverage.put_wall).toEqual({ fromTs: M, toTs: 2 * M })
+  })
+
+  it('ignores a non-finite reading the same way the splitter does', () => {
+    const coverage = computeBandCoverage([
+      reading(0, Number.NaN, 24_400, null),
+      reading(M, 24_800, 24_400, null),
+    ])
+
+    expect(coverage.call_wall).toEqual({ fromTs: M, toTs: M })
+  })
+
+  it('returns null for every level when there are no points', () => {
+    expect(computeBandCoverage([])).toEqual({
+      call_wall: null,
+      put_wall: null,
+      zero_gamma: null,
+    })
   })
 })

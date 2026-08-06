@@ -102,6 +102,62 @@ export function splitBandSegments(
   return segments
 }
 
+/** One minute of every level, as the history endpoint returns it. */
+export interface GexLevelReadings {
+  ts: number
+  call_wall: number | null
+  put_wall: number | null
+  zero_gamma: number | null
+}
+
+/** The time span one level's band draws over, or null if it draws nothing. */
+export type GexBandSpan = { fromTs: number; toTs: number } | null
+
+/** Per level, the span its band covers. */
+export interface GexBandCoverage {
+  call_wall: GexBandSpan
+  put_wall: GexBandSpan
+  zero_gamma: GexBandSpan
+}
+
+/**
+ * The span each level's band actually draws over.
+ *
+ * `GexLevelsPrimitive` uses this to clip its dashed live line away wherever the
+ * band already draws that level. The two are the same quantity at the same
+ * price, so drawing both put a dash directly on top of a solid line and neither
+ * read as its own object - a wall that had not moved during the window appeared
+ * to have no band at all.
+ *
+ * Computed PER LEVEL, and from readings rather than from the request window,
+ * because the three do not cover the same span. `zero_gamma` is null whenever
+ * the profile does not cross zero near the forward, so a session where it never
+ * crossed draws no Zero-Gamma band at all - and clipping the live line over a
+ * band that is not there would erase the level rather than defer to it.
+ *
+ * @param points Readings in any order; only the extremes are used.
+ * @returns A span per level, null for any level with no finite reading.
+ */
+export function computeBandCoverage(points: readonly GexLevelReadings[]): GexBandCoverage {
+  const spanFor = (key: 'call_wall' | 'put_wall' | 'zero_gamma'): GexBandSpan => {
+    let from = Number.POSITIVE_INFINITY
+    let to = Number.NEGATIVE_INFINITY
+    for (const point of points) {
+      const value = point[key]
+      if (value === null || !Number.isFinite(value)) continue
+      if (point.ts < from) from = point.ts
+      if (point.ts > to) to = point.ts
+    }
+    return from <= to ? { fromTs: from, toTs: to } : null
+  }
+
+  return {
+    call_wall: spanFor('call_wall'),
+    put_wall: spanFor('put_wall'),
+    zero_gamma: spanFor('zero_gamma'),
+  }
+}
+
 /** One minute of the corridor: both walls, paired. */
 export interface GexCorridorPoint {
   ts: number

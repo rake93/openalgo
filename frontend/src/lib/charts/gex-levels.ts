@@ -26,6 +26,7 @@
 
 import type { Chart } from 'openalgo-charts'
 import type { GEXHistoryResponse, GEXLevelsResponse, GEXWeightBy, GexMetric } from '@/api/gex'
+import { computeBandCoverage, type GexBandCoverage } from './gex-bands-geometry'
 import { type GexBandsOptions, GexBandsPrimitive } from './gex-bands-primitive'
 import {
   GexLevelsPrimitive,
@@ -72,6 +73,15 @@ export interface GexLevelsConfig {
    * truncating it.
    */
   bandsLookbackHours: number
+  /**
+   * Shade the region between the two wall bands.
+   *
+   * Off by default: the bands are meant to read as three distinct lines, and a
+   * filled region between two of them competes with exactly that. Kept as a
+   * control rather than deleted because the corridor is the range dealers are
+   * hedging inside, and its width through the session is worth seeing on demand.
+   */
+  showBandsCorridor: boolean
   showDashboard: boolean
   refreshSeconds: number
   side: 'left' | 'right'
@@ -109,6 +119,7 @@ export const DEFAULT_GEX_LEVELS_SETTINGS: GexLevelsConfig = {
   showZeroGamma: true,
   showBands: false,
   bandsLookbackHours: 6,
+  showBandsCorridor: false,
   showDashboard: true,
   refreshSeconds: 60,
   side: 'right',
@@ -431,6 +442,10 @@ export class GexLevelsManager {
   private fetchHistoryNow(): void {
     if (!this.settings.enabled || !this.settings.showBands) {
       this.bandsPrimitive?.setData(null)
+      // The live levels were clipped around the bands; with no bands they must
+      // go back to spanning the full width, or the level silently disappears
+      // over the span history used to cover.
+      this.primitive?.setOptions(this.primitiveOptions())
       return
     }
 
@@ -466,6 +481,10 @@ export class GexLevelsManager {
         this.historyValue = response
         this.cb.onHistory?.(response)
         this.bandsPrimitive?.setData({ points: response.points ?? [] })
+        // Coverage is derived from `historyValue`, so the live levels have to be
+        // told it changed - otherwise the dash keeps overprinting the span the
+        // bands just took over.
+        this.primitive?.setOptions(this.primitiveOptions())
       })
       .catch(() => {
         // Deliberately silent, and deliberately NOT clearing what is drawn. A
@@ -604,6 +623,7 @@ export class GexLevelsManager {
       showCallWall: c.showCallWall,
       showPutWall: c.showPutWall,
       showZeroGamma: c.showZeroGamma,
+      showCorridor: c.showBandsCorridor,
     }
   }
 
@@ -624,7 +644,23 @@ export class GexLevelsManager {
       // `ProfileManager.volumeOptions()`'s handling of the Market Profile
       // collision.
       columnInset: this.cb.volumeProfileWidthOnSide?.(c.side) ?? 0,
+      bandCoverage: this.bandCoverage(),
     }
+  }
+
+  /**
+   * Where the bands already draw each level, for the live primitive to skip.
+   *
+   * Derived on every call rather than stored, so it can never be one refresh
+   * behind the history the bands are actually drawing - the two are read from
+   * the same `historyValue`. Null whenever Bands is off or empty, which restores
+   * the full-width dashed lines.
+   */
+  private bandCoverage(): GexBandCoverage | null {
+    if (!this.settings.enabled || !this.settings.showBands) return null
+    const points = this.historyValue?.points
+    if (!points || points.length === 0) return null
+    return computeBandCoverage(points)
   }
 
   /**

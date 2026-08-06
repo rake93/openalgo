@@ -39,6 +39,7 @@ import type {
   ZOrder,
 } from 'openalgo-charts'
 import type { GEXLevelsResponse, GEXStrikeLevel, GexMetric } from '@/api/gex'
+import type { GexBandCoverage, GexBandSpan } from './gex-bands-geometry'
 import {
   computeGexBarGeometry,
   computeGexLevelPlacement,
@@ -68,6 +69,20 @@ export interface GexLevelsPrimitiveOptions {
   callColor: string
   putColor: string
   zeroGammaColor: string
+  /**
+   * Where Gamma Bands already draw each level, so this primitive can stand back.
+   *
+   * A band and its live level are the same quantity at the same price. Drawn
+   * together they landed within one pixel of each other - dashed and opaque over
+   * solid - and the composite read as a single two-tone dashed line rather than
+   * as two objects. Clipping the dash away over the recorded span makes the pair
+   * read as ONE line per level: solid where it was recorded, dashed at the
+   * current value beyond it.
+   *
+   * Null when Bands is off or has no history, which restores the full-width
+   * dashed line exactly as before.
+   */
+  bandCoverage: GexBandCoverage | null
 }
 
 export const DEFAULT_GEX_PRIMITIVE_OPTIONS: GexLevelsPrimitiveOptions = {
@@ -82,6 +97,7 @@ export const DEFAULT_GEX_PRIMITIVE_OPTIONS: GexLevelsPrimitiveOptions = {
   callColor: '#26a69a',
   putColor: '#ef5350',
   zeroGammaColor: '#f5a623',
+  bandCoverage: null,
 }
 
 /** Label font size in px, scaled by dpr at draw time like every other primitive in this library. */
@@ -153,18 +169,35 @@ export class GexLevelsPrimitive implements IPrimitive {
 
     if (this.opts.showBars) this.drawBars(ctx, rc, d.strikes ?? [])
 
+    const covered = this.opts.bandCoverage
     if (this.opts.showCallWall && d.call_wall != null) {
-      this.drawLevel(ctx, rc, d.call_wall, 'Call Wall', this.opts.callColor, true)
+      this.drawLevel(
+        ctx,
+        rc,
+        d.call_wall,
+        'Call Wall',
+        this.opts.callColor,
+        true,
+        covered?.call_wall
+      )
     }
     if (this.opts.showPutWall && d.put_wall != null) {
-      this.drawLevel(ctx, rc, d.put_wall, 'Put Wall', this.opts.putColor, true)
+      this.drawLevel(ctx, rc, d.put_wall, 'Put Wall', this.opts.putColor, true, covered?.put_wall)
     }
     // `zero_gamma: null` is an ordinary market state (the gamma profile does
     // not cross zero near the forward), not a missing value to fall back on -
     // the dashboard already shows "No local cross" for it, so this just skips
     // the line rather than drawing a misleading one at price 0.
     if (this.opts.showZeroGamma && d.zero_gamma != null) {
-      this.drawLevel(ctx, rc, d.zero_gamma, 'Zero-Gamma', this.opts.zeroGammaColor, false)
+      this.drawLevel(
+        ctx,
+        rc,
+        d.zero_gamma,
+        'Zero-Gamma',
+        this.opts.zeroGammaColor,
+        false,
+        covered?.zero_gamma
+      )
     }
   }
 
@@ -179,7 +212,8 @@ export class GexLevelsPrimitive implements IPrimitive {
     price: number,
     label: string,
     color: string,
-    dashed: boolean
+    dashed: boolean,
+    covered: GexBandSpan = null
   ): void {
     const dpr = rc.dpr
     const placement = computeGexLevelPlacement(
@@ -194,11 +228,28 @@ export class GexLevelsPrimitive implements IPrimitive {
     ctx.lineWidth = Math.max(1, Math.round(dpr))
     ctx.setLineDash(dashed ? [6 * dpr, 4 * dpr] : [])
     ctx.beginPath()
-    ctx.moveTo(0, y)
     const xEnd = placement.onScreen
       ? rc.plotWidth * dpr
       : Math.min(EDGE_MARKER_LENGTH_PX * dpr, rc.plotWidth * dpr)
-    ctx.lineTo(xEnd, y)
+
+    // Skip the span a band already draws. Up to two runs, because recorded
+    // history can sit in the middle of the visible range with older bars to its
+    // left; both sides still need the level.
+    const skip = this.coveredSpanX(rc, covered)
+    if (skip === null) {
+      ctx.moveTo(0, y)
+      ctx.lineTo(xEnd, y)
+    } else {
+      const [skipFrom, skipTo] = skip
+      if (skipFrom > 0) {
+        ctx.moveTo(0, y)
+        ctx.lineTo(Math.min(skipFrom, xEnd), y)
+      }
+      if (skipTo < xEnd) {
+        ctx.moveTo(Math.max(skipTo, 0), y)
+        ctx.lineTo(xEnd, y)
+      }
+    }
     ctx.stroke()
     ctx.setLineDash([])
 
@@ -211,6 +262,27 @@ export class GexLevelsPrimitive implements IPrimitive {
       : `${label} ${formatGexPrice(price)}`
     ctx.fillText(text, 8 * dpr, y - 3 * dpr)
     ctx.restore()
+  }
+
+  /**
+   * A band's covered time span as an x range in device pixels, or null.
+   *
+   * `timeToIndexFloat` for the same reason `GexBandsPrimitive` uses it: a
+   * snapshot is floored to the recorder's minute cadence while the chart may be
+   * on any timeframe, so an exact-match lookup would land nowhere on a 5-minute
+   * chart and the clip would silently never apply.
+   *
+   * The label is deliberately NOT clipped. It is the only thing that states the
+   * level's current price in words, and a reader whose whole visible range is
+   * covered by history would otherwise lose it entirely.
+   */
+  private coveredSpanX(rc: PrimitiveRenderContext, covered: GexBandSpan): [number, number] | null {
+    if (!covered) return null
+    const xFor = (ts: number) => rc.timeScale.indexToX(rc.dataLayer.timeToIndexFloat(ts)) * rc.dpr
+    const from = xFor(covered.fromTs)
+    const to = xFor(covered.toTs)
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return null
+    return from <= to ? [from, to] : [to, from]
   }
 
   /**

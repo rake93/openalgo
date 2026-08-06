@@ -12,9 +12,34 @@
  * only counts points.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import * as geometry from './gex-bands-geometry'
 import type { GexBandSeries } from './gex-bands-primitive'
 import { DEFAULT_GEX_BANDS_OPTIONS, GexBandsPrimitive } from './gex-bands-primitive'
+
+// Call-through spies, so every other test in this file still runs the real
+// splitting. They exist only so the redraw tests can count how often it happens.
+vi.mock('./gex-bands-geometry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./gex-bands-geometry')>()
+  return {
+    ...actual,
+    splitBandSegments: vi.fn(actual.splitBandSegments),
+    splitCorridorSegments: vi.fn(actual.splitCorridorSegments),
+  }
+})
+
+/** Splitting calls since the last reset, across both geometry helpers. */
+function splitCounts() {
+  return {
+    bands: vi.mocked(geometry.splitBandSegments).mock.calls.length,
+    corridor: vi.mocked(geometry.splitCorridorSegments).mock.calls.length,
+  }
+}
+
+function resetSplitCounts() {
+  vi.mocked(geometry.splitBandSegments).mockClear()
+  vi.mocked(geometry.splitCorridorSegments).mockClear()
+}
 
 const M = 60
 const T0 = 1_754_000_040
@@ -169,6 +194,87 @@ describe('GexBandsPrimitive draw', () => {
     ])
   })
 
+  it('slopes rather than stepping for Zero-Gamma, which is not a strike', () => {
+    // The counterpart to the test above, and the reason the two cannot share an
+    // interpolation. A wall is strike-quantised - measured live, `call_wall`
+    // held ONE distinct value across 53 consecutive minutes - so a step asserts
+    // something true. Zero-Gamma is an interpolated crossing price that took 53
+    // distinct values across those same 53 minutes; it genuinely passes through
+    // the prices between two readings, so a step asserts something false.
+    //
+    // It also renders wrongly: a staircase whose treads are ~3px on a 5-minute
+    // chart, stroked with the 2-on/3-off dash Zero-Gamma uses, fragments into
+    // scattered marks instead of a line.
+    const ctx = fakeCtx()
+    const primitive = new GexBandsPrimitive({ showCallWall: false, showPutWall: false })
+    primitive.setData({
+      points: [
+        { ts: T0, call_wall: null, put_wall: null, zero_gamma: 24600 },
+        { ts: T0 + M, call_wall: null, put_wall: null, zero_gamma: 24650 },
+      ],
+    })
+    primitive.draw(ctx as never, fakeRc() as never)
+
+    const path = pathsFor(ctx, DEFAULT_GEX_BANDS_OPTIONS.zeroGammaColor)[0]
+    const yFor = (price: number) => 400 * (1 - (price - 24_000) / 1_000)
+    // Two vertices, not three: a direct diagonal, with no intermediate hold.
+    expect(path.points).toEqual([
+      [100, yFor(24600)],
+      [110, yFor(24650)],
+    ])
+  })
+
+  it('splits once and reuses the result across redraws', () => {
+    // draw() fires on every pan, zoom and tick, and re-splitting the whole
+    // history each frame cost 9.46 ms at MAX_HISTORY_POINTS - 57% of a 60fps
+    // budget (2026-08-06 fd-audit). Splitting depends only on the points and
+    // maxGapSeconds; the viewport is what changes between frames. The Heatmap
+    // draws a 47-strike grid off the same shape, which is why this is pinned.
+    const primitive = new GexBandsPrimitive()
+    primitive.setData(series())
+    resetSplitCounts()
+
+    primitive.draw(fakeCtx() as never, fakeRc() as never)
+    const first = splitCounts()
+    expect(first.bands).toBeGreaterThan(0)
+    expect(first.corridor).toBeGreaterThan(0)
+
+    // A pan and a zoom: new viewport, same data.
+    primitive.draw(
+      fakeCtx() as never,
+      fakeRc({ timeScale: { indexToX: (i: number) => i * 25 } }) as never
+    )
+    primitive.draw(fakeCtx() as never, fakeRc({ dpr: 2 }) as never)
+
+    expect(splitCounts()).toEqual(first)
+  })
+
+  it('re-splits after the data changes', () => {
+    const primitive = new GexBandsPrimitive()
+    primitive.setData(series())
+    primitive.draw(fakeCtx() as never, fakeRc() as never)
+    resetSplitCounts()
+
+    primitive.setData(series())
+    primitive.draw(fakeCtx() as never, fakeRc() as never)
+
+    // Stale bands would keep drawing the previous window after every refresh -
+    // a far worse defect than the cost the memo removes.
+    expect(splitCounts().bands).toBeGreaterThan(0)
+  })
+
+  it('re-splits after options change, since the gap threshold feeds the split', () => {
+    const primitive = new GexBandsPrimitive()
+    primitive.setData(series())
+    primitive.draw(fakeCtx() as never, fakeRc() as never)
+    resetSplitCounts()
+
+    primitive.setOptions({ maxGapSeconds: 30 })
+    primitive.draw(fakeCtx() as never, fakeRc() as never)
+
+    expect(splitCounts().bands).toBeGreaterThan(0)
+  })
+
   it('maps a timestamp through the data layer rather than assuming bar spacing', () => {
     // timeToIndexFloat, not timeToIndex: snapshots are minute-floored and the
     // chart may be on any timeframe, so an exact-match lookup would silently
@@ -257,12 +363,21 @@ describe('GexBandsPrimitive draw', () => {
 })
 
 describe('GexBandsPrimitive corridor', () => {
-  it('shades between the two walls', () => {
-    // The corridor is what makes this read as BANDS rather than as three more
-    // lines on a chart that already carries a VWAP, three dashed live levels
-    // and the candles.
+  it('is off by default, so the three levels read as three lines', () => {
+    // The corridor competes with exactly the thing the bands are for. It stays
+    // available as a toggle; it is just not what the study looks like on open.
     const ctx = fakeCtx()
     const primitive = new GexBandsPrimitive()
+    primitive.setData(series())
+    primitive.draw(ctx as never, fakeRc() as never)
+
+    expect(DEFAULT_GEX_BANDS_OPTIONS.showCorridor).toBe(false)
+    expect(ctx.fills).toHaveLength(0)
+  })
+
+  it('shades between the two walls when switched on', () => {
+    const ctx = fakeCtx()
+    const primitive = new GexBandsPrimitive({ showCorridor: true })
     primitive.setData(series())
     primitive.draw(ctx as never, fakeRc() as never)
 
@@ -273,7 +388,7 @@ describe('GexBandsPrimitive corridor', () => {
 
   it('breaks the shading wherever the walls break', () => {
     const ctx = fakeCtx()
-    const primitive = new GexBandsPrimitive()
+    const primitive = new GexBandsPrimitive({ showCorridor: true })
     primitive.setData({
       points: [
         { ts: T0, call_wall: 24800, put_wall: 24400, zero_gamma: null },
@@ -312,7 +427,7 @@ describe('GexBandsPrimitive corridor', () => {
     // A fill that sloped where its edge stepped would leave a visible sliver
     // at every wall move.
     const ctx = fakeCtx()
-    const primitive = new GexBandsPrimitive({ showZeroGamma: false })
+    const primitive = new GexBandsPrimitive({ showZeroGamma: false, showCorridor: true })
     primitive.setData({
       points: [
         { ts: T0, call_wall: 24800, put_wall: 24400, zero_gamma: null },

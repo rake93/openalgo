@@ -7,9 +7,17 @@
  * a wall moved and whether price respected it before it did - the question a
  * single snapshot cannot answer, and the reason the recorder exists.
  *
- * A band and its live level are deliberately the same colour: they are the same
- * thing, now versus through time. The band is thinner and slightly transparent
- * so the live level still reads as "where it is" against "where it was".
+ * A band and its live level are deliberately the same colour and width: they are
+ * the same thing, now versus through time, and together they form ONE line per
+ * level - solid where history recorded it, dashed beyond it at the current
+ * value. `GexLevelsPrimitive` clips its dashed line away wherever a band covers
+ * it, so the two are never drawn on top of each other.
+ *
+ * That clipping is not cosmetic. Measured on a live chart, a band sat within one
+ * pixel of its own live level, dashed and opaque on top of solid and faded, and
+ * the composite read as a single two-tone dashed line: a wall that had not moved
+ * during the window appeared to have no band at all, while one that had moved
+ * appeared to be the only band drawn. Same code, different data.
  *
  * Segment logic lives in `gex-bands-geometry.ts` and is tested without a canvas.
  * This file adds only the `IPrimitive` and the canvas calls.
@@ -78,8 +86,14 @@ export const DEFAULT_GEX_BANDS_OPTIONS: GexBandsOptions = {
   callColor: '#26a69a',
   putColor: '#ef5350',
   zeroGammaColor: '#f5a623',
-  opacity: 0.8,
-  showCorridor: true,
+  // Fully opaque. The live level no longer overprints a band, so there is
+  // nothing to sit behind, and a faded run of line meeting a solid one at the
+  // edge of history would read as a seam in a level that did not change.
+  opacity: 1,
+  // OFF by default. The three levels are meant to read as three distinct lines;
+  // a shaded region between two of them competes with exactly that. Still a
+  // toggle in the Studies panel for anyone who wants the corridor.
+  showCorridor: false,
   // Neutral rather than either wall's colour: the corridor belongs to both, and
   // tinting it green or red would imply a direction the region does not carry.
   corridorColor: '#7e8aa2',
@@ -91,10 +105,51 @@ const LONE_POINT_RADIUS_PX = 2
 
 type BandKey = 'call_wall' | 'put_wall' | 'zero_gamma'
 
+/**
+ * How consecutive readings of one band are joined.
+ *
+ * `step` for a level that holds a value until it jumps to another (the walls,
+ * which sit on strikes); `linear` for one that varies continuously between
+ * readings (Zero-Gamma). See `bandSpecs`.
+ */
+type BandInterpolation = 'step' | 'linear'
+
+/** One band's rendering, as `bandSpecs` describes it. */
+interface BandSpec {
+  key: BandKey
+  shown: boolean
+  colour: string
+  interpolation: BandInterpolation
+}
+
+/** Everything `draw()` needs that depends on the data rather than the viewport. */
+interface PreparedSegments {
+  corridor: GexCorridorPoint[][]
+  call_wall: GexBandPoint[][]
+  put_wall: GexBandPoint[][]
+  zero_gamma: GexBandPoint[][]
+}
+
 export class GexBandsPrimitive implements IPrimitive {
   private opts: GexBandsOptions
   private data: GexBandSeries | null = null
   private host: PrimitiveHost | null = null
+  /**
+   * Segments for the current data and options; null means "rebuild on next draw".
+   *
+   * `draw()` fires on every pan, zoom and tick, and re-splitting the whole
+   * history each time cost 9.46 ms per frame at `MAX_HISTORY_POINTS` - 57% of a
+   * 60fps budget, measured in the 2026-08-06 fd-audit. Splitting depends only on
+   * the points and on `maxGapSeconds`; neither changes between frames, while the
+   * viewport changes constantly. So the split is done once and the per-frame
+   * work is reduced to walking the result.
+   *
+   * Exactly ONE prepared value per instance, and deliberately NOT a cache keyed
+   * by data, window or viewport. A keyed cache here would be the unbounded
+   * module-level registry the `fd-audit` skill exists to catch - a genuine leak
+   * traded in to fix a cost that was never one.
+   */
+  private prepared: PreparedSegments | null = null
 
   constructor(opts: Partial<GexBandsOptions> = {}) {
     this.opts = { ...DEFAULT_GEX_BANDS_OPTIONS, ...opts }
@@ -106,6 +161,10 @@ export class GexBandsPrimitive implements IPrimitive {
 
   detached(): void {
     this.host = null
+    // Released with the host: the segments are derived data, and a detached
+    // primitive that something still holds a reference to should not also be
+    // holding a window's worth of them.
+    this.prepared = null
   }
 
   zOrder(): ZOrder {
@@ -116,11 +175,17 @@ export class GexBandsPrimitive implements IPrimitive {
 
   setData(data: GexBandSeries | null): void {
     this.data = data
+    this.prepared = null
     this.host?.requestUpdate()
   }
 
   setOptions(patch: Partial<GexBandsOptions>): void {
     this.opts = { ...this.opts, ...patch }
+    // Invalidated on ANY option change, not only on `maxGapSeconds`. Options
+    // change when a user clicks something, never per frame, so the recompute is
+    // free - and gating it on the one option that currently feeds the split
+    // would silently go stale the day another one does.
+    this.prepared = null
     this.host?.requestUpdate()
   }
 
@@ -128,25 +193,84 @@ export class GexBandsPrimitive implements IPrimitive {
     const points = this.data?.points
     if (!points || points.length === 0) return
 
+    const segments = this.segments(points)
+
     // The shaded region first, so both wall edges are drawn on top of it.
     // Gated on both walls being shown: a corridor is bounded BY them, and
     // shading up to a hidden edge would assert a boundary the reader cannot see.
     if (this.opts.showCorridor && this.opts.showCallWall && this.opts.showPutWall) {
-      this.drawCorridor(ctx, rc, points)
+      this.drawCorridor(ctx, rc, segments.corridor)
     }
 
-    const bands: Array<[BandKey, boolean, string, boolean]> = [
-      ['call_wall', this.opts.showCallWall, this.opts.callColor, false],
-      ['put_wall', this.opts.showPutWall, this.opts.putColor, false],
-      // Dotted, and drawn last so it reads as a marker INSIDE the corridor
-      // rather than as a third edge of it.
-      ['zero_gamma', this.opts.showZeroGamma, this.opts.zeroGammaColor, true],
+    for (const band of this.bandSpecs()) {
+      if (!band.shown) continue
+      this.drawBand(ctx, rc, segments[band.key], band)
+    }
+  }
+
+  /**
+   * The split segments, built on first use after data or options changed.
+   *
+   * All four series are built together rather than per band: they share one
+   * pass over the points, and a band that is switched off still costs nothing
+   * to hold. See `prepared` for why this is memoised at all.
+   */
+  private segments(points: readonly GexHistoryPoint[]): PreparedSegments {
+    if (this.prepared !== null) return this.prepared
+
+    const gap = this.opts.maxGapSeconds
+    const band = (key: BandKey) =>
+      splitBandSegments(
+        points.map((p) => ({ ts: p.ts, value: p[key] })),
+        gap
+      )
+
+    this.prepared = {
+      corridor: splitCorridorSegments(
+        points.map((p) => ({ ts: p.ts, upper: p.call_wall, lower: p.put_wall })),
+        gap
+      ),
+      call_wall: band('call_wall'),
+      put_wall: band('put_wall'),
+      zero_gamma: band('zero_gamma'),
+    }
+    return this.prepared
+  }
+
+  /**
+   * The three bands, and the two things that differ between them.
+   *
+   * `interpolation` is the one that matters and is not cosmetic. A wall is
+   * strike-quantised: it sits AT a strike until it moves to another strike, so
+   * it is drawn as a step and a diagonal would imply it passed through prices
+   * no strike ever occupied. Zero-Gamma is not a strike at all - it is a
+   * crossing price interpolated between them, which moves by a few points every
+   * minute and genuinely does pass through the values in between. Stepping it
+   * asserts something false, and dashed at a minute's spacing the staircase
+   * fragments into scattered marks rather than reading as a line.
+   */
+  private bandSpecs(): BandSpec[] {
+    return [
+      {
+        key: 'call_wall',
+        shown: this.opts.showCallWall,
+        colour: this.opts.callColor,
+        interpolation: 'step',
+      },
+      {
+        key: 'put_wall',
+        shown: this.opts.showPutWall,
+        colour: this.opts.putColor,
+        interpolation: 'step',
+      },
+      // Drawn last so it sits above the other two where they cross.
+      {
+        key: 'zero_gamma',
+        shown: this.opts.showZeroGamma,
+        colour: this.opts.zeroGammaColor,
+        interpolation: 'linear',
+      },
     ]
-
-    for (const [key, shown, colour, dotted] of bands) {
-      if (!shown) continue
-      this.drawBand(ctx, rc, points, key, colour, dotted)
-    }
   }
 
   /**
@@ -160,12 +284,8 @@ export class GexBandsPrimitive implements IPrimitive {
   private drawCorridor(
     ctx: CanvasRenderingContext2D,
     rc: PrimitiveRenderContext,
-    points: readonly GexHistoryPoint[]
+    segments: readonly GexCorridorPoint[][]
   ): void {
-    const segments = splitCorridorSegments(
-      points.map((p) => ({ ts: p.ts, upper: p.call_wall, lower: p.put_wall })),
-      this.opts.maxGapSeconds
-    )
     if (segments.length === 0) return
 
     ctx.save()
@@ -228,13 +348,10 @@ export class GexBandsPrimitive implements IPrimitive {
   private drawBand(
     ctx: CanvasRenderingContext2D,
     rc: PrimitiveRenderContext,
-    points: readonly GexHistoryPoint[],
-    key: BandKey,
-    colour: string,
-    dotted = false
+    segments: readonly GexBandPoint[][],
+    band: BandSpec
   ): void {
-    const readings: GexBandPoint[] = points.map((p) => ({ ts: p.ts, value: p[key] }))
-    const segments = splitBandSegments(readings, this.opts.maxGapSeconds)
+    const { colour, interpolation } = band
     if (segments.length === 0) return
 
     const dpr = rc.dpr
@@ -243,10 +360,14 @@ export class GexBandsPrimitive implements IPrimitive {
     ctx.globalAlpha = this.opts.opacity
     ctx.strokeStyle = colour
     ctx.fillStyle = colour
-    // The wall edges carry the corridor's shape, so they are a touch heavier
-    // than a hairline - at 1px against candles and a VWAP they read as noise.
-    ctx.lineWidth = Math.max(1, Math.round(dpr * (dotted ? 1 : 1.5)))
-    ctx.setLineDash(dotted ? [2 * dpr, 3 * dpr] : [])
+    // Every band is a solid hairline, matching the live level's own width. The
+    // live level is clipped away wherever a band covers it, so the two are
+    // never collinear and the pair now reads as ONE line per level: solid
+    // through recorded history, dashed at the current value beyond it. Zero
+    // Gamma used to be dashed here to keep it distinct inside the shaded
+    // corridor; with the corridor off by default that only fragmented it.
+    ctx.lineWidth = Math.max(1, Math.round(dpr))
+    ctx.setLineDash([])
 
     for (const segment of segments) {
       // One path PER SEGMENT. A single path across all of them would join the
@@ -272,11 +393,14 @@ export class GexBandsPrimitive implements IPrimitive {
         const point = segment[i]
         const x = this.xFor(rc, point.ts)
         const y = rc.priceScale.priceToY(point.value as number) * dpr
-        // Step, not slope. A wall sits AT a strike until it moves to another
-        // strike; a diagonal would imply the level passed through prices
-        // between them that no strike ever occupied.
-        ctx.lineTo(x, previousY)
-        if (y !== previousY) ctx.lineTo(x, y)
+        if (interpolation === 'step') {
+          // Hold the old level across to the new x, then jump. See `bandSpecs`
+          // for why only the walls are drawn this way.
+          ctx.lineTo(x, previousY)
+          if (y !== previousY) ctx.lineTo(x, y)
+        } else {
+          ctx.lineTo(x, y)
+        }
         previousY = y
       }
 

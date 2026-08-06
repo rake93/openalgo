@@ -435,3 +435,190 @@ describe('GexOverlayPrimitive draw hover readout', () => {
     })
   })
 })
+
+describe('GexLevelsPrimitive band clipping', () => {
+  const M = 60
+  const T0 = 1_754_000_040
+
+  /**
+   * Records the runs `drawLevel` builds, which the shared `fakeCtx` above
+   * deliberately no-ops. A clipped level is two runs inside one path; an
+   * unclipped one is a single run, and no assertion about colour or dash can
+   * tell those apart.
+   */
+  function lineCtx() {
+    const runs: [number, number][][] = []
+    let current: [number, number][] | null = null
+    const texts: string[] = []
+    return {
+      runs,
+      texts,
+      save() {},
+      restore() {},
+      setLineDash() {},
+      rect() {},
+      clip() {},
+      fillRect() {},
+      strokeRect() {},
+      fillText(text: string) {
+        texts.push(text)
+      },
+      beginPath() {
+        current = []
+        runs.push(current)
+      },
+      moveTo(x: number, y: number) {
+        current?.push([x, y])
+      },
+      lineTo(x: number, y: number) {
+        current?.push([x, y])
+      },
+      stroke() {},
+      strokeStyle: '',
+      lineWidth: 0,
+      fillStyle: '',
+      font: '',
+      textBaseline: '',
+      textAlign: '',
+      globalAlpha: 1,
+    }
+  }
+
+  /** ts -> index -> x is (ts - T0) / 60 * 10, so T0 + 5m lands at x = 50. */
+  function timeRc() {
+    return {
+      priceScale: { priceToY: (_price: number) => 200 },
+      dataLayer: { timeToIndexFloat: (time: number) => (time - T0) / M },
+      timeScale: { indexToX: (index: number) => index * 10 },
+      plotWidth: 400,
+      plotHeight: 400,
+      dpr: 1,
+      theme: { axisText: '#888888', axisLine: '#333333', background: '#111111' },
+      hoverId: null,
+    }
+  }
+
+  function levels(overrides: Record<string, unknown> = {}) {
+    return {
+      status: 'success',
+      call_wall: 24_800,
+      put_wall: 24_400,
+      zero_gamma: 24_600,
+      strikes: [],
+      ...overrides,
+    }
+  }
+
+  const onlyCallWall = {
+    showBars: false,
+    showCallWall: true,
+    showPutWall: false,
+    showZeroGamma: false,
+  }
+
+  it('spans the full width when no band covers the level', () => {
+    const ctx = lineCtx()
+    const primitive = new GexLevelsPrimitive({ ...onlyCallWall, bandCoverage: null })
+    primitive.setData(levels() as never)
+    primitive.draw(ctx as never, timeRc() as never)
+
+    expect(ctx.runs).toHaveLength(1)
+    expect(ctx.runs[0]).toEqual([
+      [0, 200.5],
+      [400, 200.5],
+    ])
+  })
+
+  it('skips the span its own band already draws', () => {
+    // The defect this exists for: band and live level landed within one pixel
+    // of each other, dashed over solid, and the pair read as a single two-tone
+    // dashed line instead of as one solid history plus one dashed current level.
+    const ctx = lineCtx()
+    const primitive = new GexLevelsPrimitive({
+      ...onlyCallWall,
+      bandCoverage: {
+        call_wall: { fromTs: T0 + 5 * M, toTs: T0 + 10 * M },
+        put_wall: null,
+        zero_gamma: null,
+      },
+    })
+    primitive.setData(levels() as never)
+    primitive.draw(ctx as never, timeRc() as never)
+
+    // Two runs in one path: left of history, then right of it.
+    expect(ctx.runs[0]).toEqual([
+      [0, 200.5],
+      [50, 200.5],
+      [100, 200.5],
+      [400, 200.5],
+    ])
+  })
+
+  it('clips only the level whose band covers it', () => {
+    const ctx = lineCtx()
+    const primitive = new GexLevelsPrimitive({
+      showBars: false,
+      showCallWall: true,
+      showPutWall: true,
+      showZeroGamma: false,
+      bandCoverage: {
+        call_wall: { fromTs: T0 + 5 * M, toTs: T0 + 10 * M },
+        put_wall: null,
+        zero_gamma: null,
+      },
+    })
+    primitive.setData(levels() as never)
+    primitive.draw(ctx as never, timeRc() as never)
+
+    expect(ctx.runs[0]).toHaveLength(4)
+    // The Put Wall has no band, so its line is untouched.
+    expect(ctx.runs[1]).toEqual([
+      [0, 200.5],
+      [400, 200.5],
+    ])
+  })
+
+  it('does not clip a level whose band drew nothing', () => {
+    // zero_gamma is null whenever the profile does not cross zero near the
+    // forward. A session where it never crossed draws no band, and clipping the
+    // live line against a band that is not there would erase the level.
+    const ctx = lineCtx()
+    const primitive = new GexLevelsPrimitive({
+      showBars: false,
+      showCallWall: false,
+      showPutWall: false,
+      showZeroGamma: true,
+      bandCoverage: {
+        call_wall: { fromTs: T0 + 5 * M, toTs: T0 + 10 * M },
+        put_wall: { fromTs: T0 + 5 * M, toTs: T0 + 10 * M },
+        zero_gamma: null,
+      },
+    })
+    primitive.setData(levels() as never)
+    primitive.draw(ctx as never, timeRc() as never)
+
+    expect(ctx.runs[0]).toEqual([
+      [0, 200.5],
+      [400, 200.5],
+    ])
+  })
+
+  it('keeps the label when history covers the whole visible range', () => {
+    // With every pixel covered the line is drawn nowhere, so the label is the
+    // only thing left stating the current price. It must survive.
+    const ctx = lineCtx()
+    const primitive = new GexLevelsPrimitive({
+      ...onlyCallWall,
+      bandCoverage: {
+        call_wall: { fromTs: T0 - 100 * M, toTs: T0 + 100 * M },
+        put_wall: null,
+        zero_gamma: null,
+      },
+    })
+    primitive.setData(levels() as never)
+    primitive.draw(ctx as never, timeRc() as never)
+
+    expect(ctx.runs[0]).toEqual([])
+    expect(ctx.texts.some((t) => t.includes('Call Wall'))).toBe(true)
+  })
+})

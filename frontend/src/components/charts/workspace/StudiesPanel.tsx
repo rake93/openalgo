@@ -491,6 +491,15 @@ export function StudiesPanel(p: StudiesPanelProps) {
                   <option value="72">3 days</option>
                 </TinySelect>
               </Field>
+              <Field label="Wall corridor" hint="Shade between the two wall bands">
+                <TinySelect
+                  value={p.gex.showBandsCorridor ? 'show' : 'hide'}
+                  onChange={(e) => p.onGex({ showBandsCorridor: e.target.value === 'show' })}
+                >
+                  <option value="hide">Hide</option>
+                  <option value="show">Show</option>
+                </TinySelect>
+              </Field>
               <GexRecorderNotice
                 pointCount={p.gexHistoryPoints}
                 recording={p.gexRecording}
