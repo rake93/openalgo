@@ -25,9 +25,16 @@
  */
 
 import type { Chart } from 'openalgo-charts'
-import type { GEXHistoryResponse, GEXLevelsResponse, GEXWeightBy, GexMetric } from '@/api/gex'
+import type {
+  GEXGridResponse,
+  GEXHistoryResponse,
+  GEXLevelsResponse,
+  GEXWeightBy,
+  GexMetric,
+} from '@/api/gex'
 import { computeBandCoverage, type GexBandCoverage } from './gex-bands-geometry'
 import { type GexBandsOptions, GexBandsPrimitive } from './gex-bands-primitive'
+import { GexHeatmapPrimitive } from './gex-heatmap-primitive'
 import {
   GexLevelsPrimitive,
   type GexLevelsPrimitiveOptions,
@@ -82,6 +89,18 @@ export interface GexLevelsConfig {
    * hedging inside, and its width through the session is worth seeing on demand.
    */
   showBandsCorridor: boolean
+  /**
+   * Draw the recorded per-strike profile as a background field in the price pane.
+   *
+   * Mutually exclusive with the bar column, which this hides while it is on.
+   * They are the same quantity - the profile is now, the heatmap is now and
+   * every recorded minute before it - and drawing both encodes it twice while
+   * the heatmap is the one that answers whether price respected a wall.
+   *
+   * Off by default for the same reason Bands is: it draws NOTHING until the
+   * contract is on the recorder's watchlist.
+   */
+  showHeatmap: boolean
   showDashboard: boolean
   refreshSeconds: number
   side: 'left' | 'right'
@@ -108,6 +127,16 @@ export interface GexLevelsConfig {
  */
 const HISTORY_REFRESH_MULTIPLE = 5
 
+/**
+ * Bucket width in seconds per resolution the grid endpoint can return.
+ *
+ * The Heatmap draws each column one bucket wide, so a thinned grid must widen
+ * its cells to match or it would draw 1-minute slivers with four minutes of
+ * background between them - which is the blank-cell rule's signal for "the
+ * recorder missed this", said about minutes that were recorded.
+ */
+const RESOLUTION_SECONDS: Record<string, number> = { '1m': 60, '5m': 300, '15m': 900 }
+
 export const DEFAULT_GEX_LEVELS_SETTINGS: GexLevelsConfig = {
   enabled: false,
   weightBy: 'oi',
@@ -120,6 +149,7 @@ export const DEFAULT_GEX_LEVELS_SETTINGS: GexLevelsConfig = {
   showBands: false,
   bandsLookbackHours: 6,
   showBandsCorridor: false,
+  showHeatmap: false,
   showDashboard: true,
   refreshSeconds: 60,
   side: 'right',
@@ -157,6 +187,19 @@ export interface GexLevelsCallbacks {
     },
     signal: AbortSignal
   ): Promise<GEXHistoryResponse>
+  /** Recorded per-strike grid for the Heatmap. Optional, like `fetchHistory`. */
+  fetchGrid?(
+    params: {
+      underlying: string
+      exchange: string
+      expiry_date: string
+      weight_by: GEXWeightBy
+      metric: GexMetric
+      from_ts: number
+      to_ts: number
+    },
+    signal: AbortSignal
+  ): Promise<GEXGridResponse>
   onSnapshot?(snapshot: GEXLevelsResponse | null): void
   /** Fired when recorded history arrives, so the panel can say how much there is. */
   onHistory?(history: GEXHistoryResponse | null): void
@@ -183,6 +226,9 @@ export class GexLevelsManager {
   private primitive: GexLevelsPrimitive | null = null
   private captionPrimitive: GexOverlayPrimitive | null = null
   private bandsPrimitive: GexBandsPrimitive | null = null
+  private heatmapPrimitive: GexHeatmapPrimitive | null = null
+  private gridController: AbortController | null = null
+  private gridValue: GEXGridResponse | null = null
 
   /**
    * The history timer is separate from, and far lazier than, the levels poll.
@@ -290,13 +336,21 @@ export class GexLevelsManager {
       this.restartTimer()
     }
 
-    // The history loop keys off a different set of changes than the levels
-    // poll: the weighting and the lookback change what is asked for, and the
-    // refresh interval scales it, but the metric and the drawing toggles do not
-    // touch it at all.
+    // The recorded loop keys off a different set of changes than the levels
+    // poll: the weighting and the lookback change what is asked for and the
+    // refresh interval scales it, while the level toggles do not touch it.
+    //
+    // The METRIC is the one that splits the two overlays. The bands draw levels,
+    // which stay computed from gamma whichever metric is selected, so gamma vs
+    // delta means nothing to them - but it selects which recorded column the
+    // grid reads, so the Heatmap has to re-ask for it.
     this.restartHistoryTimer()
+    const heatmapChanged = patch.showHeatmap !== undefined && patch.showHeatmap !== prev.showHeatmap
+    const metricChanged = patch.metric !== undefined && patch.metric !== prev.metric
     if (bandsChanged || queryChanged || lookbackChanged || enabledChanged) {
       this.fetchHistoryNow()
+    } else if (heatmapChanged || metricChanged) {
+      this.fetchGridNow()
     }
   }
 
@@ -324,6 +378,10 @@ export class GexLevelsManager {
     this.historyValue = null
     this.cb.onHistory?.(null)
     this.bandsPrimitive?.setData(null)
+    this.gridController?.abort()
+    this.gridController = null
+    this.gridValue = null
+    this.heatmapPrimitive?.setData(null)
     this.stopHistoryTimer()
     // The snapshot just went to null - re-push captionOptions() so the
     // caption's hasBars gate reflects that immediately rather than waiting
@@ -424,8 +482,13 @@ export class GexLevelsManager {
 
   private restartHistoryTimer(): void {
     this.stopHistoryTimer()
-    if (!this.settings.enabled || !this.settings.showBands) return
-    if (!this.cb.fetchHistory || !this.cb.instrument()) return
+    // One timer for both recorded overlays: they read the same store at the
+    // same cadence, and two timers would double the polling to show one
+    // append-only series twice.
+    if (!this.settings.enabled) return
+    if (!this.settings.showBands && !this.settings.showHeatmap) return
+    if (!this.cb.instrument()) return
+    if (!this.cb.fetchHistory && !this.cb.fetchGrid) return
     const ms = Math.max(1, this.settings.refreshSeconds) * HISTORY_REFRESH_MULTIPLE * 1000
     this.historyTimer = setInterval(() => this.fetchHistoryNow(), ms)
   }
@@ -440,6 +503,8 @@ export class GexLevelsManager {
    * calls back in here when it lands.
    */
   private fetchHistoryNow(): void {
+    this.fetchGridNow()
+
     if (!this.settings.enabled || !this.settings.showBands) {
       this.bandsPrimitive?.setData(null)
       // The live levels were clipped around the bands; with no bands they must
@@ -496,6 +561,81 @@ export class GexLevelsManager {
       })
   }
 
+  /**
+   * Fetch the recorded grid for the Heatmap.
+   *
+   * Separate request from the bands', not a second shape off one response: the
+   * grid carries every strike of every minute and the bands carry three levels,
+   * so a reader with only Bands on must never pay for the grid. Same window and
+   * the same resolved-expiry rule; the metric rides along because gamma and
+   * delta are both recorded off one chain fetch.
+   */
+  private fetchGridNow(): void {
+    if (!this.settings.enabled || !this.settings.showHeatmap) {
+      this.heatmapPrimitive?.setData(null)
+      return
+    }
+
+    const instrument = this.cb.instrument()
+    const fetchGrid = this.cb.fetchGrid
+    const expiry = this.snapshotValue?.expiry_date
+    if (!instrument || !fetchGrid || !expiry) return
+
+    this.gridController?.abort()
+    const controller = new AbortController()
+    this.gridController = controller
+    const epoch = this.epoch
+
+    const toTs = Math.floor(Date.now() / 1000)
+    const fromTs = toTs - Math.max(1, this.settings.bandsLookbackHours) * 3600
+
+    fetchGrid(
+      {
+        underlying: instrument.underlying,
+        exchange: instrument.exchange,
+        expiry_date: expiry,
+        weight_by: this.settings.weightBy,
+        metric: this.settings.metric,
+        from_ts: fromTs,
+        to_ts: toTs,
+      },
+      controller.signal
+    )
+      .then((response) => {
+        // Same guard as the levels poll: a slow grid for NIFTY must never paint
+        // over BANKNIFTY after a symbol switch.
+        if (this.disposed || epoch !== this.epoch) return
+        this.gridValue = response
+        this.pushGrid()
+      })
+      .catch(() => {
+        // Deliberately silent and deliberately NOT clearing what is drawn, for
+        // the same reason the bands do not: a failed refresh does not make the
+        // recorded past wrong.
+        if (this.disposed || epoch !== this.epoch) return
+      })
+  }
+
+  /** Hand the held grid to the primitive, in the shape it draws from. */
+  private pushGrid(): void {
+    const grid = this.gridValue
+    if (!this.heatmapPrimitive) return
+    if (!grid || grid.status !== 'success') {
+      this.heatmapPrimitive.setData(null)
+      return
+    }
+    this.heatmapPrimitive.setData({
+      strikes: grid.strikes ?? [],
+      columns: (grid.columns ?? []).map((c) => ({
+        ts: c.ts,
+        values: c.values,
+        quality: c.quality,
+      })),
+      maxAbsValue: grid.max_abs_value ?? 0,
+      resolutionSeconds: RESOLUTION_SECONDS[grid.resolution ?? '1m'] ?? 60,
+    })
+  }
+
   /* ── chart primitive ───────────────────────────────────────────────────── */
 
   /**
@@ -538,6 +678,7 @@ export class GexLevelsManager {
     this.primitive = null
     this.captionPrimitive = null
     this.bandsPrimitive = null
+    this.heatmapPrimitive = null
   }
 
   /**
@@ -584,7 +725,40 @@ export class GexLevelsManager {
     // `enabled` - unlike the caption, they are an opt-in overlay and most
     // sessions will never turn them on. Same try/catch isolation so a chart
     // that throws removing one still gets the others' handles dropped.
+    // The heatmap is a fourth primitive, and it is created BEFORE the bands on
+    // purpose. Both sit at `zOrder: 'bottom'`, so within that layer the chart
+    // paints them in the order they were added, and the levels through time
+    // have to stay readable over the field they were computed from.
+    const wantHeatmap = this.settings.enabled && this.settings.showHeatmap
+    let heatmapJustCreated = false
+    if (wantHeatmap && !this.heatmapPrimitive) {
+      this.heatmapPrimitive = new GexHeatmapPrimitive()
+      chart.addPrimitive(this.heatmapPrimitive, 0)
+      heatmapJustCreated = true
+      // Re-push whatever grid is already held, so toggling the Heatmap on does
+      // not wait out a fetch interval to show what the manager already has.
+      this.pushGrid()
+    } else if (!wantHeatmap && this.heatmapPrimitive) {
+      try {
+        chart.removePrimitive(this.heatmapPrimitive)
+      } catch {
+        // As above: the chart may already be gone.
+      }
+      this.heatmapPrimitive = null
+    }
+
     const wantBands = this.settings.enabled && this.settings.showBands
+    // Bands already on when the heatmap appears would have been added FIRST and
+    // would paint underneath it. Re-adding puts them back on top; it costs one
+    // primitive swap on a toggle nobody flips per frame.
+    if (heatmapJustCreated && this.bandsPrimitive) {
+      try {
+        chart.removePrimitive(this.bandsPrimitive)
+      } catch {
+        // As above.
+      }
+      this.bandsPrimitive = null
+    }
     if (wantBands && !this.bandsPrimitive) {
       this.bandsPrimitive = new GexBandsPrimitive(this.bandsOptions())
       chart.addPrimitive(this.bandsPrimitive, 0)
@@ -630,7 +804,10 @@ export class GexLevelsManager {
   private primitiveOptions(): Partial<GexLevelsPrimitiveOptions> {
     const c = this.settings
     return {
-      showBars: c.showBars,
+      // The Heatmap replaces the bar column rather than joining it: the column
+      // is this minute's profile and the field is every recorded minute of it,
+      // so showing both encodes the same numbers twice in one pane.
+      showBars: c.showBars && !c.showHeatmap,
       showCallWall: c.showCallWall,
       showPutWall: c.showPutWall,
       showZeroGamma: c.showZeroGamma,

@@ -464,6 +464,25 @@ export function StudiesPanel(p: StudiesPanelProps) {
               )}
             </>
           )}
+          <Field label="Heatmap" hint="Recorded strike profile, through time">
+            <TinySelect
+              value={p.gex.showHeatmap ? 'show' : 'hide'}
+              onChange={(e) => p.onGex({ showHeatmap: e.target.value === 'show' })}
+            >
+              <option value="hide">Hide</option>
+              <option value="show">Show</option>
+            </TinySelect>
+          </Field>
+          {/* Like Bands, the Heatmap draws from RECORDED history and can be
+           * switched on to show nothing at all. It replaces the bar column while
+           * it is on - the column is this minute's profile and the field is every
+           * recorded minute of it. */}
+          {p.gex.showHeatmap && (
+            <p className="rounded-md border border-border bg-muted/40 px-2.5 py-2 text-[11px] leading-snug text-muted-foreground">
+              The strike bar column is hidden while the heatmap is on - it is the same profile,
+              drawn for this minute only.
+            </p>
+          )}
           <Field label="Gamma bands" hint="The same three levels, through time">
             <TinySelect
               value={p.gex.showBands ? 'show' : 'hide'}
@@ -477,9 +496,13 @@ export function StudiesPanel(p: StudiesPanelProps) {
            * here they can be switched on and legitimately show nothing. The
            * block below is what stops that reading as a broken feature: it says
            * whether this contract is being recorded and offers to start. */}
-          {p.gex.showBands && (
+          {/* The lookback and the recorder notice belong to BOTH recorded
+           * overlays - they share one window and one store - so they appear
+           * whenever either is on. Gating them on Bands alone left the Heatmap
+           * with no way to widen its window. */}
+          {(p.gex.showBands || p.gex.showHeatmap) && (
             <>
-              <Field label="Look back" hint="How far the bands reach">
+              <Field label="Look back" hint="How far the recorded overlays reach">
                 <TinySelect
                   value={String(p.gex.bandsLookbackHours)}
                   onChange={(e) => p.onGex({ bandsLookbackHours: Number(e.target.value) })}
@@ -491,15 +514,17 @@ export function StudiesPanel(p: StudiesPanelProps) {
                   <option value="72">3 days</option>
                 </TinySelect>
               </Field>
-              <Field label="Wall corridor" hint="Shade between the two wall bands">
-                <TinySelect
-                  value={p.gex.showBandsCorridor ? 'show' : 'hide'}
-                  onChange={(e) => p.onGex({ showBandsCorridor: e.target.value === 'show' })}
-                >
-                  <option value="hide">Hide</option>
-                  <option value="show">Show</option>
-                </TinySelect>
-              </Field>
+              {p.gex.showBands && (
+                <Field label="Wall corridor" hint="Shade between the two wall bands">
+                  <TinySelect
+                    value={p.gex.showBandsCorridor ? 'show' : 'hide'}
+                    onChange={(e) => p.onGex({ showBandsCorridor: e.target.value === 'show' })}
+                  >
+                    <option value="hide">Hide</option>
+                    <option value="show">Show</option>
+                  </TinySelect>
+                </Field>
+              )}
               <GexRecorderNotice
                 pointCount={p.gexHistoryPoints}
                 recording={p.gexRecording}

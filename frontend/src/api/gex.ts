@@ -185,6 +185,54 @@ export interface GEXHistoryResponse {
   points?: GEXHistoryPoint[]
 }
 
+/** One recorded minute of the strike profile, aligned to the grid's strike axis. */
+export interface GEXGridColumn {
+  /** Epoch seconds, floored to the recorder's cadence (or to the bucket, if thinned). */
+  ts: number
+  /**
+   * One value per entry in `strikes`, same order and length.
+   *
+   * `null` is a strike that minute's chain did not carry - the renderer leaves
+   * that cell blank. It is never 0, which would assert gamma nobody measured.
+   */
+  values: (number | null)[]
+  /** What the snapshot's quality was WHEN RECORDED, for the requested weighting. */
+  quality: 'good' | 'degraded' | 'unusable' | null
+}
+
+export interface GEXGridResponse {
+  status: 'success' | 'error'
+  message?: string
+  underlying?: string
+  exchange?: string
+  expiry_date?: string
+  weight_by?: GEXWeightBy
+  metric?: GexMetric
+  /**
+   * The cadence actually returned: `1m`, `5m` or `15m`.
+   *
+   * Always paired with `downsampled`, and both ride on the un-thinned response
+   * too. A heatmap that quietly dropped four of every five columns would look
+   * like a market that went quiet.
+   */
+  resolution?: string
+  downsampled?: boolean
+  recorded?: boolean
+  series_id?: number | null
+  /** The shared y axis, ascending. The union of every column's strikes. */
+  strikes?: number[]
+  /** Ordered by `ts` ascending. A minute the recorder missed is simply absent. */
+  columns?: GEXGridColumn[]
+  /**
+   * The largest absolute value in the window, for normalising the colour scale.
+   *
+   * Computed server-side across the WHOLE window rather than per column:
+   * normalising each column against its own maximum would paint every column at
+   * full saturation and erase the change through time the heatmap exists to show.
+   */
+  max_abs_value?: number
+}
+
 export const gexApi = {
   getGEXData: async (params: {
     underlying: string
@@ -241,6 +289,33 @@ export const gexApi = {
     const response = await webClient.post<GEXHistoryResponse>('/gex/api/gex-history', params, {
       signal,
     })
+    return response.data
+  },
+
+  /**
+   * The recorded per-strike grid for one contract, backing the GEX Heatmap.
+   *
+   * Same window rules as `getGEXHistory` - a RESOLVED expiry, never a rule -
+   * plus a `metric`, because gamma and delta are both recorded off one chain
+   * fetch and switching between them costs no refetch on the server either.
+   */
+  getGEXGrid: async (
+    params: {
+      underlying: string
+      exchange: string
+      expiry_date: string
+      weight_by: GEXWeightBy
+      metric: GexMetric
+      from_ts: number
+      to_ts: number
+    },
+    signal?: AbortSignal
+  ): Promise<GEXGridResponse> => {
+    const response = await webClient.post<GEXGridResponse>(
+      '/gex/api/gex-history',
+      { ...params, fields: 'grid' },
+      { signal }
+    )
     return response.data
   },
 

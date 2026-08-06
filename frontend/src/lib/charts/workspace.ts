@@ -419,6 +419,7 @@ export class ChartWorkspaceController {
       instrument: () => this.gexInstrument(),
       fetchLevels: (params, signal) => gexApi.getGEXLevels(params, signal),
       fetchHistory: (params, signal) => gexApi.getGEXHistory(params, signal),
+      fetchGrid: (params, signal) => gexApi.getGEXGrid(params, signal),
       onSnapshot: (snap) => this.cb.onGexSnapshot(snap),
       onHistory: (history) => this.cb.onGexHistory(history),
       volumeProfileWidthOnSide: (side) => {
