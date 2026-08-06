@@ -16,7 +16,7 @@
 | Hover readout, draggable card | **Shipped**, confirmed by the user |
 | **Snapshot recorder (phase 3)** | Built, green, fd-audited. **Verified live against a broker on 2026-08-06** — see §2.1. One step outstanding: the after-close pass |
 | **Gamma Bands (phase 4)** | Built, green, fd-audited. **Seen and verified on a real chart** against seeded history — see §2.2 |
-| **GEX Heatmap (phase 5)** | Not started. Unblocked — do this next |
+| **GEX Heatmap (phase 5)** | **Built and seen on a live chart 2026-08-06** — see §4c |
 
 **331 backend tests** across the GEX and option-target suites and **174 frontend
 tests** across the seven GEX files, all green. No pure module under
@@ -226,7 +226,69 @@ and offers to start recording rather than looking broken.
 
 ---
 
-## 4a. Pick up here: phase 5, the GEX Heatmap
+## 4c. What phase 5 built — the GEX Heatmap, 2026-08-06
+
+**Backend.** `services/gex_levels/grid.py` is the pure half: `choose_resolution`,
+`select_representatives`, `build_grid`, `value_column`. `gex_history_service`
+gained a `metric` argument and a `_grid_response` that runs **two passes** — a
+light index query (`get_snapshot_index_in_range`: id, ts, both quality verdicts)
+so the column budget applies to a COUNT, then `get_strikes_for_snapshots` for
+only the survivors. Reading 8,250 columns of strike rows to discard fourteen of
+every fifteen is the cost the budget exists to avoid.
+
+**Two spec deviations, both deliberate.** Bucketing is by **clock time**, not
+"every 5th snapshot": with gaps in the recording, every-Nth drifts off wall-clock
+and lands columns at uneven spacing, while a heatmap's x axis is read as a clock.
+An empty bucket stays empty, so a gap survives thinning. And the strike read
+selects **columns rather than ORM entities** — see the perf note below.
+
+**Frontend.** `gex-heatmap-geometry.ts` (pure: alpha ramp, cell fill, column
+spans, strike rows) and `gex-heatmap-primitive.ts` (canvas, `zOrder: 'bottom'`,
+no `autoscaleInfo`). The manager fetches the grid on the same timer as the bands
+— one store, one cadence — and the panel gained a Heatmap control.
+
+**Colour was measured, not assumed.** Net GEX is signed, so the scale is
+diverging. It reuses the study's existing wall hues so colour follows the entity
+across bars, walls and field — but red against green is the classic
+colour-vision trap, so the pair was run through the validator: **deutan dE 11.6**
+against a target of 8, **normal-vision dE 29.6** against a floor of 15. Both
+pass. Alpha is **square-root compressed**: net GEX is heavily tailed and a linear
+ramp leaves two bright rows and a blank field.
+
+**A recorded near-zero cell keeps a floor alpha.** Without it, zero fades to
+nothing and becomes indistinguishable from a minute the recorder missed — and
+the reader is being asked to tell those apart. Gaps are blank twice over: a
+missing minute has no column, and a column is drawn one cadence wide rather than
+stretched to its neighbour.
+
+**Verified live.** 48-strike axis over 114 columns at 83 KB, `resolution: "1m"`,
+`downsampled: false`, gamma and delta returning different values off one chain.
+Both of the day's recorded outages render as white columns on the chart.
+
+**The heatmap replaces the bar column** while on (spec §7's mutually-exclusive
+View, implemented as a toggle that hides the column rather than a new control
+shape), and the lookback control now shows for **either** recorded overlay —
+gating it on Bands left the Heatmap unable to widen its own window.
+
+### The fd-audit found no leak and one real cost
+
+Descriptors flat across 200 grid calls (206 handles down to 195), RSS +3.1 MB,
+and **nothing from the new modules** in `tracemalloc`'s retained-growth list.
+
+The timing pass was the useful part: loading whole `GexSnapshotStrike` entities
+was **95% of the request** — 10.8 us/row, 69.5 ms for a 137-column window against
+2.7 ms for the index and 1.0 ms for the pure assembly, projecting to 507 ms at
+the budget. Selecting the six columns the grid plots drops it to 4.1 us/row
+(26.4 ms measured, ~191 ms projected), because SQLAlchemy builds no instance and
+puts nothing in the session's identity map. Grid output byte-identical.
+
+**Measured payload is larger than §6 estimated.** 83 KB for 114 columns is
+~0.73 KB per column against the spec's implied ~0.4, because a net-GEX value is
+a 12-digit float. At the 1,000-column budget that is ~730 KB rather than ~400 KB.
+Still acceptable; rounding values server-side would roughly halve it and is the
+obvious next lever if it ever matters.
+
+## 4a. Phase 5's brief, as it was written before the work
 
 The grid endpoint, downsampling, and a background layer in the price pane.
 
