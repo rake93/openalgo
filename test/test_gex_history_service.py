@@ -217,14 +217,128 @@ def test_an_unknown_weighting_is_rejected(gexdb):
     assert "weight_by" in payload["message"]
 
 
-def test_the_grid_field_is_an_explicit_400_until_phase_5(gexdb):
-    """An explicit seam rather than a silent empty response - a heatmap that got
-    back an empty grid would render as a market with no gamma anywhere."""
-    ok, payload, status = get_gex_history("NIFTY", "NFO", "11AUG26", "oi", 0, 1, fields="grid")
+def _strike(strike, gex_oi=0.0, gex_vol=0.0, dex_oi=0.0, dex_vol=0.0):
+    return {
+        "strike": strike,
+        "call_gex_oi": 0.0,
+        "put_gex_oi": 0.0,
+        "net_gex_oi": gex_oi,
+        "call_gex_vol": 0.0,
+        "put_gex_vol": 0.0,
+        "net_gex_vol": gex_vol,
+        "call_dex_oi": 0.0,
+        "put_dex_oi": 0.0,
+        "net_dex_oi": dex_oi,
+        "call_dex_vol": 0.0,
+        "put_dex_vol": 0.0,
+        "net_dex_vol": dex_vol,
+        "call_oi": 0.0,
+        "put_oi": 0.0,
+        "call_volume": 0.0,
+        "put_volume": 0.0,
+    }
+
+
+def _seed_grid(gexdb, count=3, start=MINUTE, step=60):
+    """Snapshots WITH strike children, which the bands fixtures deliberately omit."""
+    ok, _, series = gexdb.add_series("NIFTY", "NFO", "nearest")
+    if not ok:
+        series = gexdb.list_series()[0]
+    for i in range(count):
+        gexdb.write_snapshot(
+            series["id"],
+            _snapshot(start + i * step),
+            [
+                _strike(24_500.0, gex_oi=10.0 + i, gex_vol=1.0, dex_oi=-3.0, dex_vol=-0.5),
+                _strike(24_600.0, gex_oi=-20.0 - i, gex_vol=-2.0, dex_oi=4.0, dex_vol=0.5),
+            ],
+        )
+    return series
+
+
+def test_the_grid_returns_a_strike_axis_and_columns(gexdb):
+    _seed_grid(gexdb, count=3)
+
+    ok, payload, status = get_gex_history(
+        "NIFTY", "NFO", "11AUG26", "oi", MINUTE, MINUTE + 120, fields="grid"
+    )
+
+    assert (ok, status) == (True, 200)
+    assert payload["strikes"] == [24_500.0, 24_600.0]
+    assert [c["ts"] for c in payload["columns"]] == [MINUTE, MINUTE + 60, MINUTE + 120]
+    assert payload["columns"][0]["values"] == [10.0, -20.0]
+    # Normalised across the window, so the renderer does not rescale per column.
+    assert payload["max_abs_value"] == 22.0
+    # The bands' key must not leak into a grid response and vice versa.
+    assert "points" not in payload
+
+
+def test_the_grid_reads_the_column_the_metric_selects(gexdb):
+    _seed_grid(gexdb, count=1)
+
+    _, gamma, _ = get_gex_history(
+        "NIFTY", "NFO", "11AUG26", "oi", MINUTE, MINUTE, fields="grid", metric="gamma"
+    )
+    _, delta, _ = get_gex_history(
+        "NIFTY", "NFO", "11AUG26", "oi", MINUTE, MINUTE, fields="grid", metric="delta"
+    )
+
+    assert gamma["columns"][0]["values"] == [10.0, -20.0]
+    assert delta["columns"][0]["values"] == [-3.0, 4.0]
+    assert gamma["metric"] == "gamma"
+    assert delta["metric"] == "delta"
+
+
+def test_the_grid_reports_native_resolution_when_it_did_not_thin(gexdb):
+    _seed_grid(gexdb, count=3)
+
+    _, payload, _ = get_gex_history(
+        "NIFTY", "NFO", "11AUG26", "oi", MINUTE, MINUTE + 120, fields="grid"
+    )
+
+    assert payload["resolution"] == "1m"
+    assert payload["downsampled"] is False
+
+
+def test_a_thinned_grid_says_so(gexdb, monkeypatch):
+    # Budget lowered rather than seeding 1,001 snapshots: what is under test here
+    # is that the service reports the thinning, not the arithmetic that chooses
+    # it - that is pinned directly in test_gex_grid.py.
+    from services.gex_levels import grid as grid_module
+
+    monkeypatch.setattr(grid_module, "MAX_GRID_COLUMNS", 2)
+    _seed_grid(gexdb, count=6)
+
+    _, payload, _ = get_gex_history(
+        "NIFTY", "NFO", "11AUG26", "oi", MINUTE, MINUTE + 300, fields="grid"
+    )
+
+    assert payload["resolution"] == "5m"
+    assert payload["downsampled"] is True
+    # A heatmap that silently dropped columns would look like a quiet market.
+    assert len(payload["columns"]) < 6
+
+
+def test_an_unrecorded_contract_returns_an_empty_grid_as_success(gexdb):
+    ok, payload, status = get_gex_history(
+        "NIFTY", "NFO", "29DEC26", "oi", MINUTE, MINUTE + 120, fields="grid"
+    )
+
+    assert (ok, status) == (True, 200)
+    assert payload["recorded"] is False
+    assert payload["strikes"] == []
+    assert payload["columns"] == []
+    assert payload["max_abs_value"] == 0.0
+
+
+def test_an_unknown_metric_is_rejected(gexdb):
+    ok, payload, status = get_gex_history(
+        "NIFTY", "NFO", "11AUG26", "oi", 0, 1, fields="grid", metric="vanna"
+    )
 
     assert ok is False
     assert status == 400
-    assert "grid" in payload["message"].lower()
+    assert "metric" in payload["message"]
 
 
 def test_an_unknown_fields_value_is_rejected(gexdb):

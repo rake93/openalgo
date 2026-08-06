@@ -332,6 +332,10 @@ def gex_history():
         expiry_date = str(data.get("expiry_date") or "").strip().upper()[:10]
         weight_by = str(data.get("weight_by") or "oi").strip().lower()[:10]
         fields = str(data.get("fields") or "levels").strip().lower()[:10]
+        # Read only by the grid. The bands draw levels, which stay computed from
+        # gamma whichever metric is selected - the same rule the live study's
+        # three on-screen labels exist to make unambiguous.
+        metric = str(data.get("metric") or "gamma").strip().lower()[:10]
 
         if not underlying or not exchange or not expiry_date:
             return jsonify(
@@ -394,6 +398,7 @@ def gex_history():
             from_ts=from_ts,
             to_ts=to_ts,
             fields=fields,
+            metric=metric,
         )
 
         return jsonify(response), status_code

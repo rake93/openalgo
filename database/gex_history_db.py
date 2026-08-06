@@ -564,6 +564,95 @@ def get_snapshots_in_range(
         return []
 
 
+def get_snapshot_index_in_range(
+    series_id: int,
+    from_ts: int,
+    to_ts: int,
+    expiry_date: str | None = None,
+) -> list[dict]:
+    """A light index of the snapshots in a window: id, ts and quality only.
+
+    The Heatmap's first pass. Its column budget is decided from how many
+    snapshots a window holds, and reading whole snapshot rows - let alone their
+    47 strike children each - only to discard fourteen of every fifteen is the
+    cost the budget exists to avoid. So this reads four columns and nothing
+    else, and `get_strikes_for_snapshots` is called afterwards for the survivors.
+
+    Args:
+        series_id: The series to read.
+        from_ts: Inclusive lower bound, epoch seconds.
+        to_ts: Inclusive upper bound, epoch seconds.
+        expiry_date: Optional RESOLVED expiry to scope to. Callers plotting
+            through time should always pass it - see `get_snapshots_in_range`.
+
+    Returns:
+        Dicts with `id`, `ts`, `quality_verdict_oi` and `quality_verdict_vol`,
+        ordered by `ts` ascending.
+    """
+    try:
+        query = db_session.query(
+            GexSnapshot.id,
+            GexSnapshot.ts,
+            GexSnapshot.quality_verdict_oi,
+            GexSnapshot.quality_verdict_vol,
+        ).filter(
+            GexSnapshot.series_id == series_id,
+            GexSnapshot.ts >= from_ts,
+            GexSnapshot.ts <= to_ts,
+        )
+        if expiry_date:
+            query = query.filter(GexSnapshot.expiry_date == expiry_date.strip().upper())
+        return [
+            {
+                "id": row.id,
+                "ts": row.ts,
+                "quality_verdict_oi": row.quality_verdict_oi,
+                "quality_verdict_vol": row.quality_verdict_vol,
+            }
+            for row in query.order_by(GexSnapshot.ts).all()
+        ]
+    except Exception:
+        logger.exception(f"Error reading the GEX snapshot index for series {series_id}")
+        return []
+
+
+def get_strikes_for_snapshots(snapshot_ids: list[int]) -> dict[int, list[dict]]:
+    """Strike rows for several snapshots at once, grouped by snapshot id.
+
+    Batched at `_ID_CHUNK` per query for the same reason `_delete_strikes_for`
+    batches: SQLite caps the number of bound variables in one statement, and a
+    thousand-column grid would blow straight past it. One query per batch, not
+    one per snapshot - a thousand round trips would cost far more than the read.
+
+    Args:
+        snapshot_ids: Snapshot ids to read children for.
+
+    Returns:
+        Strike-row dicts keyed by snapshot id, each list ordered by strike
+        ascending. A snapshot with no children is simply absent, which the grid
+        builder renders as a blank column rather than a row of zeros.
+    """
+    if not snapshot_ids:
+        return {}
+
+    grouped: dict[int, list[dict]] = {}
+    try:
+        for start in range(0, len(snapshot_ids), _ID_CHUNK):
+            batch = snapshot_ids[start : start + _ID_CHUNK]
+            rows = (
+                db_session.query(GexSnapshotStrike)
+                .filter(GexSnapshotStrike.snapshot_id.in_(batch))
+                .order_by(GexSnapshotStrike.snapshot_id, GexSnapshotStrike.strike)
+                .all()
+            )
+            for row in rows:
+                grouped.setdefault(row.snapshot_id, []).append(_row_dict(row, _STRIKE_COLUMNS))
+        return grouped
+    except Exception:
+        logger.exception("Error reading GEX strike rows for a snapshot batch")
+        return {}
+
+
 def _delete_strikes_for(snapshot_ids: list[int]) -> int:
     """Delete strike rows for the given snapshots, in batches. Does not commit."""
     deleted = 0

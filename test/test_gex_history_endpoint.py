@@ -184,14 +184,33 @@ def test_fields_defaults_to_levels(authed_client):
 
 
 def test_a_service_rejection_passes_its_status_through(authed_client):
-    """The service owns the fields/weighting vocabulary; the route must not
-    re-word or re-status its refusals."""
-    refusal = (False, {"status": "error", "message": "The 'grid' response ..."}, 400)
+    """The service owns the fields/metric/weighting vocabulary; the route must
+    not re-word or re-status its refusals."""
+    refusal = (False, {"status": "error", "message": "metric must be 'gamma' or 'delta'"}, 400)
     with patch("blueprints.gex.get_gex_history", return_value=refusal):
-        response = authed_client.post("/gex/api/gex-history", json=body(fields="grid"))
+        response = authed_client.post("/gex/api/gex-history", json=body(metric="vanna"))
 
     assert response.status_code == 400
-    assert "grid" in response.get_json()["message"]
+    assert "metric" in response.get_json()["message"]
+
+
+def test_the_metric_reaches_the_service_and_defaults_to_gamma(authed_client):
+    """The grid reads gamma or delta off one recorded chain, so the metric is a
+    request parameter rather than a second endpoint."""
+    captured = {}
+
+    def fake(**kwargs):
+        captured.update(kwargs)
+        return _OK
+
+    with patch("blueprints.gex.get_gex_history", side_effect=fake):
+        authed_client.post("/gex/api/gex-history", json=body(fields="grid", metric="delta"))
+    assert captured["metric"] == "delta"
+
+    payload = body()
+    with patch("blueprints.gex.get_gex_history", side_effect=fake):
+        authed_client.post("/gex/api/gex-history", json=payload)
+    assert captured["metric"] == "gamma"
 
 
 def test_an_empty_history_is_a_200(authed_client):

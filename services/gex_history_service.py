@@ -7,10 +7,16 @@ path can never trigger a fetch**. The recorder owns every broker call and every
 write; nothing here touches the network, the chain service, or the scheduler. A
 test pins that by exploding if the chain service is reached.
 
-Backs Gamma Bands (`fields="levels"`). The GEX Heatmap's grid response, its
-column budget and its downsampling are phase 5; `fields="grid"` is rejected here
-with an explicit 400 rather than a silent empty payload, because a heatmap handed
-an empty grid would render as a market with no gamma anywhere.
+Two shapes off one store. `fields="levels"` backs Gamma Bands: one row per
+minute, levels only. `fields="grid"` backs the GEX Heatmap: a shared strike axis
+and one column per minute, carrying the full per-strike profile for the requested
+metric and weighting.
+
+The grid's column budget, its bucketing and its strike-axis layout are pure and
+live in `services/gex_levels/grid.py`; this module is the IO around them. The
+budget is applied to a COUNT before any strike row is read, which is why the
+grid path queries a light index first and only then pays for the survivors'
+children.
 
 **One contract, never a spliced series.** The request names a resolved
 `expiry_date`, matching how `blueprints/gex.py`'s recorded fast path scopes its
@@ -25,6 +31,7 @@ design took.
 from typing import Any
 
 from database import gex_history_db
+from services.gex_levels import grid
 from services.option_symbol_service import normalize_options_exchange
 from utils.logging import get_logger
 
@@ -46,6 +53,7 @@ def get_gex_history(
     from_ts: int,
     to_ts: int,
     fields: str = "levels",
+    metric: str = "gamma",
 ) -> tuple[bool, dict[str, Any], int]:
     """Recorded levels for one contract over a time window.
 
@@ -56,7 +64,9 @@ def get_gex_history(
         weight_by: 'oi' for the standing book, 'volume' for today's flow.
         from_ts: Inclusive lower bound, epoch seconds.
         to_ts: Inclusive upper bound, epoch seconds.
-        fields: 'levels' for the band series. 'grid' is phase 5.
+        fields: 'levels' for the band series, 'grid' for the Heatmap.
+        metric: 'gamma' or 'delta'. Read only by the grid - the bands draw
+            levels, which are computed from gamma whichever metric is selected.
 
     Returns:
         Tuple of (success, response_data, status_code). An unrecorded contract is
@@ -81,13 +91,10 @@ def get_gex_history(
             400,
         )
 
-    if fields == "grid":
+    if metric not in ("gamma", "delta"):
         return (
             False,
-            {
-                "status": "error",
-                "message": "The 'grid' response backs the GEX Heatmap and is not implemented yet.",
-            },
+            {"status": "error", "message": f"metric must be 'gamma' or 'delta', got {metric!r}"},
             400,
         )
 
@@ -133,11 +140,23 @@ def get_gex_history(
             "points": [],
         }
 
-        series = gex_history_db.get_series_by_contract(
-            underlying, options_exchange, expiry_date
-        )
+        if fields == "grid":
+            # The grid carries a strike axis and columns instead of points, and
+            # its own metric. An unrecorded contract is still a success with an
+            # empty payload, for the same reason it is for the bands.
+            empty = {k: v for k, v in empty.items() if k != "points"} | {
+                "metric": metric,
+                "strikes": [],
+                "columns": [],
+                "max_abs_value": 0.0,
+            }
+
+        series = gex_history_db.get_series_by_contract(underlying, options_exchange, expiry_date)
         if series is None:
             return True, empty, 200
+
+        if fields == "grid":
+            return _grid_response(series, empty, expiry_date, from_ts, to_ts, weight_by, metric)
 
         rows = gex_history_db.get_snapshots_in_range(
             series["id"], from_ts, to_ts, expiry_date=expiry_date
@@ -161,6 +180,53 @@ def get_gex_history(
             {"status": "error", "message": "Error reading GEX history"},
             500,
         )
+
+
+def _grid_response(
+    series: dict[str, Any],
+    empty: dict[str, Any],
+    expiry_date: str,
+    from_ts: int,
+    to_ts: int,
+    weight_by: str,
+    metric: str,
+) -> tuple[bool, dict[str, Any], int]:
+    """Assemble the Heatmap's grid for one contract.
+
+    Two passes on purpose. The first reads a light index - four columns, no
+    strike children - so the column budget can be applied to a COUNT; only the
+    snapshots that survive it are then paid for. Reading 8,250 columns' worth of
+    strike rows to throw away fourteen of every fifteen is precisely the cost
+    the budget exists to avoid.
+
+    The window itself is already bounded by the route's `MAX_HISTORY_POINTS`
+    check, which refuses an over-wide range by name rather than truncating it.
+    This bounds the RESOLUTION inside whatever range survived that.
+    """
+    index = gex_history_db.get_snapshot_index_in_range(
+        series["id"], from_ts, to_ts, expiry_date=expiry_date
+    )
+    resolution, bucket_seconds = grid.choose_resolution(len(index))
+    selected = grid.select_representatives(index, bucket_seconds)
+
+    strikes_by_snapshot = gex_history_db.get_strikes_for_snapshots([row["id"] for row in selected])
+    built = grid.build_grid(selected, strikes_by_snapshot, metric, weight_by)
+
+    return (
+        True,
+        {
+            **empty,
+            "recorded": True,
+            "series_id": series["id"],
+            "resolution": resolution,
+            # Reported rather than inferred from `resolution`: a caller should
+            # never have to know that "1m" happens to be the native cadence to
+            # find out whether it is looking at every snapshot or one in five.
+            "downsampled": resolution != NATIVE_RESOLUTION,
+            **built,
+        },
+        200,
+    )
 
 
 def _point(row: dict[str, Any], weight_by: str) -> dict[str, Any]:
