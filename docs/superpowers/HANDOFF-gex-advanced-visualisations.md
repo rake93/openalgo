@@ -14,7 +14,7 @@
 | Gamma Profile | **Shipped**, verified live |
 | Delta Exposure (DEX) | **Shipped**, verified live |
 | Hover readout, draggable card | **Shipped**, confirmed by the user |
-| **Snapshot recorder (phase 3)** | Built, green, fd-audited. **Live verification still owed** — see §2.1 |
+| **Snapshot recorder (phase 3)** | Built, green, fd-audited. **Verified live against a broker on 2026-08-06** — see §2.1. One step outstanding: the after-close pass |
 | **Gamma Bands (phase 4)** | Built, green, fd-audited. **Seen and verified on a real chart** against seeded history — see §2.2 |
 | **GEX Heatmap (phase 5)** | Not started. Unblocked — do this next |
 
@@ -25,12 +25,17 @@ the whole change.
 
 ---
 
-## 2. Do this before anything else: phase 3's live verification is owed
+## 2. Live verification: phase 3 passed on 2026-08-06
 
-**Phase 4 has been checked on a real chart** (2026-08-06, against seeded
-history — §2.2). **Phase 3 has never touched a broker**: every test stubs the
-chain, and the recorder has only ever been observed staying correctly silent out
-of hours.
+**Both phases have now been checked against reality.** Phase 4 on a real chart
+against seeded history (§2.2); **phase 3 against a live broker session** during
+the 2026-08-06 morning session, on a NIFTY 11AUG26 series recording once a
+minute (§2.1). The one step that could not be run mid-session is the after-close
+pass, which is still open.
+
+Read §2.1's results before changing the recorder or the fast path: two of them
+(the exchange normalisation and the absence of a units error) are the live
+evidence for defects that green suites did not catch.
 
 That gap matters more here than anywhere else in this codebase. Three defects on
 this exact feature have reached the live chart with a full green suite, and a
@@ -60,31 +65,51 @@ missing route looks like a working page. Kill every `app.py` and start one.
 A frontend change also needs `cd frontend && npm run build` (Flask serves `dist`,
 not `src`); a backend change needs the restart. Keep `dist` out of commits.
 
-### 2.1 Phase 3, the recorder
+### 2.1 Phase 3, the recorder — PASSED 2026-08-06, one step still open
 
-1. **Idle case first, and it is the one an upgrade hits.** `GET
-   /gex/api/gex-series` returns `[]` on a fresh install, and the log shows the
-   recorder registering only `gex_prune` — no recording job, no broker call.
-2. Add a series. There is now a **button for this** — enable GEX levels, turn
-   Gamma bands on, and use "Record this series" in the Studies panel. (The raw
-   route is still `POST /gex/api/gex-series {"underlying":"NIFTY",
-   "exchange":"NFO","expiry_rule":"nearest"}`.)
-3. Within two minutes `db/gex.db` should hold a `gex_snapshot` row with **both**
-   `call_wall_oi` and `call_wall_vol` populated, and ~47 `gex_snapshot_strike`
-   children.
-4. Open the study on `/charts` (`NIFTY28JUL26FUT` — index symbols are quote-only).
-   The response must carry `source: "recorded"`, `as_of` must advance each
-   minute, and the walls and bar column must look exactly as they did before
-   phase 3.
-5. **Open a second tab. The broker call count must not double.** That is the
-   feature's main claim.
-6. **Compare a recorded snapshot against a forced live fetch of the same chain**
-   — disable the series, reload, and check the walls and net GEX agree. There is
-   a unit test for this, but it cannot see a units bug in the live chain; the
-   last one survived 99 green tests and was caught only by a live call.
-7. After the close: no new rows, and no rate-limit warnings in `log/errors.jsonl`.
-8. Out of hours with a series on the watchlist, the recorder must stay silent —
-   `session_is_open(..., default=False)` is what should stop it.
+Run against a live `dhan` session, 11:18-11:30 IST, NIFTY 11AUG26, one enabled
+series recording every minute. 44 snapshots over 10:44-11:29.
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | Unrecorded contract still renders | **Pass.** `18AUG26` (never recorded) answered `source: "live"`, `status: success`, 47 strikes, no missing fields |
+| 2 | Series on the watchlist | Pre-existing, added 2026-08-05 18:51 |
+| 3 | Row with **both** weightings and ~47 children | **Pass.** Across all 44 rows: zero missing a wall or quality verdict on either weighting, every snapshot exactly 47 `gex_snapshot_strike` children, zero orphans |
+| 4 | `source: "recorded"`, `as_of` advances | **Pass.** `as_of` stepped 11:23:00 -> 11:24:00; walls, bar column and card rendered on the real chart |
+| 5 | **Second tab must not double broker calls** | **Pass.** 8 calls from a second tab, all `source: "recorded"`, a single distinct `as_of` — zero broker calls |
+| 6 | Recorded vs forced live | **Pass.** Walls identical on both weightings (OI 24800/24600, vol 24800/24500), `lot_size` 65, 47 strikes; net GEX ratio 0.91 (oi) / 1.02 (vol) over 2.5 minutes of drift — **not 65x, so no units error** |
+| 7 | After the close: no new rows, no rate-limit warnings | **STILL OPEN** — cannot run mid-session |
+| 8 | Out-of-hours silence | **Guard verified.** `session_is_open("NFO", ..., default=False)` returns False at 03:00, 09:00, 15:45, 18:51, 23:30 and on Sunday; True at 11:27 and 15:29. End-to-end after-close silence is step 7 |
+
+**The recorded fast path fires on an index chart.** A request carrying
+`NSE_INDEX` was answered `source: "recorded"` off a watchlist row stored as
+`NFO`. That is commit `08ca40b29` confirmed against a broker, on the defect that
+made the feature look switched off rather than broken.
+
+**No live errors.** All 29 GEX entries in `log/errors.jsonl` predate the run
+(latest 00:46:56); 16 carry `unittest.mock` frames with injected
+`RuntimeError: db gone` / `scheduler down` — the suite exercising the
+degradation paths, not failures.
+
+**Toggling a series genuinely starts and stops it, and leaves a gap.** Disabling
+at 11:25:34 produced no 11:25 or 11:26 row; re-enabling resumed at 11:27:00. The
+resulting 180-second hole was never backfilled — the "a tick that cannot complete
+writes nothing" rule, seen live.
+
+#### Two things that will cost you time when you re-run this
+
+**The `/gex` routes are CSRF-protected, so curl cannot drive them** — a bare POST
+returns `{"error": "CSRF validation failed"}` and a bare GET redirects to
+`/auth/login`. Drive them from the page context of a logged-in tab instead:
+fetch `/auth/csrf-token`, then send the token as the `X-CSRFToken` header with
+`credentials: 'include'`.
+
+**Disabling a series does NOT disable the fast path.**
+`get_latest_snapshot` filters on underlying, exchange and expiry, never on
+`enabled`, so a fresh row keeps being served after the series is switched off.
+To force a live fetch you must disable *and then wait out*
+`FAST_PATH_MAX_AGE_SECONDS` (120s) so the newest row goes stale. Step 6 reads as
+if disabling alone is enough; it is not.
 
 ### 2.2 Phase 4, the bands — DONE 2026-08-06, repeat it after any renderer change
 
@@ -231,11 +256,21 @@ profile for both metrics and both weightings, plus the raw OI and volume.
 **Do not add `autoscaleInfo`.** The heatmap spans the whole strike window, so it
 would flatten the candles harder than anything else in this study.
 
-### Solve the per-frame recomputation before the heatmap, not after
+### Per-frame recomputation — FIXED 2026-08-06, build the heatmap on this shape
 
-`GexBandsPrimitive` re-splits its **entire** history on every `draw()`, and draw
-fires on every pan, zoom and tick. Measured cost of one frame's segment work
-(fd-audit, 2026-08-06):
+`GexBandsPrimitive` now splits once into a `prepared` field and `draw()` walks
+the result. `setData` and `setOptions` invalidate it; `detached()` releases it.
+Exactly one prepared value per instance, no keyed cache. Three tests pin it: a
+redraw after a pan and a zoom does no splitting, and both a data change and an
+options change do. Red-green verified — with the memo disabled, three draws cost
+9 band splits and 3 corridor splits instead of 3 and 1.
+
+**Build the Heatmap on this shape rather than reintroducing the old one.** The
+history below is why it mattered.
+
+`GexBandsPrimitive` used to re-split its **entire** history on every `draw()`,
+and draw fires on every pan, zoom and tick. Measured cost of one frame's segment
+work (fd-audit, 2026-08-06):
 
 | History | Per frame | Share of a 60fps budget |
 | --- | --- | --- |
@@ -263,6 +298,47 @@ unchanged data does no splitting.
 
 ---
 
+## 4b. Band rendering, reworked 2026-08-06 after live review
+
+The bands shipped in phase 4 were reported on a live chart as "not proper lines,
+scattering the dots". Three separate causes, all found by measurement:
+
+**Zero-Gamma was stepped, and it is not a strike.** Measured on live data,
+`call_wall` held ONE distinct value across 53 consecutive minutes while
+`zero_gamma` took 53 distinct values across the same 53. Stepping a
+continuously-interpolated crossing price produced a staircase of ~3px treads
+which its own 2-on/3-off dash then shattered into loose marks. Zero-Gamma now
+interpolates `linear`; the walls still `step`. `bandSpecs()` carries the
+distinction and both directions are pinned by a test.
+
+**A band was collinear with its own live level.** Canvas pixels at dpr 1.5: the
+live Call Wall occupied row 73 in runs of 9px (its 6-on/4-off dash) and its band
+row 72 in runs of 6px - one pixel apart, dash over solid. The composite read as a
+single two-tone dashed line, so a wall that had NOT moved during the window
+appeared to have no band, while one that had moved appeared to be the only band
+drawn. `GexLevelsPrimitive` now takes `bandCoverage` and clips its dashed line
+away over the span each band covers, computed per level by `computeBandCoverage`.
+The pair now reads as one line per level: solid through recorded history, dashed
+at the current value beyond it. **Coverage is per level and derived from
+readings, not from the request window** - `zero_gamma` is null whenever the
+profile does not cross near the forward, and clipping against a band that is not
+there would erase the level rather than defer to it.
+
+**Every band is now a solid hairline** at the live level's own width, and the
+corridor shading is **off by default** with a new "Wall corridor" control in the
+Studies panel (`showBandsCorridor`). The three levels are meant to read as three
+distinct lines; a filled region between two of them competed with exactly that.
+
+Verified live: one line per level, the recorder's outages visible as real breaks.
+
+### The failure path proved itself during the review
+
+At 11:51-11:54 the machine lost DNS (`getaddrinfo failed`, errno 11001) and every
+broker call failed, not just GEX. The recorder wrote nothing for those two minutes
+and the band broke over them rather than running a straight line across - the
+"a tick that cannot complete writes nothing" rule, observed against a real outage
+rather than a stubbed one. No rate-limit warnings were involved.
+
 ## 5. Known limitations, deliberately left
 
 **Zero-Gamma is a forward-space level drawn on a spot-price axis.** ~35 points
@@ -288,9 +364,8 @@ negation.
 
 ## 6. Follow-ups worth doing, none blocking
 
-**Bands re-split their history every frame.** The one finding from the 2026-08-06
-`fd-audit`; the numbers, the reason it is latent, and the shape of the fix are in
-§4a, because it should be fixed *before* the Heatmap rather than after.
+~~**Bands re-split their history every frame.**~~ **DONE 2026-08-06** — see §4a
+for the fix and the red-green evidence. Build the Heatmap on the memoised shape.
 
 **`scan_zero_gamma` re-resolves what the caller already has.** Measured on a
 47-strike chain: `resolve_ivs` (0.574 ms) and `weighted_legs` (0.201 ms) run once

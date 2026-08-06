@@ -391,8 +391,8 @@ Phased so value lands before the infrastructure is finished.
 | --- | --- | --- |
 | 1 | **Gamma Profile** — already built; folded into step 2 | **DONE** 2026-08-05 |
 | 2 | **Delta Exposure** — `delta_exposure.py`, the live path, the Metric toggle | **DONE** 2026-08-05 |
-| 3 | **Storage and recorder** — `gex_history_db`, `gex_recorder_service`, `build_snapshot` extraction, watchlist routes, the recorded fast path | **DONE** 2026-08-05 (live verification outstanding) |
-| 4 | **Gamma Bands** — the first consumer of history; smallest query shape | **DONE** 2026-08-06 (live verification outstanding) |
+| 3 | **Storage and recorder** — `gex_history_db`, `gex_recorder_service`, `build_snapshot` extraction, watchlist routes, the recorded fast path | **DONE** 2026-08-05; verified live 2026-08-06 (after-close pass still open) |
+| 4 | **Gamma Bands** — the first consumer of history; smallest query shape | **DONE** 2026-08-06; verified on a real chart 2026-08-06 |
 | 5 | **GEX Heatmap** — the grid endpoint, downsampling, the background renderer | Not started |
 
 Steps 1 and 2 shipped two of the four features with no recorder at all, exactly
