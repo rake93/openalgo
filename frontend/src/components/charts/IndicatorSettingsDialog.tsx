@@ -12,7 +12,8 @@
  * the /charts workspace and the /trading terminal.
  */
 
-import type { IndicatorManifestEntry } from '@openalgo/openscript'
+import type { IndicatorManifestEntry, IRSettingsInput } from '@openalgo/openscript'
+import { parseSessionString } from '@openalgo/openscript'
 import { Info } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { ColorPicker } from '@/components/charts/ColorPicker'
@@ -66,7 +67,13 @@ function InputTooltip({ text }: { text?: string }) {
   )
 }
 
-type InputDef = IndicatorManifestEntry['inputs'][number]
+// `resolveSettingsEntry` returns EITHER a registry manifest entry OR an
+// IR-derived descriptor (`descriptorFromIR`) — so this input's actual type is
+// their union, not `IndicatorManifestEntry['inputs'][number]` alone. `session`
+// (session-surface plan Task 7) only exists on the IR side (`IRSettingsInput`);
+// without this widening, `entry.inputs` fails to typecheck the moment an
+// IR-backed script declares `input.session`.
+type InputDef = IndicatorManifestEntry['inputs'][number] | IRSettingsInput
 
 /** One rendered row: inputs sharing an `inline` key render side by side. */
 interface InputRow {
@@ -255,6 +262,14 @@ export function IndicatorSettingsDialog({
 
   const setInput = (id: string, value: unknown) => setValues((v) => ({ ...v, [id]: value }))
 
+  // Derived (not stored) — recomputed from `values` every render, same source
+  // `renderControl`'s own `session` case reads, so the two can never disagree
+  // on which inputs are currently invalid. Blocks Apply/Ok; it does NOT stop
+  // the invalid text from being typed or shown — only from being committed.
+  const hasSessionError = entry.inputs.some(
+    (i) => i.type === 'session' && 'error' in parseSessionString(String(values[i.id] ?? i.defaultValue))
+  )
+
   /** The bare control for one input (no label) — `compact` sizes it for an
    *  inline row shared with other inputs. */
   const renderControl = (input: InputDef, compact = false) => {
@@ -357,6 +372,32 @@ export function IndicatorSettingsDialog({
               ))}
             </SelectContent>
           </Select>
+        )
+      }
+      case 'session': {
+        // Free-text control, same shape as the option-less `string` case above.
+        // `parseSessionString` is the SAME grammar the engine's executor runs
+        // at bind time (OS4005) — this is client-side feedback only, never a
+        // second source of truth: an invalid value still compiles and saves
+        // fine as far as THIS check is concerned, it is the engine's bind-time
+        // check that is the actual authority and will reject it at run time.
+        // Showing the error here (and disabling Apply below) just gives the
+        // user the same reason immediately instead of after a round trip.
+        const raw = String(value)
+        const parsed = parseSessionString(raw)
+        const error = 'error' in parsed ? parsed.error : undefined
+        return (
+          <div className={compact ? 'w-28' : undefined}>
+            <Input
+              id={`ind-${input.id}`}
+              type="text"
+              value={raw}
+              aria-invalid={error ? true : undefined}
+              onChange={(e) => setInput(input.id, e.target.value)}
+              className={compact ? 'h-8 w-28' : 'h-8'}
+            />
+            {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
+          </div>
         )
       }
       case 'color': {
@@ -577,6 +618,7 @@ export function IndicatorSettingsDialog({
             </Button>
             <Button
               size="sm"
+              disabled={hasSessionError}
               onClick={() => {
                 const vis =
                   JSON.stringify(visibility) === JSON.stringify(DEFAULT_TF_VISIBILITY)
