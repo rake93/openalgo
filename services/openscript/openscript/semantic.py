@@ -35,6 +35,7 @@ from .builtins_table import (
     ta_arities,
 )
 from .diagnostics import Diagnostic, Span, make_diagnostic
+from .input_defval import defval_of
 from .stdlib import STDLIB_NAMESPACES, stdlib_arity, stdlib_is_windowed
 
 SOURCE_IDS = frozenset(
@@ -639,10 +640,16 @@ class Analyzer:
     def _check_string_options(self, call: ast.CallExpr) -> None:
         """`input.string(default, ..., options=[...])` (P4.4): every options
         element must be a string literal (else OS2004), and when they all
-        are, `default` (the first argument) must be one of them (else
-        OS2004). Reuses OS2004 ('Type mismatch') rather than allocating a
-        new code — both are "argument doesn't match the expected shape"
-        cases."""
+        are, `default` must be one of them (else OS2004). Reuses OS2004
+        ('Type mismatch') rather than allocating a new code — both are
+        "argument doesn't match the expected shape" cases.
+
+        `default` is resolved via `defval_of` (named-first, else the first
+        positional argument), NOT `call.args[0]` — that index is the first
+        argument IN CALL ORDER, so a named-first call
+        (`input.string(title="Method", defval="MACD", options=[...])`) would
+        grab `title`'s value instead and false-positive OS2004 on it (N16).
+        """
         options_arg = next((a for a in call.args if a.name == "options"), None)
         if options_arg is None or options_arg.value.type != "ArrayLiteral":
             return
@@ -656,9 +663,9 @@ class Analyzer:
                 self._error("OS2004", el.span, "input.string options elements must be string literals")
         if not all_strings:
             return
-        default_arg = call.args[0] if call.args else None
-        if default_arg is not None and default_arg.value.type == "String" and default_arg.value.value not in strings:
-            self._error("OS2004", default_arg.span, "input.string default must be one of its declared options")
+        default_expr = defval_of(call)
+        if default_expr is not None and default_expr.type == "String" and default_expr.value not in strings:
+            self._error("OS2004", default_expr.span, "input.string default must be one of its declared options")
 
     def _check_session_defval(self, call: ast.CallExpr) -> None:
         """`input.session(defval, ...)` (session-surface design §4.1): when the
@@ -668,14 +675,13 @@ class Analyzer:
         that isn't a recognizable literal (e.g. `input.color`, `input.timeframe`).
 
         `defval` can be named (`input.session(title="Session", defval="0915-1530")`)
-        as well as positional — `_named_arg_value` first, else the first
-        POSITIONAL (unnamed) argument, never `call.args[0]` blindly: that index
-        is the first argument IN CALL ORDER, so a named-first call would grab
-        `title`'s value instead and false-positive OS2031 on it.
+        as well as positional — resolved via `defval_of` (named-first, else the
+        first POSITIONAL/unnamed argument), never `call.args[0]` blindly: that
+        index is the first argument IN CALL ORDER, so a named-first call would
+        grab `title`'s value instead and false-positive OS2031 on it. This is
+        the rule N16 generalized to every `input.*` constructor.
         """
-        default_expr = self._named_arg_value(call, "defval")
-        if default_expr is None:
-            default_expr = next((a.value for a in call.args if a.name is None), None)
+        default_expr = defval_of(call)
         if default_expr is None or default_expr.type != "String":
             return
         parsed = parse_session_string(default_expr.value)

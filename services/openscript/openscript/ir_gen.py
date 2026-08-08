@@ -33,6 +33,7 @@ from ..runtime.timeframe import parse_timeframe
 from . import ast_nodes as ast
 from .builtins_table import CONTEXT_MEMBERS, KERNELS_FUNCTIONS, TA_FUNCTIONS, ta_overload
 from .diagnostics import Diagnostic, Span, make_diagnostic
+from .input_defval import defval_of
 from .stdlib import stdlib_function
 
 IR_VERSION = 1
@@ -658,7 +659,13 @@ class IRGenerator:
         title = title_val if isinstance(title_val, str) else None
         input_id = preferred_id or (_slug(title) if title else f"input_{len(self._inputs)}")
         label = title if title is not None else input_id
-        default = _resolve_const(call.args[0].value) if call.args else None
+        # `defval_of` (named-first, else the first positional/unnamed
+        # argument) — NOT `call.args[0]` blindly: that index is the first
+        # argument IN CALL ORDER, so a named-first call
+        # (`input.int(title="Length", defval=14)`) would grab `title`'s value
+        # instead of `defval`'s (N16).
+        default_expr = defval_of(call)
+        default = _resolve_const(default_expr) if default_expr is not None else None
 
         decl: dict = {"id": input_id, "type": type_, "label": label}
         static_val = None
@@ -696,14 +703,10 @@ class IRGenerator:
         elif type_ == "timeframe":
             decl["defaultValue"] = default if isinstance(default, str) and default else "1"
         elif type_ == "session":
-            # `default` (from `call.args[0]` above) is the first argument IN
-            # CALL ORDER, so it grabs `title`'s value for a named-first call
-            # like `input.session(title="Session", defval="0915-1530")` —
-            # resolve `defval` the named-aware way instead (named first, else
-            # the first POSITIONAL/unnamed arg), mirroring the TS ir-gen and
-            # semantic's `_check_session_defval`. Scoped to this arm only, as
-            # in TS.
-            session_def = self._const_arg(call, 0, "defval")
+            # `default` above is already resolved via `defval_of`, so this
+            # needs no arm-local re-derivation (N16 generalized the session
+            # arm's original fix to every input.* constructor).
+            #
             # '' is a DELIBERATE unparseable sentinel, not an honest default:
             # there is no session string that means "unset". A script reaching
             # this fallback (a non-string const default, defensive-only —
@@ -711,7 +714,7 @@ class IRGenerator:
             # ships an IR that fails to bind at runtime, and OS4005 is what
             # surfaces that loudly instead of silently degrading to some
             # arbitrary window (no-silent-degradation, design §6).
-            decl["defaultValue"] = session_def if isinstance(session_def, str) else ""
+            decl["defaultValue"] = default if isinstance(default, str) else ""
         else:  # source
             decl["defaultValue"] = default if isinstance(default, str) else "close"
 
