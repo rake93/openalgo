@@ -38,6 +38,15 @@ export interface IndicatorProfile {
  * and re-deriving it from the instance would be a second, weaker copy of the
  * eligibility rule, free to disagree with the engine.
  *
+ * `lookahead:*` is excluded for the same shape of reason (register M14(a)): a
+ * pivot reads `right` bars FORWARD, so the engine deliberately and PERMANENTLY
+ * forces such an indicator onto the full path. The user cannot act on that —
+ * only the engine can (M14(b)) — and a structural, permanent, user-unfixable ⚠
+ * is the trained-away failure this predicate exists to prevent, one level up.
+ * The row and its reason stay visible via `fallbackLabel`; only the alarm is
+ * withheld. Note the class is `lookahead:` WITH an operator name — a bare
+ * `unsupported` names no structural cause and stays flagged.
+ *
  * An unnamed fallback IS flagged. A reason the engine did not give is still a
  * fallback, and defaulting to benign there would let an unnamed regression
  * through in silence — which is the exact failure this whole deliverable exists
@@ -46,7 +55,10 @@ export interface IndicatorProfile {
 export function isSilentFallback(profile: IndicatorProfile): boolean {
   if (profile.scope !== 'update') return false
   if (profile.perf.recompute !== 'full') return false
-  return profile.perf.fallbackReason !== 'builtin-no-ir'
+  const reason = profile.perf.fallbackReason
+  if (reason === 'builtin-no-ir') return false
+  if (reason?.startsWith('lookahead:')) return false
+  return true
 }
 
 /** Human-readable cause, for the panel and the badge tooltip. */

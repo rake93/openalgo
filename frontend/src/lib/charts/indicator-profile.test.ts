@@ -32,8 +32,24 @@ describe('isSilentFallback', () => {
     expect(isSilentFallback(p)).toBe(true)
   })
 
-  it('flags an unsupported closure on a tick', () => {
+  it('does NOT flag a lookahead operator — structural, permanent, user-unfixable (M14a)', () => {
+    // `ta.pivothigh` reads `right` bars FORWARD, so the engine deliberately
+    // forces the whole indicator onto the full path on EVERY tick. The user
+    // cannot act on that; only the engine can (register M14(b)). A permanent ⚠
+    // is the same trained-away failure the predicate exists to prevent, one
+    // level up. The row and its reason stay visible via fallbackLabel; only the
+    // alarm is withheld.
     const p = profile('update', { recompute: 'full', fallbackReason: 'lookahead:ta.pivothigh' })
+
+    expect(p.perf.recompute).toBe('full') // non-vacuity: it really is full
+    expect(isSilentFallback(p)).toBe(false)
+  })
+
+  it('still flags a bare unsupported closure on a tick — unknown ops are not structural', () => {
+    // Only `lookahead:*` is the expected-structural class. A reason that names
+    // no operator class is exactly the "unnamed regression" the predicate must
+    // keep loud.
+    const p = profile('update', { recompute: 'full', fallbackReason: 'unsupported' })
 
     expect(isSilentFallback(p)).toBe(true)
   })
