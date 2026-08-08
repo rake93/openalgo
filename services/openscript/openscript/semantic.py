@@ -8,6 +8,11 @@ destructuring, and duplicate input/alert ids. Identical rules to the TS.
 
 from __future__ import annotations
 
+# Session-string literals and defaults are validated with the SAME parser the
+# runtime bind uses (OS2031 at compile time, OS4005 at bind time), the identical
+# share-one-parser rule `parse_timeframe` below already follows.
+from ..runtime.session_string import SessionParseError, parse_session_string
+
 # request.security validates its timeframe string with the SAME parser the runtime
 # resampler uses, so the compiler can never accept a timeframe the executor cannot
 # bucket (register C4).
@@ -24,6 +29,7 @@ from .builtins_table import (
     NAMED_ARGS,
     OUTPUT_FUNCTIONS,
     REQUEST_FUNCTIONS,
+    SESSION_FUNCTIONS,
     SPECIAL_FUNCTIONS,
     TA_FUNCTIONS,
     ta_arities,
@@ -68,6 +74,9 @@ class Analyzer:
         # timeframe argument of request.security in place of a const string, because
         # the value resolves at RUNTIME (a settings change re-resamples, no recompile).
         self._timeframe_inputs: set[str] = set()
+        # Names bound to `input.session(...)` — accepted as a `session.*`
+        # argument (the OS2032 emitter, session-surface design §4.1).
+        self._session_inputs: set[str] = set()
         # True while visiting the direct value of a `color=` named argument.
         self._in_color_arg_position = False
         # Scan state per `:=` target: decl seen (const-init) / reassign visited.
@@ -133,6 +142,8 @@ class Analyzer:
                 self._color_inputs.add(stmt.name)
             if _is_input_timeframe_call(stmt.value):
                 self._timeframe_inputs.add(stmt.name)
+            if _is_input_session_call(stmt.value):
+                self._session_inputs.add(stmt.name)
             scan = self._scan_vars.get(stmt.name)
             if scan is not None:
                 if not top_level:
@@ -333,6 +344,16 @@ class Analyzer:
                 self._error("OS2003", call.span, f"got {len(call.args)}, expected {joined}")
         elif ns == "math":
             self._resolve_fn(MATH_FUNCTIONS.get(fn), fn, call)
+        elif ns == "session":
+            spec = SESSION_FUNCTIONS.get(fn)
+            if spec is None:
+                self._error("OS2002", call.span, f"session.{fn}")
+                return
+            if len(call.args) not in spec["arities"]:
+                joined = " or ".join(str(a) for a in spec["arities"])
+                self._error("OS2003", call.span, f"got {len(call.args)}, expected {joined}")
+                return
+            self._check_session_arg(call.args[0])
         elif ns == "input":
             if fn not in INPUT_FUNCTIONS:
                 self._error("OS2002", call.span, f"input.{fn}")
@@ -343,6 +364,8 @@ class Analyzer:
             self._check_named_args(f"input.{fn}", INPUT_NAMED_ARGS, call)
             if fn == "string":
                 self._check_string_options(call)
+            if fn == "session":
+                self._check_session_defval(call)
         elif ns == "request":
             if fn not in REQUEST_FUNCTIONS:
                 self._error("OS2002", call.span, f"request.{fn}")
@@ -637,6 +660,49 @@ class Analyzer:
         if default_arg is not None and default_arg.value.type == "String" and default_arg.value.value not in strings:
             self._error("OS2004", default_arg.span, "input.string default must be one of its declared options")
 
+    def _check_session_defval(self, call: ast.CallExpr) -> None:
+        """`input.session(defval, ...)` (session-surface design §4.1): when the
+        default is a string literal, it must parse as a well-formed session
+        string (OS2031). A non-literal default is left to fall through silently,
+        mirroring every other `input.*` constructor's leniency toward a default
+        that isn't a recognizable literal (e.g. `input.color`, `input.timeframe`).
+
+        `defval` can be named (`input.session(title="Session", defval="0915-1530")`)
+        as well as positional — `_named_arg_value` first, else the first
+        POSITIONAL (unnamed) argument, never `call.args[0]` blindly: that index
+        is the first argument IN CALL ORDER, so a named-first call would grab
+        `title`'s value instead and false-positive OS2031 on it.
+        """
+        default_expr = self._named_arg_value(call, "defval")
+        if default_expr is None:
+            default_expr = next((a.value for a in call.args if a.name is None), None)
+        if default_expr is None or default_expr.type != "String":
+            return
+        parsed = parse_session_string(default_expr.value)
+        if isinstance(parsed, SessionParseError):
+            self._error("OS2031", default_expr.span, parsed.error)
+
+    def _check_session_arg(self, arg: ast.Argument) -> None:
+        """`session.*`'s sole argument (session-surface design §4.2): a
+        session-string literal (OS2031 on malformed grammar — the same parser
+        and message as `_check_session_defval`) or a top-level variable bound to
+        `input.session` (`self._session_inputs` — the identical rule
+        `request.security`'s timeframe argument already applies via
+        `_timeframe_inputs`, reused rather than re-derived). Anything else is
+        OS2032: ir_gen specializes `session.*` at compile time on either the
+        literal VALUE or the input's id, and a plain string expression (or any
+        other kind of value) carries neither.
+        """
+        e = arg.value
+        if e.type == "String":
+            parsed = parse_session_string(e.value)
+            if isinstance(parsed, SessionParseError):
+                self._error("OS2031", e.span, parsed.error)
+            return
+        if e.type == "Identifier" and e.name in self._session_inputs:
+            return
+        self._error("OS2032", e.span)
+
     def _register_title(self, call: ast.CallExpr, seen: set[str], code: str) -> None:
         title = _title_of(call)
         if title is None:
@@ -689,6 +755,17 @@ def _is_htf_source_expr(e) -> bool:
         return False
     base = e.object if e.type == "Index" else e
     return getattr(base, "type", None) == "Identifier" and base.name in HTF_SOURCE_KINDS
+
+
+def _is_input_session_call(e: ast.Expr) -> bool:
+    """`input.session(...)` — a session-string-valued input (session-surface design §4.1)."""
+    return (
+        e.type == "Call"
+        and e.callee.type == "Member"
+        and getattr(e.callee.object, "type", None) == "Identifier"
+        and e.callee.object.name == "input"
+        and e.callee.property == "session"
+    )
 
 
 def _is_input_color_call(e: ast.Expr) -> bool:

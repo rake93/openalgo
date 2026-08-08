@@ -20,6 +20,7 @@ from __future__ import annotations
 from services.openscript.limits import SCRIPT_LIMITS
 from services.openscript.runtime.cost_expr import eval_cost_expr
 from services.openscript.runtime.plancost import admission_cost_ctx, estimate_plan_cost
+from services.openscript.runtime.session_string import SESSION_DAY_FIELDS
 
 IR_MAJOR = 1
 IR_VERSION = 1
@@ -76,6 +77,15 @@ def _declared_input_ids(ir: dict) -> set:
     }
 
 
+# The nine session-input facets an `input` node's `field` may name (design
+# §5.2). The seven day fields are SPREAD FROM `SESSION_DAY_FIELDS` — the same
+# tuple the executor's field resolution reads — so that family is exhaustive by
+# construction: a day field added there arrives here automatically.
+# `open`/`close` are the two fixed clock facets. Mirror of the TS
+# SESSION_FIELD_LIST in admit.ts.
+_SESSION_FIELDS = frozenset(("open", "close", *SESSION_DAY_FIELDS))
+
+
 def _admit_node_structure(ir: dict, errors: list[dict]) -> None:
     """Node shape: each entry must be a dict whose `id` is its own array
     position. The executor indexes its values by position, so an id that
@@ -125,6 +135,10 @@ def _admit_node_structure(ir: dict, errors: list[dict]) -> None:
 def _admit_node_references(ir: dict, errors: list[dict]) -> None:
     """Node-to-node and node-to-input wiring."""
     declared_inputs = _declared_input_ids(ir)
+    # Input id -> declared type, for the session `field` gate below.
+    decl_type_by_id = {
+        str(d.get("id")): str(d.get("type")) for d in ir.get("inputs", []) if isinstance(d, dict)
+    }
 
     def bad_ref(node_id, field, value):
         errors.append(
@@ -156,14 +170,45 @@ def _admit_node_references(ir: dict, errors: list[dict]) -> None:
                         bad_ref(node_id, field, v)
             elif not _is_node_index(value, bound):
                 bad_ref(node_id, field, value)
-        if node.get("op") == "input" and str(node.get("inputId")) not in declared_inputs:
-            errors.append(
-                {
-                    "code": "IR_BAD_INPUT_REF",
-                    "message": f"node {node_id} reads undeclared input '{node.get('inputId')}'",
-                    "detail": str(node.get("inputId")),
-                }
-            )
+        if node.get("op") == "input":
+            if str(node.get("inputId")) not in declared_inputs:
+                errors.append(
+                    {
+                        "code": "IR_BAD_INPUT_REF",
+                        "message": f"node {node_id} reads undeclared input '{node.get('inputId')}'",
+                        "detail": str(node.get("inputId")),
+                    }
+                )
+            elif node.get("field") is not None:
+                # Session `field` gate (design §5.2): a `field` is only
+                # meaningful on a session-typed input, and only the nine names
+                # exist. The compiler never emits anything else — this is the
+                # §13 hand-forged-IR discipline. Only the WIRING is checked
+                # here; the bound string's VALUE is — like every input default
+                # this file leaves unvalidated — a runtime concern, and an
+                # unparseable one fails loudly there as OS4005. Mirror of the
+                # TS admit.ts gate.
+                if decl_type_by_id.get(str(node.get("inputId"))) != "session":
+                    errors.append(
+                        {
+                            "code": "IR_BAD_INPUT_REF",
+                            "message": (
+                                f"node {node_id} field '{node.get('field')}' binds "
+                                f"non-session input '{node.get('inputId')}'"
+                            ),
+                            "detail": str(node.get("inputId")),
+                        }
+                    )
+                elif str(node.get("field")) not in _SESSION_FIELDS:
+                    errors.append(
+                        {
+                            "code": "IR_BAD_INPUT_REF",
+                            "message": (
+                                f"node {node_id} has unknown session field '{node.get('field')}'"
+                            ),
+                            "detail": str(node.get("field")),
+                        }
+                    )
         if (
             node.get("op") == "htf"
             and node.get("timeframeInputId") is not None

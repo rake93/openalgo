@@ -69,6 +69,10 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS2028": "request.security lookahead must be barmerge.lookahead_off",
     "OS2029": "location.absolute requires price=",
     "OS2030": "price= applies only to location.absolute",
+    # Semantic — session surface (input.session + session.*, design §4/§5;
+    # both OS2031's and OS2032's emitters live in semantic.py)
+    "OS2031": "Malformed session string",
+    "OS2032": "session.* argument must be a session-string literal or an input.session variable",
     # Limits
     "OS3001": "Source exceeds maximum size",
     "OS3002": "Program exceeds maximum AST nodes",
@@ -82,6 +86,8 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS4002": "Execution time budget exceeded",
     "OS4003": "Invalid input value",
     "OS4004": "Kernel execution failed",
+    # raised as SessionInputError (runtime/executor.py), never as a compile diagnostic
+    "OS4005": "Session input failed to parse at bind time",
     # Warnings (compile succeeds; advisory)
     "OS5001": "max_kept exceeds maximumObjectsPerOutput (clamped)",
     "OS5002": "output consumes provisional/lookahead data (repaints)",

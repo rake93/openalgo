@@ -200,8 +200,21 @@ MATH_FUNCTIONS: dict[str, dict] = {
     }.items()
 }
 
+# Compiler-expanded session predicates (openscript-session-surface-design.md
+# §4.2). NOT stdlib functions: their argument is parsed at compile time and the
+# expansion depends on literal-vs-input, which the stdlib mechanism cannot
+# express. Lowered by ir_gen like color.from_gradient. Mirror of the TS
+# SESSION_FUNCTIONS in builtins-table.ts.
+SESSION_FUNCTIONS: dict[str, dict] = {
+    "contains": {"arities": [1], "outputs": 1},
+    "first_bar": {"arities": [1], "outputs": 1},
+    "bars_in": {"arities": [1], "outputs": 1},
+}
+
 SPECIAL_FUNCTIONS = frozenset({"nz", "na"})
-INPUT_FUNCTIONS = frozenset({"int", "float", "bool", "string", "source", "color", "timeframe"})
+INPUT_FUNCTIONS = frozenset(
+    {"int", "float", "bool", "string", "source", "color", "timeframe", "session"}
+)
 OUTPUT_FUNCTIONS = frozenset(
     {
         "plot",

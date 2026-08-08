@@ -17,6 +17,16 @@ import re
 from ..limits import SCRIPT_LIMITS
 from ..runtime.plancost import estimate_plan_cost
 
+# Literal sessions are re-parsed with the SAME parser the runtime bind uses, so
+# lowering can never bake a session the executor could not have bound (the same
+# share-one-parser rule as `parse_timeframe` below).
+from ..runtime.session_string import (
+    SESSION_DAY_FIELDS,
+    ParsedSession,
+    SessionParseError,
+    parse_session_string,
+)
+
 # The compiler resolves a timeframe with the SAME parser the runtime resampler uses,
 # so lowering can never produce a timeframe the executor cannot bucket (register C4).
 from ..runtime.timeframe import parse_timeframe
@@ -69,7 +79,7 @@ TERMINATE_MAP = {
 }
 INPUT_TYPE = {
     "int": "integer", "float": "float", "bool": "bool", "string": "string", "source": "source",
-    "color": "color", "timeframe": "timeframe",
+    "color": "color", "timeframe": "timeframe", "session": "session",
 }
 
 _HEX_BODY_LENGTHS = {3, 4, 6, 8}
@@ -476,6 +486,8 @@ class IRGenerator:
                 return self._lower_from_gradient(call)
             if ns == "request" and fn == "security":
                 return self._lower_request_security(call)
+            if ns == "session":
+                return self._lower_session_call(fn, call)
             # Bundled standard library. MUST come before the const-fold
             # fallthrough below: that path answers an unrecognised `ns.fn(...)`
             # with `const null`, so a missing branch here would not fail -- it
@@ -683,6 +695,23 @@ class IRGenerator:
             )
         elif type_ == "timeframe":
             decl["defaultValue"] = default if isinstance(default, str) and default else "1"
+        elif type_ == "session":
+            # `default` (from `call.args[0]` above) is the first argument IN
+            # CALL ORDER, so it grabs `title`'s value for a named-first call
+            # like `input.session(title="Session", defval="0915-1530")` —
+            # resolve `defval` the named-aware way instead (named first, else
+            # the first POSITIONAL/unnamed arg), mirroring the TS ir-gen and
+            # semantic's `_check_session_defval`. Scoped to this arm only, as
+            # in TS.
+            session_def = self._const_arg(call, 0, "defval")
+            # '' is a DELIBERATE unparseable sentinel, not an honest default:
+            # there is no session string that means "unset". A script reaching
+            # this fallback (a non-string const default, defensive-only —
+            # semantic already rejects a malformed string literal via OS2031)
+            # ships an IR that fails to bind at runtime, and OS4005 is what
+            # surfaces that loudly instead of silently degrading to some
+            # arbitrary window (no-silent-degradation, design §6).
+            decl["defaultValue"] = session_def if isinstance(session_def, str) else ""
         else:  # source
             decl["defaultValue"] = default if isinstance(default, str) else "close"
 
@@ -1430,6 +1459,293 @@ class IRGenerator:
     def _color(self, call: ast.CallExpr, fallback: str) -> str:
         v = self._const_arg(call, None, "color")
         return v if isinstance(v, str) else fallback
+
+    # ── session.* lowering (design §4.2/§5.1/§5.2) — mirror of the TS ir-gen ──
+    #
+    # EMISSION ORDER AND INTEGER SEMANTICS ARE BOTH CONTRACT here. Every helper
+    # below emits nodes in exactly the order the TS `lowerSessionCall` cores do
+    # (argument evaluation order included — the boundary consts land BEFORE the
+    # clock nodes), and every compiler-synthesized numeric constant is a Python
+    # INT (open/close minutes, the day constants 1..7, `60`, first_bar's `0`,
+    # the scan seed and its `+1`), because TS serializes them integrally and a
+    # `555.0` here is the P5 int/float latent-defect class, not formatting.
+
+    def _ctx_node(self, name: str, span: Span) -> int:
+        """Lower a synthesized bare-identifier context reference (`hour`,
+        `dayofweek`, `bar_index`, ...) through the SAME machinery a user-written
+        identifier goes through (`_lower_expr`'s Identifier case) — never
+        re-derive the context id -> node mapping here."""
+        return self._lower_expr(ast.Identifier(name=name, span=span))
+
+    def _binop(self, operator: str, a: int, b: int, span: Span) -> int:
+        """A binary IR node with warmup propagated from both operands, the same
+        rule the `Binary` case of `_lower_expr` uses."""
+        w = max(self._warmups[a], self._warmups[b])
+        return self._emit({"op": "binop", "operator": operator, "args": [a, b]}, span, w)
+
+    def _unop(self, operator: str, arg: int, span: Span) -> int:
+        """A unary IR node (`not`/`-`/`isna`), warmup propagated from the operand."""
+        return self._emit({"op": "unop", "operator": operator, "arg": arg}, span, self._warmups[arg])
+
+    def _hist_node(self, arg: int, offset: int, span: Span) -> int:
+        """`arg[offset]` built directly (the offset here is always a compiler
+        constant INT, never a user index expression) — same node shape and
+        warmup rule as the user-facing `x[n]` path (`_lower_hist`)."""
+        return self._emit({"op": "hist", "arg": arg, "offset": offset}, span, self._warmups[arg] + offset)
+
+    def _day_mask_literal(self, days: tuple, span: Span) -> int | None:
+        """Compile-time day-mask specialization (design §5.1). Three shapes: all
+        seven days admitted -> None (no day term at all — the clock test alone
+        IS `contains`); a contiguous run of admitted days -> one
+        `dow >= lo AND dow <= hi` range test; a sparse mask -> an OR-chain of
+        `dow == k` for each admitted `k`. `dayofweek` is 1=Sunday..7=Saturday
+        (Pine's convention — see `ParsedSession.days`'s own doc comment for the
+        0-indexed-vs-1-indexed mapping).
+
+        PRECONDITION: `days` has at least one admitted (True) entry —
+        `parse_session_string` guarantees this for every ParsedSession it
+        returns (the day-mask grammar rejects an empty day list). An all-False
+        tuple is not a shape this function can express: it would fall through
+        both specializations and return None from the empty-chain loop —
+        silently INVERTING to "all seven days admitted".
+        """
+        admitted = [k for k in range(1, 8) if days[k - 1]]
+        if len(admitted) == 7:
+            return None
+        dow = self._ctx_node("dayofweek", span)
+        lo = admitted[0]
+        hi = admitted[-1]
+        if len(admitted) == hi - lo + 1:
+            ge = self._binop(">=", dow, self._const_num(lo, span), span)
+            le = self._binop("<=", dow, self._const_num(hi, span), span)
+            return self._binop("and", ge, le, span)
+        acc: int | None = None
+        for k in admitted:
+            eq = self._binop("==", dow, self._const_num(k, span), span)
+            acc = eq if acc is None else self._binop("or", acc, eq, span)
+        return acc
+
+    def _minute_of_day_node(self, span: Span) -> int:
+        """`hour*60 + minute` — the bar-open minute of the exchange-local day."""
+        hour_n = self._ctx_node("hour", span)
+        minute_n = self._ctx_node("minute", span)
+        return self._binop("+", self._binop("*", hour_n, self._const_num(60, span), span), minute_n, span)
+
+    def _session_contains_from(self, open_id: int, close_id: int, build_day_mask, span: Span) -> int:
+        """The shared `contains` core (design §4.2/§5.2): dayMask(dow) AND
+        open <= hour*60+minute < close — half-open, against the bar-OPEN,
+        exchange-local clock.
+
+        `open_id`/`close_id` are the boundary OPERAND NODES — const nodes on the
+        literal path, `field` input nodes on the input-bound path — and
+        `build_day_mask` is a thunk invoked AFTER the clock nodes (so both paths
+        keep the clock-then-mask emission order), returning None for "all seven
+        days admitted — no day term at all". The third shared core next to
+        `_session_first_bar_from`/`_session_bars_in_from`: parameterizing on the
+        operands is what keeps the two lowerings from ever diverging on the
+        clock test.
+        """
+        minute_of_day = self._minute_of_day_node(span)
+        ge = self._binop(">=", minute_of_day, open_id, span)
+        lt = self._binop("<", minute_of_day, close_id, span)
+        clock = self._binop("and", ge, lt, span)
+        day_mask = build_day_mask()
+        return clock if day_mask is None else self._binop("and", clock, day_mask, span)
+
+    def _session_contains(self, s: ParsedSession, span: Span) -> int:
+        """`session.contains(s)` over a literal: boundaries bake to const nodes
+        (INTs — `open_minutes`/`close_minutes` are ints by construction) and the
+        day mask specializes (`_day_mask_literal`)."""
+        return self._session_contains_from(
+            self._const_num(s.open_minutes, span),
+            self._const_num(s.close_minutes, span),
+            lambda: self._day_mask_literal(s.days, span),
+            span,
+        )
+
+    def _field_node(self, input_id: str, field: str, span: Span) -> int:
+        """One runtime-resolved facet of a session input (design §5.2): the
+        executor parses the bound string once per run and serves the field's
+        number. Warmup 0 and no static value, exactly like any other scalar
+        `input` node."""
+        return self._emit({"op": "input", "inputId": input_id, "field": field}, span, 0)
+
+    def _day_mask_input(self, input_id: str, span: Span) -> int:
+        """The runtime day mask (design §5.2): the mask is unknown at compile
+        time, so no specialization is possible — the full disjunction
+        `OR(k=1..7) (dow == k AND dk)`, each `dk` a `field` node resolving to
+        1/0 at run time. `SESSION_DAY_FIELDS` is ordered d1..d7, so the tuple
+        index IS `k-1` — the same positional correspondence the executor's field
+        resolution relies on. All seven terms emit BEFORE any `or` node,
+        mirroring the TS map-then-reduce emission order.
+        """
+        dow = self._ctx_node("dayofweek", span)
+        terms = []
+        for i, field in enumerate(SESSION_DAY_FIELDS):
+            eq = self._binop("==", dow, self._const_num(i + 1, span), span)
+            terms.append(self._binop("and", eq, self._field_node(input_id, field, span), span))
+        acc = terms[0]
+        for t in terms[1:]:
+            acc = self._binop("or", acc, t, span)
+        return acc
+
+    def _session_contains_input(self, input_id: str, span: Span) -> int:
+        """`session.contains(sess)` over an `input.session`-bound variable
+        (design §5.2): the SAME core as the literal path — the two baked
+        constants become `_field_node('open')`/`_field_node('close')`, the
+        specialized mask becomes `_day_mask_input`'s disjunction. `_emit`'s
+        content addressing CSEs the shared subtrees across the three `session.*`
+        builtins exactly as on the literal path."""
+        return self._session_contains_from(
+            self._field_node(input_id, "open", span),
+            self._field_node(input_id, "close", span),
+            lambda: self._day_mask_input(input_id, span),
+            span,
+        )
+
+    def _session_first_bar(self, s: ParsedSession, span: Span) -> int:
+        """`session.first_bar(s)` (design §4.2): the FIRST bar of each session
+        run — `select(bar_index == 0, contains, contains and (not contains[1]
+        or dayChanged))`. The bar-0 guard exists because `contains[1]` at bar 0
+        is `na`: `select` picks per-cell purely off `cond`, so the `else`
+        branch's na-at-bar-0 is simply never picked.
+        `dayChanged := dom != dom[1] or month != month[1] or year != year[1]` —
+        ALL THREE terms are load-bearing: `dom` alone aliases 2026-03-01 onto
+        2026-04-01 (same day-of-month, different month) on sparse daily data."""
+        return self._session_first_bar_from(self._session_contains(s, span), span)
+
+    def _session_first_bar_from(self, contains: int, span: Span) -> int:
+        """The `first_bar` recipe over an ALREADY-BUILT `contains` node id — the
+        one body both argument shapes share (literal via `_session_first_bar`,
+        input-bound via `_lower_session_call`'s Identifier branch).
+        Parameterizing on the node id is what keeps the two paths from ever
+        diverging on the day-changed logic."""
+        bar_index = self._ctx_node("bar_index", span)
+        is_bar_zero = self._binop("==", bar_index, self._const_num(0, span), span)
+        contains_prev = self._hist_node(contains, 1, span)
+        not_contains_prev = self._unop("not", contains_prev, span)
+        dom = self._ctx_node("dayofmonth", span)
+        month = self._ctx_node("month", span)
+        year = self._ctx_node("year", span)
+        dom_changed = self._binop("!=", dom, self._hist_node(dom, 1, span), span)
+        month_changed = self._binop("!=", month, self._hist_node(month, 1, span), span)
+        year_changed = self._binop("!=", year, self._hist_node(year, 1, span), span)
+        day_changed = self._binop(
+            "or", self._binop("or", dom_changed, month_changed, span), year_changed, span
+        )
+        run_continues = self._binop("or", not_contains_prev, day_changed, span)
+        else_branch = self._binop("and", contains, run_continues, span)
+        w = max(self._warmups[is_bar_zero], self._warmups[contains], self._warmups[else_branch])
+        return self._emit(
+            {"op": "select", "cond": is_bar_zero, "then": contains, "else": else_branch}, span, w
+        )
+
+    def _session_bars_in(self, s: ParsedSession, span: Span) -> int:
+        """`session.bars_in(s)` (design §4.2/§5.1): ONE scan node counting up
+        from 1 at each session's first bar and resetting to 0 outside the
+        session. `_session_contains`/`_session_first_bar` are called fresh here
+        rather than reusing ids passed in — `_emit` is content-addressed, so the
+        shared `contains` subgraph the three `session.*` builtins pull in CSEs
+        down to one copy automatically."""
+        return self._session_bars_in_from(
+            self._session_contains(s, span), self._session_first_bar(s, span), span
+        )
+
+    def _session_bars_in_from(self, c: int, f: int, span: Span) -> int:
+        """The `bars_in` scan over ALREADY-BUILT `contains`/`first_bar` node ids
+        — shared by the literal and input-bound paths exactly as
+        `_session_first_bar_from` is. Seed 0, inputs `[contains, first_bar]`,
+        `expr = select(input0, select(input1, const 1, prev + 1), const 0)` —
+        every const an INT, serialized identically to the TS golden."""
+        w = max(self._warmups[c], self._warmups[f])
+        expr = {
+            "k": "select",
+            "c": {"k": "input", "i": 0},
+            "t": {
+                "k": "select",
+                "c": {"k": "input", "i": 1},
+                "t": {"k": "const", "v": 1},
+                "e": {"k": "bin", "op": "+", "a": {"k": "prev"}, "b": {"k": "const", "v": 1}},
+            },
+            "e": {"k": "const", "v": 0},
+        }
+        return self._emit({"op": "scan", "init": 0, "expr": expr, "inputs": [c, f]}, span, w)
+
+    def _lower_session_call(self, fn: str, call: ast.CallExpr) -> int:
+        """`session.*` dispatch (design §4.2). The sole argument is either a
+        session-string literal (specialized entirely at compile time, below) or
+        an `input.session` variable — semantic (`_check_session_arg`) already
+        accepts exactly these two argument shapes and rejects everything else
+        with OS2032, so ir-gen only has to tell them apart, not re-validate the
+        choice."""
+        arg_expr = call.args[0].value
+        if arg_expr.type == "Identifier":
+            # Resolve the identifier to its `input.session` DECLARATION by id —
+            # the same decl-lookup idiom `_resolve_htf_timeframe` uses for a
+            # timeframe input, and the reason a name-set is not kept here: the
+            # decl table is what ir-gen already maintains (`_lower_input`
+            # registers the VarDecl's name as the decl id), it is scope-safe,
+            # and it carries the type check in the same lookup.
+            decl = next(
+                (d for d in self._inputs if d["id"] == arg_expr.name and d.get("type") == "session"),
+                None,
+            )
+            if decl is None:
+                # Not an `input.session`-bound variable — semantic's
+                # `_check_session_arg` would reject this identifier with OS2032
+                # (no detail; same call shape, so the message matches verbatim)
+                # and never let ir-gen see it through `compile()`. Only
+                # reachable via a direct `generate_ir` call bypassing semantic
+                # — must fail exactly as loudly as semantic would, not silently
+                # read it as an input-bound session.
+                self._error("OS2032", arg_expr.span)
+                return self._na_node(call.span)
+            # Input-bound session (design §5.2, the `field` mechanism): the
+            # numbers the literal path bakes become runtime-resolved `field`
+            # input nodes, and the shared `*_from` cores build
+            # `first_bar`/`bars_in` from the SAME recipe the literal path uses
+            # — never a second copy of that logic.
+            if fn == "contains":
+                return self._session_contains_input(decl["id"], call.span)
+            if fn == "first_bar":
+                return self._session_first_bar_from(
+                    self._session_contains_input(decl["id"], call.span), call.span
+                )
+            if fn == "bars_in":
+                c = self._session_contains_input(decl["id"], call.span)
+                return self._session_bars_in_from(
+                    c, self._session_first_bar_from(c, call.span), call.span
+                )
+            # Same defensive posture as the literal path's default arm below.
+            self._error("OS2002", call.span, f"session.{fn}")
+            return self._na_node(call.span)
+        # Defensive re-check: semantic (`_check_session_arg`) already parsed
+        # this exact literal and would have reported OS2031 there if it were
+        # malformed, so this branch is not reachable through `compile()`. It
+        # exists so a future direct `generate_ir` caller (bypassing semantic)
+        # fails loudly rather than silently folding to `na`.
+        raw = arg_expr.value if arg_expr.type == "String" else None
+        parsed = parse_session_string(raw) if raw is not None else None
+        if parsed is None or isinstance(parsed, SessionParseError):
+            self._error(
+                "OS2031",
+                arg_expr.span,
+                parsed.error if parsed is not None else "session.* argument must be a session-string literal",
+            )
+            return self._na_node(call.span)
+        if fn == "contains":
+            return self._session_contains(parsed, call.span)
+        if fn == "first_bar":
+            return self._session_first_bar(parsed, call.span)
+        if fn == "bars_in":
+            return self._session_bars_in(parsed, call.span)
+        # Not reachable through `compile()` — semantic validated `fn` against
+        # SESSION_FUNCTIONS already — but `generate_ir` is importable and
+        # callable directly, bypassing semantic. A silent `const null` here
+        # would be exactly the register-C4 shape the OS2031 branch above exists
+        # to prevent, for the identical reason: report it, don't fold it away.
+        self._error("OS2002", call.span, f"session.{fn}")
+        return self._na_node(call.span)
 
 
 def generate_ir(source: str, program: ast.Program) -> tuple[dict | None, list[Diagnostic]]:

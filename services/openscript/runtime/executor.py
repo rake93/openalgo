@@ -20,6 +20,7 @@ from services.openscript.limits import SCRIPT_LIMITS
 from .admit import IRAdmissionError, admit_ir, resolve_plan_cost
 from .calendar import DAY_SECONDS, IST_CALENDAR, SessionCalendar, local_day_key
 from .htf_resample import aggregate_buckets, align_htf_range, build_buckets
+from .session_string import SESSION_DAY_FIELDS, SessionParseError, parse_session_string
 from .timeframe import (
     Timeframe,
     infer_base_interval_seconds,
@@ -179,6 +180,66 @@ def _const_value(v):
     if isinstance(v, (int, float)):
         return float(v)
     return math.nan  # None (na) or string
+
+
+class SessionInputError(Exception):
+    """A session-typed input failed to BIND — the string the run received (a
+    caller-supplied value, or the declared default when unbound) does not parse
+    as a session string. Mirrors the TS `SessionInputError` (executor.ts): an
+    Exception subclass carrying the runtime code `OS4005`, raised instead of
+    silently substituting a default — the wrong session served to every consumer
+    with no error is the exact failure this surface exists to prevent."""
+
+    code = "OS4005"
+
+    def __init__(self, input_id: str, reason: str) -> None:
+        super().__init__(f"input '{input_id}': {reason}")
+        self.input_id = input_id
+
+
+def _session_field_value(node, inputs, decls, session_cache):
+    """Resolve one facet of a session-typed input (design §5.2): parse the bound
+    string — `inputs[id]`, falling back to the declared default — once per run
+    (`session_cache`, keyed by the RAW bound string), and serve the requested
+    number. Every failure is LOUD (`SessionInputError`, OS4005): a decl that is
+    missing or not session-typed (hand-forged IR — admission rejects it, this is
+    the executor's own belt), a string that does not parse, or a field name
+    outside the nine.
+
+    INDEX: `SESSION_DAY_FIELDS` is ordered d1..d7 and `ParsedSession.days` is
+    0-indexed 0=Sunday..6=Saturday — the SAME order — so the positional
+    `.index()` IS the `days` index (`d1` ↔ `days[0]` … `d7` ↔ `days[6]`); the
+    1-based-vs-0-based shift is structural, not arithmetic.
+    """
+    input_id = node["inputId"]
+    decl = decls.get(input_id)
+    if decl is None or decl.get("type") != "session":
+        raise SessionInputError(
+            input_id, f"field '{node['field']}' requires a session-typed input declaration"
+        )
+    raw = inputs.get(input_id)
+    if raw is None:
+        raw = decl.get("defaultValue")
+    raw = str(raw)
+    parsed = session_cache.get(raw)
+    if parsed is None:
+        p = parse_session_string(raw)
+        if isinstance(p, SessionParseError):
+            raise SessionInputError(input_id, p.error)
+        parsed = p
+        session_cache[raw] = parsed
+    field = node["field"]
+    if field == "open":
+        return float(parsed.open_minutes)
+    if field == "close":
+        return float(parsed.close_minutes)
+    try:
+        day = SESSION_DAY_FIELDS.index(field)
+    except ValueError:
+        # Hand-forged IR carrying a name outside the nine — admission rejects
+        # it; this is the executor's own loud backstop.
+        raise SessionInputError(input_id, f"unknown session field '{field}'") from None
+    return 1.0 if parsed.days[day] else 0.0
 
 
 def _input_value(node, inputs, decls, dataset):
@@ -482,7 +543,10 @@ def _hist_offset(node: dict, inputs: dict, decls: dict) -> int:
     return max(0, min(max_back, int(v)))
 
 
-def _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar: SessionCalendar, htf_cache=None):
+def _eval_node(
+    node, values, dataset, inputs, decls, n, ta_cache,
+    calendar: SessionCalendar, htf_cache=None, session_cache=None,
+):
     # `calendar` is REQUIRED, mirroring the TS `evalNode`: a default here is how a
     # wrong calendar would silently reach production.
     op = node["op"]
@@ -494,6 +558,13 @@ def _eval_node(node, values, dataset, inputs, decls, n, ta_cache, calendar: Sess
     if op == "const":
         return _const_value(node["value"])
     if op == "input":
+        if node.get("field") is not None:
+            # `field` (design §5.2) is only ever emitted on a session-typed
+            # input. A None cache (a direct caller) still computes correctly,
+            # just uncached — mirroring `_eval_htf`'s leniency above.
+            return _session_field_value(
+                node, inputs, decls, session_cache if session_cache is not None else {}
+            )
         return _input_value(node, inputs, decls, dataset)
     if op == "binop":
         return _binop(node["operator"], values[node["args"][0]], values[node["args"][1]])
@@ -1292,11 +1363,18 @@ def execute_ir(
     # Per-RUN resample cache, keyed by (timeframe, calendar). Built fresh here, like
     # the TS `createExecCaches()`: two htf nodes on the same timeframe resample once.
     htf_cache: dict = {}
+    # Per-RUN session-string parse cache, keyed by the RAW bound string (design
+    # §5.2 "parse once per run"): the nine `field` nodes of one session input —
+    # and any other input bound to the same string — share a single parse. Built
+    # fresh here beside ta_cache/htf_cache, exactly where the TS
+    # `createExecCaches()` scopes its `sessionCache`; a module-level cache would
+    # leak entries across runs and datasets.
+    session_cache: dict = {}
     for node in nodes:
         if budget is not None:
             budget.step(node)
         value = _eval_node(
-            node, values, dataset, inputs, decls, n, ta_cache, calendar, htf_cache
+            node, values, dataset, inputs, decls, n, ta_cache, calendar, htf_cache, session_cache
         )
         values[node["id"]] = value
         # Deterministic series-buffer accounting + wall-clock checkpoint after
