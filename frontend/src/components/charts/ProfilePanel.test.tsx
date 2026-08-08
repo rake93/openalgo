@@ -19,9 +19,72 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { BUILD_STAMP } from '@openalgo/openscript'
+import type { IndicatorProfile } from '@/lib/charts/indicator-profile'
 import { ProfilePanel } from './ProfilePanel'
 
 const noProfile = () => undefined
+
+type PanelProps = Parameters<typeof ProfilePanel>[0]
+const oneIndicator = [{ instanceId: 'i1', name: 'Super OB' }] as PanelProps['indicators']
+
+function renderEntry(profile: IndicatorProfile) {
+  return render(
+    <ProfilePanel indicators={oneIndicator} profileOf={() => profile} onClose={() => {}} />
+  )
+}
+
+describe('ProfilePanel per-indicator entry', () => {
+  it('keeps a lookahead reason visible WITHOUT the alarm (M14a)', () => {
+    // M14(a) withheld the ⚠ for the structural lookahead class; the deal was
+    // that the fact stays visible. Falling into the generic "expected: a seed,
+    // settings change or history reload" text would state something false —
+    // this is a live tick, and the reason is the pivot.
+    renderEntry({
+      scope: 'update',
+      perf: {
+        recompute: 'full',
+        computeMs: 7.3,
+        emitMs: 0.1,
+        bars: 1654,
+        fallbackReason: 'lookahead:ta.pivothigh',
+      } as IndicatorProfile['perf'],
+    })
+
+    expect(screen.getByText(/recomputed in full — ta\.pivothigh/)).toBeInTheDocument()
+    expect(screen.queryByText(/⚠/)).toBeNull()
+    expect(screen.queryByText(/expected: a seed/)).toBeNull()
+  })
+
+  it('shows the drawing churn when a run produced structural diffs (M2)', () => {
+    renderEntry({
+      scope: 'update',
+      perf: {
+        recompute: 'incremental',
+        computeMs: 0.5,
+        emitMs: 0.1,
+        bars: 1654,
+      } as IndicatorProfile['perf'],
+      drawings: { added: 2, updated: 1, removed: 1 },
+    })
+
+    expect(screen.getByText('drawings')).toBeInTheDocument()
+    expect(screen.getByText('+2 ~1 −1')).toBeInTheDocument()
+  })
+
+  it('shows no drawings row for a run that carried no churn', () => {
+    renderEntry({
+      scope: 'update',
+      perf: {
+        recompute: 'incremental',
+        computeMs: 0.5,
+        emitMs: 0.1,
+        bars: 1654,
+      } as IndicatorProfile['perf'],
+    })
+
+    expect(screen.queryByText('drawings')).toBeNull()
+  })
+})
 
 describe('ProfilePanel build stamp', () => {
   it('renders the engine build row even when no indicator is loaded', () => {

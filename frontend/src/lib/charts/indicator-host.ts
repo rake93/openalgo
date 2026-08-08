@@ -27,7 +27,7 @@ import {
 } from '@openalgo/openscript'
 import { registryManifest } from '@openalgo/openscript/registry'
 import { OpenAlgoChartsRenderer } from '@openalgo/openscript/render/openalgo-charts'
-import type { EngineWorkerClient } from '@openalgo/openscript/worker-client'
+import type { DrawingDiff, EngineWorkerClient } from '@openalgo/openscript/worker-client'
 import type { Bar, Chart, SeriesApi } from 'openalgo-charts'
 import { getEngine } from './engine'
 import { isSilentFallback, type IndicatorProfile } from './indicator-profile'
@@ -308,11 +308,28 @@ export class IndicatorHost {
    */
   private noteRun(
     sessionId: string,
-    event: { epoch: number; perf: PerfStats },
+    event: { epoch: number; perf: PerfStats; drawings?: DrawingDiff[] | undefined },
     scope: 'full' | 'update'
   ): void {
     this.epochs.set(sessionId, event.epoch)
     const next: IndicatorProfile = { scope, perf: event.perf }
+    // M2: fold the run's structural drawing churn into the retained profile.
+    // Attached only when the run carried diffs — absence mirrors the wire's
+    // "no structural change", so a quiet tick does not overwrite it with zeros
+    // that would read as a measurement.
+    if (event.drawings !== undefined) {
+      let added = 0
+      let updated = 0
+      let removed = 0
+      for (const dd of event.drawings) {
+        for (const df of dd.diffs) {
+          if (df.op === 'add') added++
+          else if (df.op === 'update') updated++
+          else removed++
+        }
+      }
+      next.drawings = { added, updated, removed }
+    }
     const before = this.profiles.get(sessionId)
     this.profiles.set(sessionId, next)
 

@@ -66,12 +66,17 @@ function Entry({ name, profile }: { name: string; profile: IndicatorProfile | un
       {flagged && <div className="mt-0.5 text-[11px] text-destructive">{fallbackLabel(profile)}</div>}
 
       {/* A full run that is NOT flagged is expected — a seed, a settings change,
-          or a builtin — and saying so stops it reading as a problem. */}
+          a builtin, or a structural lookahead operator — and saying WHICH stops
+          it reading as a problem. The lookahead case keeps its engine-given
+          reason (M14a's deal: the ⚠ is withheld, the fact is not) — the generic
+          seed/settings text would be false for a live tick. */}
       {!flagged && perf.recompute === 'full' && (
         <div className="mt-0.5 text-[11px] text-muted-foreground">
           {perf.fallbackReason === 'builtin-no-ir'
             ? 'built-in indicator — no script graph to run incrementally'
-            : 'expected: a seed, settings change or history reload'}
+            : perf.fallbackReason?.startsWith('lookahead:')
+              ? fallbackLabel(profile)
+              : 'expected: a seed, settings change or history reload'}
         </div>
       )}
 
@@ -89,6 +94,14 @@ function Entry({ name, profile }: { name: string; profile: IndicatorProfile | un
         <Row label="emit" value={ms(perf.emitMs)} />
         <Row label="peak bytes" value={bytes(perf.peakBytes)} dim={perf.peakBytes === undefined} />
         <Row label="bars" value={String(perf.bars)} />
+        {/* M2: structural drawing churn, present only on a run that changed an
+            object list — absence means "no change", so no dimmed placeholder. */}
+        {profile.drawings && (
+          <Row
+            label="drawings"
+            value={`+${profile.drawings.added} ~${profile.drawings.updated} −${profile.drawings.removed}`}
+          />
+        )}
       </div>
     </div>
   )

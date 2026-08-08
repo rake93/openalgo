@@ -16,6 +16,11 @@ export interface IndicatorProfile {
    *  event. The distinction is what makes `isSilentFallback` possible. */
   scope: 'full' | 'update'
   perf: PerfStats
+  /** Structural drawing churn this run produced (M2 — one line of §13.3's
+   *  deferred instrumentation). Present only when the run changed an object
+   *  list structurally: the seed is the diff baseline and a quiet tick carries
+   *  nothing, so absence means "no change", never "not measured". */
+  drawings?: { added: number; updated: number; removed: number }
 }
 
 /**

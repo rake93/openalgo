@@ -140,6 +140,31 @@ describe('IndicatorHost profile retention', () => {
     expect(isSilentFallback(profile!)).toBe(false)
   })
 
+  it('retains the drawing churn a structural tick produces (M2)', async () => {
+    const host = new IndicatorHost({ onIndicators: () => {}, onError: () => {} })
+    const data = bars(240)
+    await host.setDataset(data, { symbol: 'X', exchange: 'NSE', interval: '1m' })
+    // Spawns a level on EVERY bar with a small retention cap, so a confirmed
+    // append MUST add a new object and evict the oldest — churn produced by the
+    // real worker, not a hand-built fixture.
+    const id = await host.addIr(irOf('plotlevel(close > 0, close, max_kept=3)'))
+    await flush()
+
+    // The seed is the diff BASELINE — its whole object list is not churn.
+    expect(host.lastProfile(id)?.drawings).toBeUndefined()
+
+    const last = data[data.length - 1] as Bar
+    host.onBar({ ...last, time: (last.time as number) + 60, close: last.close + 0.25 }, true)
+    await flush()
+
+    const profile = host.lastProfile(id)
+    expect(profile?.scope).toBe('update')
+    const churn = profile?.drawings
+    expect(churn).toBeDefined()
+    // Non-vacuity: the append really did change the list structurally.
+    expect(churn!.added).toBeGreaterThan(0)
+  })
+
   it('returns nothing for an instance it does not have', async () => {
     const host = new IndicatorHost({ onIndicators: () => {}, onError: () => {} })
 
