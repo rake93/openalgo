@@ -2,9 +2,12 @@
 (openalgo-openscript/tests/ir-gen.test.ts `plotlevel/plotzone drawing lowering`).
 
 Compiles `plotlevel`/`plotzone` sources and asserts the emitted frozen `level`/
-`zone` IR shape + the `drawing-streams` requiredFeatures flag. It does NOT
-execute — `drawing-streams` stays out of SUPPORTED_FEATURES this phase, so a
-well-formed drawing IR is rejected at admission (regression-guarded elsewhere).
+`zone` IR shape + the `drawing-streams` requiredFeatures flag. Shape-only on
+purpose — execution is covered by the materializer fixtures and the
+drawing-geometry replays (`test_openscript_drawing_geometry.py`). (This
+docstring used to say a drawing IR "is rejected at admission"; that has been
+false since Phase 1 Pri 4 flipped `drawing-streams` into SUPPORTED_FEATURES
+and drawings began executing on both runtimes — register N11.)
 """
 
 from services.openscript import openscript
