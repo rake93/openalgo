@@ -167,3 +167,19 @@ def test_admission_rejects_a_field_name_outside_the_nine():
         e["code"] == "IR_BAD_INPUT_REF" and "unknown session field 'd8'" in e["message"]
         for e in errors
     )
+
+
+def test_admission_rejects_an_explicit_null_field_on_an_input_node():
+    # `node.get("field") is not None` treats an explicit `"field": null` the
+    # SAME as `field` being absent and skips the gate entirely — hand-forged IR
+    # is exactly the case this gate exists for (design §13). The TS reference
+    # (`node.field !== undefined`) is a presence check: it enters the branch and
+    # rejects. The compiler-emitted node for `sess` itself (the bare reference,
+    # before any `.field` facet is pulled) carries no "field" key at all, so
+    # forging one onto it is a clean probe that does not collide with a
+    # legitimately-absent field elsewhere.
+    ir = _bound_ir()
+    node = next(n for n in ir["nodes"] if n["op"] == "input" and "field" not in n)
+    node["field"] = None
+    errors = admit_ir(ir)
+    assert any(e["code"] == "IR_BAD_INPUT_REF" for e in errors)

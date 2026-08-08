@@ -179,14 +179,17 @@ def _admit_node_references(ir: dict, errors: list[dict]) -> None:
                         "detail": str(node.get("inputId")),
                     }
                 )
-            elif node.get("field") is not None:
+            elif "field" in node:
                 # Session `field` gate (design §5.2): a `field` is only
                 # meaningful on a session-typed input, and only the nine names
                 # exist. The compiler never emits anything else — this is the
-                # §13 hand-forged-IR discipline. Only the WIRING is checked
-                # here; the bound string's VALUE is — like every input default
-                # this file leaves unvalidated — a runtime concern, and an
-                # unparseable one fails loudly there as OS4005. Mirror of the
+                # §13 hand-forged-IR discipline. A presence check, not a
+                # None-check: hand-forged IR carrying an explicit `"field":
+                # null` must still enter this branch and be rejected, not slip
+                # through as if `field` were absent. Only the WIRING is
+                # checked here; the bound string's VALUE is — like every input
+                # default this file leaves unvalidated — a runtime concern, and
+                # an unparseable one fails loudly there as OS4005. Mirror of the
                 # TS admit.ts gate.
                 if decl_type_by_id.get(str(node.get("inputId"))) != "session":
                     errors.append(
