@@ -52,11 +52,13 @@ from database.symbol import SymToken, db_session
 from database.token_db import get_br_symbol
 from database.token_db_enhanced import fno_search_symbols
 from services.option_symbol_service import (
+    NO_SPOT_EXCHANGES,
     construct_option_symbol,
     find_atm_strike_from_actual,
     get_available_strikes,
     get_option_exchange,
     parse_underlying_symbol,
+    resolve_underlying_quote,
 )
 from services.pricing_underlying import requires_futures_underlying, resolve_pricing_underlying
 from services.quotes_service import get_multiquotes, get_quotes, import_broker_module
@@ -295,8 +297,35 @@ def get_option_chain(
             underlying_ref = resolve_pricing_underlying(base_symbol, exchange, final_expiry)
             quote_symbol = underlying_ref.symbol
             quote_exchange = underlying_ref.exchange
+        elif exchange.upper() in NO_SPOT_EXCHANGES:
+            # Only the currency segments (CDS/BCD) reach here: the commodity
+            # exchanges in NO_SPOT_EXCHANGES are handled by the branch above,
+            # which is expiry-aware and degrades to spot rather than failing.
+            # These segments list no spot instrument either, so the near-month
+            # future is the pricing reference.
+            quote_exchange = exchange.upper()
+            resolved = resolve_underlying_quote(base_symbol, quote_exchange)
+            if resolved is None:
+                return (
+                    False,
+                    {
+                        "status": "error",
+                        "message": (
+                            f"No unexpired futures found for {base_symbol} on "
+                            f"{quote_exchange}. {quote_exchange} options are priced "
+                            "against the near-month future, which this product does "
+                            "not currently have."
+                        ),
+                    },
+                    404,
+                )
+            quote_symbol, quote_exchange = resolved
+            logger.info(
+                f"{exchange.upper()} has no spot; pricing {base_symbol} against "
+                f"{quote_symbol}"
+            )
 
-        if exchange.upper() not in CRYPTO_EXCHANGES and not is_commodity_underlying:
+        if exchange.upper() not in CRYPTO_EXCHANGES and exchange.upper() not in NO_SPOT_EXCHANGES:
             # Use base symbol for index quotes (non-Delta)
             quote_symbol = base_symbol if embedded_expiry else underlying
 
