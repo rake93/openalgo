@@ -1,0 +1,34 @@
+{
+  "name": "green-level-label-visible-off",
+  "note": "G6 OFF side. Same source as green-level-label-visible-on, run with {\"show\": false}: geometry is BYTE-IDENTICAL and only the label/text disappear. This is the property gating the SPAWN condition could never express -- there the line and zone would vanish with their labels. The pair's two runs differ ONLY in the inputs record, so any divergence in x1/x2/price/top/bottom is a defect in the visibility gate, not in geometry.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": { "show": false },
+  "source": "indicator(\"V\", shorttitle=\"V\", overlay=true)\nshow = input.bool(true, \"Show Labels\")\nplotlevel(bar_index == 2, close, \"L\", label=\"R1\", label_visible=show, extend=extend.bars, bars=1)\nplotzone(bar_index == 2, high, low, \"Z\", text=\"OB\", text_visible=show, extend=extend.bars, bars=1)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [11, 9, 10.5, 11.5, 12],
+    "high":   [12, 11, 13, 14, 15],
+    "low":    [10, 8, 10.5, 11, 12],
+    "close":  [11, 8.5, 10.75, 12, 13],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "L",
+        "items": [
+          { "x1bar": 2, "x2bar": 3, "price": 10.75, "open": false, "label": null }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "Z",
+        "items": [
+          { "x1bar": 2, "x2bar": 3, "top": 13, "bottom": 10.5, "open": false, "mitigated": false, "text": null }
+        ]
+      }
+    ]
+  }
+}

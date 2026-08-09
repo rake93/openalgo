@@ -1,0 +1,34 @@
+{
+  "name": "green-level-label-visible-on",
+  "note": "G6 ON side. `label_visible=`/`text_visible=` bind label visibility to an input.bool; with the input at its default (true) every item must CARRY its label -- this half exists so a mutant that unconditionally drops labels fails, not just the OFF half's mutant that never drops them. Geometry is hand-derived: the condition is true only at bar 2, extend.bars bars=1 closes at x2 = 3. Pair: green-level-label-visible-off replays the SAME source with {\"show\": false}.",
+  "instrument": { "exchange": "NSE", "symbol": "SBIN" },
+  "inputs": {},
+  "source": "indicator(\"V\", shorttitle=\"V\", overlay=true)\nshow = input.bool(true, \"Show Labels\")\nplotlevel(bar_index == 2, close, \"L\", label=\"R1\", label_visible=show, extend=extend.bars, bars=1)\nplotzone(bar_index == 2, high, low, \"Z\", text=\"OB\", text_visible=show, extend=extend.bars, bars=1)",
+  "ir": null,
+  "bars": {
+    "time":   [1784782800, 1784782860, 1784782920, 1784782980, 1784783040],
+    "open":   [11, 9, 10.5, 11.5, 12],
+    "high":   [12, 11, 13, 14, 15],
+    "low":    [10, 8, 10.5, 11, 12],
+    "close":  [11, 8.5, 10.75, 12, 13],
+    "volume": [100, 100, 100, 100, 100]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "L",
+        "items": [
+          { "x1bar": 2, "x2bar": 3, "price": 10.75, "open": false, "label": "R1" }
+        ]
+      },
+      {
+        "kind": "zones",
+        "title": "Z",
+        "items": [
+          { "x1bar": 2, "x2bar": 3, "top": 13, "bottom": 10.5, "open": false, "mitigated": false, "text": "OB" }
+        ]
+      }
+    ]
+  }
+}

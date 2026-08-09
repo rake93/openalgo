@@ -247,7 +247,7 @@ def _admit_node_references(ir: dict, errors: list[dict]) -> None:
 
 
 def _admit_output_references(ir: dict, errors: list[dict]) -> None:
-    """Output wiring: `*NodeId` must resolve to a node, `colorInputId` to a
+    """Output wiring: `*NodeId` must resolve to a node, every `*InputId` to a
     declared input, and a `fill`'s plot indices to `plot` outputs."""
     bound = len(ir["nodes"])
     outputs = ir["outputs"]
@@ -267,11 +267,19 @@ def _admit_output_references(ir: dict, errors: list[dict]) -> None:
                             "detail": str(value),
                         }
                     )
-            elif key == "colorInputId" and str(value) not in declared_inputs:
+            elif key.endswith("InputId") and str(value) not in declared_inputs:
+                # Every output-level `*InputId` is an input binding: `colorInputId`,
+                # the zone's `borderColorInputId`/`mitigatedColorInputId` (G8), and
+                # the label-visibility pair (G6). The check used to name
+                # `colorInputId` exactly, which silently exempted the G8 siblings —
+                # an undeclared id there degraded to the baked default with nothing
+                # saying so.
                 errors.append(
                     {
                         "code": "IR_BAD_INPUT_REF",
-                        "message": f"output '{kind}'{where} binds undeclared input '{value}'",
+                        "message": (
+                            f"output '{kind}'{where} field '{key}' binds undeclared input '{value}'"
+                        ),
                         "detail": str(value),
                     }
                 )

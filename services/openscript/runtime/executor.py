@@ -675,6 +675,22 @@ def _input_color(inputs: dict, color_input_id, base: str) -> str:
     return v if isinstance(v, str) and v else base
 
 
+def _input_visible(inputs: dict, decls: dict, visible_input_id) -> bool:
+    """The live value of a `labelVisibleInputId`/`textVisibleInputId` binding (G6).
+
+    Same override-then-declared-default rule as `_input_value`
+    (`inputs[id] ?? decl.defaultValue`, truthiness) — a third rule here is how
+    the materializer and the DAG would come to disagree about one checkbox.
+    Unbound (`id` None) or an id admission would have rejected -> visible.
+    """
+    if visible_input_id is None:
+        return True
+    raw = inputs.get(visible_input_id)
+    if raw is None:
+        raw = decls.get(visible_input_id, {}).get("defaultValue")
+    return bool(raw)
+
+
 def _plot_output(o, series, oid, pane, inputs: dict) -> dict:
     """Mirror the TS collect-outputs plot lowering: bar-style variants become
     histogram outputs (base 0); stepline/area/circles/cross become line-style
@@ -1059,7 +1075,17 @@ def _anchor(dataset: dict, bar: int, n: int) -> dict:
 
 
 def _materialize_drawing(
-    o, values, n, idx, pane, dataset, budget, total_state, calendar: SessionCalendar, inputs: dict
+    o,
+    values,
+    n,
+    idx,
+    pane,
+    dataset,
+    budget,
+    total_state,
+    calendar: SessionCalendar,
+    inputs: dict,
+    decls: dict,
 ) -> dict:
     """Materialize one level/zone output into a levels/zones output dict."""
     oid = f"out_{idx}"
@@ -1092,6 +1118,8 @@ def _materialize_drawing(
     kind = o["kind"]
     if kind == "level":
         price_v = values[o["priceNodeId"]]
+        # G6: one read per output, not per item — a mid-list flip is impossible.
+        labels_visible = _input_visible(inputs, decls, o.get("labelVisibleInputId"))
         items: list[dict] = []
         for k, s in enumerate(spawns):
             spawn_time = _spawn_time_of(dataset, s, n)
@@ -1112,7 +1140,7 @@ def _materialize_drawing(
                 "open": edge["open"],
             }
             label = o.get("label")
-            if label and (not o.get("labelLatestOnly") or k == len(spawns) - 1):
+            if label and labels_visible and (not o.get("labelLatestOnly") or k == len(spawns) - 1):
                 item["label"] = _render_draw_text(label, s, values)
             items.append(item)
         # Built key by key rather than copied: the IR style also carries the G8
@@ -1131,6 +1159,7 @@ def _materialize_drawing(
     # zone
     top_v = values[o["topNodeId"]]
     bottom_v = values[o["bottomNodeId"]]
+    text_visible = _input_visible(inputs, decls, o.get("textVisibleInputId"))
     items = []
     for _k, s in enumerate(spawns):
         spawn_time = _spawn_time_of(dataset, s, n)
@@ -1153,7 +1182,7 @@ def _materialize_drawing(
         if edge["mitigated"]:
             item["mitigated"] = True
         text = o.get("text")
-        if text:
+        if text and text_visible:
             item["text"] = _render_draw_text(text, s, values)
         items.append(item)
     # Same as the level branch: resolve each slot, and never emit the binding ids.
@@ -1193,6 +1222,9 @@ def _collect_outputs(
     dataset = dataset or {}
     # Running retained-object budget across ALL drawing outputs (design §10).
     total_objects = {"remaining": SCRIPT_LIMITS["maximumTotalObjects"]}
+    # Input declarations by id, for bindings whose fallback is the DECLARED
+    # default rather than a baked value (G6 label visibility).
+    input_decls = {d["id"]: d for d in ir.get("inputs", [])}
     for idx, o in enumerate(ir["outputs"]):
         kind = o["kind"]
         oid = f"out_{idx}"
@@ -1315,7 +1347,8 @@ def _collect_outputs(
         elif kind in ("level", "zone"):
             outputs.append(
                 _materialize_drawing(
-                    o, values, n, idx, pane, dataset, budget, total_objects, calendar, inputs
+                    o, values, n, idx, pane, dataset, budget, total_objects, calendar, inputs,
+                    input_decls,
                 )
             )
     return outputs

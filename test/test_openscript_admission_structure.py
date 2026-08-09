@@ -331,6 +331,73 @@ def test_color_input_id_naming_undeclared_input_rejected():
     assert "IR_BAD_INPUT_REF" in _codes(ir)
 
 
+def test_label_visible_input_id_naming_undeclared_input_rejected():
+    """G6: `labelVisibleInputId` is an input binding like `colorInputId`."""
+    ir = _valid_ir()
+    ir["header"]["requiredFeatures"] = ["drawing-streams"]
+    ir["outputs"].append(
+        {
+            "kind": "level",
+            "condNodeId": 0,
+            "priceNodeId": 0,
+            "title": "L",
+            "style": {"color": "#fff"},
+            "offset": 0,
+            "rightPad": 0,
+            "extend": "lastbar",
+            "maxKept": 5,
+            "label": {"kind": "const", "value": "R1"},
+            "labelLatestOnly": False,
+            "labelVisibleInputId": "ghost",
+        }
+    )
+    assert "IR_BAD_INPUT_REF" in _codes(ir)
+
+
+def test_declared_label_visible_input_id_admits():
+    ir = _valid_ir()
+    ir["header"]["requiredFeatures"] = ["drawing-streams"]
+    ir["inputs"].append({"id": "show", "type": "bool", "label": "Show", "defaultValue": True})
+    ir["outputs"].append(
+        {
+            "kind": "level",
+            "condNodeId": 0,
+            "priceNodeId": 0,
+            "title": "L",
+            "style": {"color": "#fff"},
+            "offset": 0,
+            "rightPad": 0,
+            "extend": "lastbar",
+            "maxKept": 5,
+            "label": {"kind": "const", "value": "R1"},
+            "labelLatestOnly": False,
+            "labelVisibleInputId": "show",
+        }
+    )
+    assert admit_ir(ir) == []
+
+
+def test_border_color_input_id_naming_undeclared_input_rejected():
+    """The check was exact-key (`colorInputId`) and exempted the G8 siblings."""
+    ir = _valid_ir()
+    ir["header"]["requiredFeatures"] = ["drawing-streams"]
+    ir["outputs"].append(
+        {
+            "kind": "zone",
+            "condNodeId": 0,
+            "topNodeId": 0,
+            "bottomNodeId": 0,
+            "title": "Z",
+            "style": {"color": "#fff", "borderColor": "#000", "borderColorInputId": "ghost"},
+            "offset": 0,
+            "rightPad": 0,
+            "extend": "lastbar",
+            "maxKept": 5,
+        }
+    )
+    assert "IR_BAD_INPUT_REF" in _codes(ir)
+
+
 def test_violations_are_aggregated():
     ir = _valid_ir()
     ir["version"] = 9

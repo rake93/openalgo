@@ -285,11 +285,15 @@ NAMED_ARGS: dict[str, frozenset[str]] = {
         # spawn-sampled-values design declines arrays outright. Every label in
         # scope needs one value; a second would be a named sibling, never a list.
         "label_value",
+        # G6: a bool literal or an `input.bool`, gating ONLY the label — gating
+        # the spawn condition would hide the line the label belongs to.
+        "label_visible",
     }),
     "plotzone": frozenset({
         "title", "color", "border_color", "border_style", "offset", "right_pad",
         "extend", "bars", "terminate", "mitigated_color", "max_kept", "text", "text_size",
         "text_value",
+        "text_visible",
     }),
 }
 
@@ -303,7 +307,7 @@ CONSTANT_NAMESPACES: dict[str, frozenset[str]] = {
         {
             "green", "red", "blue", "orange", "purple", "teal", "gray", "grey", "yellow",
             "cyan", "pink", "white", "black", "navy", "maroon", "lime", "aqua", "fuchsia",
-            "olive", "silver", "new", "from_gradient",
+            "olive", "silver", "new", "rgb", "from_gradient",
         }
     ),
     "shape": frozenset(

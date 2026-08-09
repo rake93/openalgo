@@ -78,6 +78,9 @@ class Analyzer:
         # Names bound to `input.session(...)` — accepted as a `session.*`
         # argument (the OS2032 emitter, session-surface design §4.1).
         self._session_inputs: set[str] = set()
+        # Names bound to `input.bool(...)` — accepted as a `label_visible=`/
+        # `text_visible=` binding (G6).
+        self._bool_inputs: set[str] = set()
         # True while visiting the direct value of a `color=` named argument.
         self._in_color_arg_position = False
         # Scan state per `:=` target: decl seen (const-init) / reassign visited.
@@ -145,6 +148,8 @@ class Analyzer:
                 self._timeframe_inputs.add(stmt.name)
             if _is_input_session_call(stmt.value):
                 self._session_inputs.add(stmt.name)
+            if _is_input_bool_call(stmt.value):
+                self._bool_inputs.add(stmt.name)
             scan = self._scan_vars.get(stmt.name)
             if scan is not None:
                 if not top_level:
@@ -584,6 +589,28 @@ class Analyzer:
             e = self._named_arg_value(call, name)
             if e is not None and self._enum_member(e) is None:
                 self._error("OS2023", e.span, f"{name}= must be a constant enum member")
+        # G6: `label_visible=` (level) / `text_visible=` (zone) — a bool literal
+        # or an `input.bool` variable, and only WITH the text argument it gates.
+        # A toggle admitted without its label would be a control bound to
+        # nothing — the placebo-control class G8 exists to prevent.
+        visible_name = "label_visible" if fn == "plotlevel" else "text_visible"
+        text_name = "label" if fn == "plotlevel" else "text"
+        visible_arg = self._named_arg_value(call, visible_name)
+        if visible_arg is not None:
+            is_bool_literal = visible_arg.type == "Bool"
+            is_bool_input = (
+                visible_arg.type == "Identifier" and visible_arg.name in self._bool_inputs
+            )
+            if not is_bool_literal and not is_bool_input:
+                self._error(
+                    "OS2023",
+                    visible_arg.span,
+                    f"{visible_name}= must be a bool literal or an input.bool variable",
+                )
+            if self._named_arg_value(call, text_name) is None:
+                self._error(
+                    "OS2023", visible_arg.span, f"{visible_name}= requires a {text_name}= to gate"
+                )
 
     def _named_arg_value(self, call: ast.CallExpr, name: str):
         """The value expression of a named argument, if present."""
@@ -781,6 +808,17 @@ def _is_input_color_call(e: ast.Expr) -> bool:
         and getattr(e.callee.object, "type", None) == "Identifier"
         and e.callee.object.name == "input"
         and e.callee.property == "color"
+    )
+
+
+def _is_input_bool_call(e: ast.Expr) -> bool:
+    """`input.bool(...)` — bindable to `label_visible=`/`text_visible=` (G6)."""
+    return (
+        e.type == "Call"
+        and e.callee.type == "Member"
+        and getattr(e.callee.object, "type", None) == "Identifier"
+        and e.callee.object.name == "input"
+        and e.callee.property == "bool"
     )
 
 
