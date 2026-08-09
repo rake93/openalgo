@@ -1,0 +1,1 @@
+import{t as e}from"./react-I_Y09NXr.js";var t=e(e=>({result:null,request:null,setResult:(t,n)=>e({result:t,request:n}),clear:()=>e({result:null,request:null})}));export{t};
