@@ -86,7 +86,7 @@ def test_the_fixture_case_count_is_exact():
     """Exact, not >=: these fixtures are the only thing preventing TS/Python drift and
     the only expression of the G1 matrix, so deleting one must fail loudly rather than
     quietly shrink the suite."""
-    assert len(FIXTURE_FILES) == 39
+    assert len(FIXTURE_FILES) == 41
 
 
 def test_every_fixture_name_matches_its_filename():

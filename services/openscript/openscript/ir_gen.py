@@ -160,19 +160,43 @@ def _resolve_const(e: ast.Expr):
             getattr(c, "type", None) == "Member"
             and getattr(c.object, "type", None) == "Identifier"
             and c.object.name == "color"
-            and c.property == "new"
         ):
-            base = _resolve_const(e.args[0].value) if len(e.args) > 0 else None
-            transp = _resolve_const(e.args[1].value) if len(e.args) > 1 else 0
-            if (
-                isinstance(base, str)
-                and base.startswith("#")
-                and isinstance(transp, (int, float))
-                and not isinstance(transp, bool)
-            ):
-                return _with_transparency(base, float(transp))
+            if c.property == "new":
+                base = _resolve_const(e.args[0].value) if len(e.args) > 0 else None
+                transp = _resolve_const(e.args[1].value) if len(e.args) > 1 else 0
+                if (
+                    isinstance(base, str)
+                    and base.startswith("#")
+                    and isinstance(transp, (int, float))
+                    and not isinstance(transp, bool)
+                ):
+                    return _with_transparency(base, float(transp))
+            # color.rgb(r, g, b[, transp]) with const args folds the same way
+            # (channels 0-255, clamped and rounded; same transp scale as
+            # color.new). Non-const args keep the pre-fold behaviour: the
+            # caller's fallback path, exactly as an unresolvable color.new does.
+            if c.property == "rgb" and len(e.args) >= 3:
+                r = _resolve_const(e.args[0].value)
+                g = _resolve_const(e.args[1].value)
+                b = _resolve_const(e.args[2].value)
+                transp = _resolve_const(e.args[3].value) if len(e.args) > 3 else 0
+                if all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool)
+                    for v in (r, g, b, transp)
+                ):
+                    return _with_transparency(
+                        f"#{_rgb_channel(r)}{_rgb_channel(g)}{_rgb_channel(b)}", float(transp)
+                    )
         return None
     return None
+
+
+def _rgb_channel(v: float) -> str:
+    """One color.rgb channel -> two hex digits: clamp to 0-255, then round.
+    int(x + 0.5) = JS Math.round (non-negative after the clamp), matching the
+    TS `to2` exactly -- Python round() is banker's rounding and would emit a
+    different byte for a *.5 channel."""
+    return f"{int(min(255.0, max(0.0, float(v))) + 0.5):02x}"
 
 
 def _with_transparency(hex_color: str, transp: float) -> str:
@@ -945,12 +969,18 @@ class IRGenerator:
         if _bars_node is not None:
             out["barsNodeId"] = _bars_node
         self._apply_extend_args(out, call, extend)
-        label = self._draw_text(call, "label", {"price": out["priceNodeId"]}, "label_value")
-        if label is not None:
-            out["label"] = label
-        label_size = self._draw_size(call, "label_size")
-        if label_size is not None:
-            out["labelSize"] = label_size
+        # G6: a const `label_visible=false` folds the label away entirely; an
+        # input.bool binding rides alongside the label for render-time gating.
+        hidden, visible_input_id = self._visibility_binding(call, "label_visible")
+        if not hidden:
+            label = self._draw_text(call, "label", {"price": out["priceNodeId"]}, "label_value")
+            if label is not None:
+                out["label"] = label
+            label_size = self._draw_size(call, "label_size")
+            if label_size is not None:
+                out["labelSize"] = label_size
+            if visible_input_id is not None:
+                out["labelVisibleInputId"] = visible_input_id
         return out
 
     def _zone_output(self, call: ast.CallExpr) -> dict:
@@ -1002,13 +1032,43 @@ class IRGenerator:
                 out["mitigatedColor"] = mc[0]
                 if mc[1] is not None:
                     out["mitigatedColorInputId"] = mc[1]
-        text = self._draw_text(call, "text", {"top": out["topNodeId"], "bottom": out["bottomNodeId"]}, "text_value")
-        if text is not None:
-            out["text"] = text
-        text_size = self._draw_size(call, "text_size")
-        if text_size is not None:
-            out["textSize"] = text_size
+        # G6, zone half — same contract as the level's label_visible.
+        hidden, visible_input_id = self._visibility_binding(call, "text_visible")
+        if not hidden:
+            text = self._draw_text(call, "text", {"top": out["topNodeId"], "bottom": out["bottomNodeId"]}, "text_value")
+            if text is not None:
+                out["text"] = text
+            text_size = self._draw_size(call, "text_size")
+            if text_size is not None:
+                out["textSize"] = text_size
+            if visible_input_id is not None:
+                out["textVisibleInputId"] = visible_input_id
         return out
+
+    def _visibility_binding(self, call: ast.CallExpr, name: str) -> tuple[bool, str | None]:
+        """A `label_visible=`/`text_visible=` argument (G6) resolved to what the
+        output should carry, as (hidden, input_id). Semantic has already
+        rejected anything that is not a bool literal or an `input.bool`
+        variable; this is defensive about direct-IR callers and treats an
+        unrecognised value as absent.
+
+        - const ``false`` -> (True, None): the label folds away at compile time;
+        - const ``true`` / absent -> (False, None) (the label is unconditional);
+        - `input.bool` identifier -> (False, id), substituted at render time.
+        """
+        expr = self._arg_expr(call, None, name)
+        if expr is None:
+            return False, None
+        if expr.type == "Bool":
+            return expr.value is False, None
+        if expr.type == "Identifier":
+            node_id = self._resolve_var(expr.name)
+            node = self._nodes[node_id] if node_id is not None else None
+            if node is not None and node.get("op") == "input":
+                decl = next((d for d in self._inputs if d["id"] == node["inputId"]), None)
+                if decl is not None and decl["type"] == "bool":
+                    return False, decl["id"]
+        return False, None
 
     def _draw_size(self, call: ast.CallExpr, arg: str) -> str | None:
         """A `label_size=` / `text_size=` argument, or None when unspecified.
