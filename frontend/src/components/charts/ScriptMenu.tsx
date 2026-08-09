@@ -1,7 +1,8 @@
 /**
  * The "⋯" script actions menu for the OpenScript editor — mirrors TradingView's
- * Pine editor menu: Save · Make a copy · Rename · Version history · Create new ·
- * Recently used. Folds the editor's saved-script library into a single dropdown.
+ * Pine editor menu: Save · Make a copy · Rename · Version history · Delete ·
+ * Create new · Recently used. Folds the editor's saved-script library into a
+ * single dropdown.
  *
  * Presentational + controlled: the parent owns the open flag (so Ctrl+O can
  * toggle it) and every action callback. Manage actions (copy/rename/history)
@@ -22,6 +23,8 @@ interface ScriptMenuProps {
   onMakeCopy: () => void
   onRename: () => void
   onVersionHistory: () => void
+  /** Opens the confirm; the deletion itself is the parent's, never this menu's. */
+  onDelete: () => void
   onCreateNew: () => void
   onOpen: (id: number) => void
 }
@@ -39,6 +42,7 @@ export function ScriptMenu({
   onMakeCopy,
   onRename,
   onVersionHistory,
+  onDelete,
   onCreateNew,
   onOpen,
 }: ScriptMenuProps) {
@@ -98,6 +102,17 @@ export function ScriptMenu({
             className={ITEM}
           >
             Version history…
+          </button>
+          {/* Separated from the non-destructive actions above it so Delete is
+           * never the neighbour of a mis-click on Rename. */}
+          <div className="my-1 border-t border-border" />
+          <button
+            type="button"
+            onClick={run(onDelete)}
+            disabled={!canManage}
+            className={`${ITEM} text-destructive hover:bg-destructive/10`}
+          >
+            Delete script…
           </button>
 
           <div className="my-1 border-t border-border" />

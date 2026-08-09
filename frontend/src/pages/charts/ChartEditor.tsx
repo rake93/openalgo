@@ -18,20 +18,24 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   createAlert,
   createScript,
+  deleteScript,
   getScript,
+  listAlerts,
   listScripts,
+  listVersions,
   type ScriptRecord,
   updateScript,
 } from '@/api/indicators'
 import { type AlertCondition, CreateAlertDialog } from '@/components/charts/CreateAlertDialog'
+import { DeleteScriptDialog } from '@/components/charts/DeleteScriptDialog'
 import { IndicatorSettingsDialog } from '@/components/charts/IndicatorSettingsDialog'
-import type { IndicatorInstance } from '@/lib/charts/indicator-host'
 import { InspectorPanel } from '@/components/charts/InspectorPanel'
-import { ProfilePanel } from '@/components/charts/ProfilePanel'
-import { useInspectorPin } from '@/lib/charts/use-inspector-pin'
 import { OpenScriptEditor } from '@/components/charts/OpenScriptEditor'
+import { ProfilePanel } from '@/components/charts/ProfilePanel'
 import { ScriptMenu } from '@/components/charts/ScriptMenu'
 import { VersionHistoryDialog } from '@/components/charts/VersionHistoryDialog'
+import type { IndicatorInstance } from '@/lib/charts/indicator-host'
+import { useInspectorPin } from '@/lib/charts/use-inspector-pin'
 import { ChartWorkspaceController, type CrosshairData } from '@/lib/charts/workspace'
 import { useThemeStore } from '@/stores/themeStore'
 
@@ -90,6 +94,10 @@ export default function ChartEditor() {
   const [scripts, setScripts] = useState<ScriptRecord[]>([])
   const [showMenu, setShowMenu] = useState(false)
   const [showVersions, setShowVersions] = useState(false)
+  const [showDelete, setShowDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  /** Alerts that a delete would orphan. Null while unknown - see `askDelete`. */
+  const [deleteAlerts, setDeleteAlerts] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [currentVersionId, setCurrentVersionId] = useState<number | null>(null)
@@ -364,6 +372,53 @@ export default function ChartEditor() {
     compileAndPreview(SAMPLE)
   }, [setSource, navigate, compileAndPreview])
 
+  // Open the delete confirm, and look up what else the delete takes with it.
+  //
+  // The alert count is BEST EFFORT and starts as null rather than 0: the dialog
+  // words itself differently for "no alerts" and "could not find out", and a
+  // failed lookup must not render the reassuring one.
+  const askDelete = useCallback(async () => {
+    setShowMenu(false)
+    setDeleteAlerts(null)
+    setShowDelete(true)
+    if (!scriptId) return
+    try {
+      const [versions, alerts] = await Promise.all([listVersions(scriptId), listAlerts()])
+      const versionIds = new Set(versions.map((v) => v.id))
+      setDeleteAlerts(
+        alerts.filter((a) => a.script_version_id !== null && versionIds.has(a.script_version_id))
+          .length
+      )
+    } catch {
+      // Leave it null - the dialog still warns, just without a number.
+    }
+  }, [scriptId])
+
+  // Delete, then leave the editor on a blank buffer. Staying on the deleted
+  // script's URL would show an editor whose Save silently creates a new script.
+  const confirmDelete = useCallback(async () => {
+    if (!scriptId) return
+    setDeleting(true)
+    try {
+      await deleteScript(scriptId)
+      setShowDelete(false)
+      savedSourceRef.current = ''
+      savedNameRef.current = ''
+      setScriptName('')
+      setCurrentVersionId(null)
+      setDirty(false)
+      setSource(SAMPLE)
+      navigate('/charts/editor')
+      compileAndPreview(SAMPLE)
+    } catch (err) {
+      // Deliberately leaves the dialog open: a failed delete that closed its own
+      // confirm would read as a success.
+      setStatus(err instanceof Error ? err.message : 'delete failed')
+    } finally {
+      setDeleting(false)
+    }
+  }, [scriptId, navigate, setSource, compileAndPreview])
+
   // Fork the current buffer into a brand-new script ("… copy") and open it.
   const makeCopy = useCallback(async () => {
     const src = sourceRef.current
@@ -499,6 +554,7 @@ export default function ChartEditor() {
           onMakeCopy={() => void makeCopy()}
           onRename={renameFocus}
           onVersionHistory={() => setShowVersions(true)}
+          onDelete={() => void askDelete()}
           onCreateNew={newScript}
           onOpen={openScript}
         />
@@ -674,7 +730,6 @@ export default function ChartEditor() {
             />
           )}
           {ready && pinned && (
-
             <InspectorPanel
               bar={pinned}
               inspect={(instanceId, outputId, barIndex) =>
@@ -723,6 +778,19 @@ export default function ChartEditor() {
         currentVersionId={currentVersionId}
         onRestore={restoreVersion}
         onClose={() => setShowVersions(false)}
+      />
+
+      <DeleteScriptDialog
+        open={showDelete}
+        onOpenChange={(next) => {
+          // Never dismissable mid-request: closing under a delete in flight
+          // leaves the user with no idea whether it landed.
+          if (!deleting) setShowDelete(next)
+        }}
+        scriptName={scriptName}
+        affectedAlerts={deleteAlerts}
+        busy={deleting}
+        onConfirm={() => void confirmDelete()}
       />
     </div>
   )
