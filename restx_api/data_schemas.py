@@ -1,6 +1,7 @@
 import re
+from datetime import datetime
 
-from marshmallow import Schema, ValidationError, fields, validate
+from marshmallow import Schema, ValidationError, fields, validate, validates_schema
 
 from utils.constants import VALID_EXCHANGES
 
@@ -348,3 +349,36 @@ class MultiOptionGreeksSchema(Schema):
         required=False, validate=validate.Range(min=0, max=100)
     )  # Common interest rate for all
     expiry_time = fields.Str(required=False)  # Optional: Common expiry time for all
+
+
+class RollingOptionSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+    underlying_security_id = fields.Int(required=True)
+    exchange_segment = fields.Str(load_default="NSE_FNO")
+    instrument = fields.Str(load_default="OPTIDX")
+    expiry_flag = fields.Str(required=True, validate=validate.OneOf(["WEEK", "MONTH"]))
+    expiry_code = fields.Int(load_default=0)
+    strike = fields.Str(required=True)
+    option_type = fields.Str(required=True, validate=validate.OneOf(["CALL", "PUT"]))
+    # Dhan-native interval, NOT OpenAlgo's common format ("1m", "5m").
+    interval = fields.Str(load_default="1", validate=validate.OneOf(["1", "5", "15", "25", "60"]))
+    from_date = fields.Str(required=True)
+    to_date = fields.Str(required=True)
+
+    @validates_schema
+    def validate_date_range(self, data, **kwargs):
+        """Reject malformed and reversed ranges at the edge.
+
+        The adapter's cap only tests `span > 30`, so a reversed range slips through
+        it with a negative span and fails later as an opaque broker error. Catching
+        it here turns a 500 into a 400 that names the problem.
+        """
+        try:
+            start = datetime.strptime(data["from_date"], "%Y-%m-%d")
+            end = datetime.strptime(data["to_date"], "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValidationError(f"dates must be YYYY-MM-DD: {exc}") from exc
+        if end < start:
+            raise ValidationError(
+                f"to_date {data['to_date']} precedes from_date {data['from_date']}"
+            )

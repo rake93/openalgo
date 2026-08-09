@@ -1223,6 +1223,4 @@ class BrokerData:
 
         body = json.dumps(payload)
         logger.debug(f"rollingoption request: {body}")
-        return get_api_response(
-            "/v2/charts/rollingoption", self.auth_token, "POST", body
-        )
+        return get_api_response("/v2/charts/rollingoption", self.auth_token, "POST", body)

@@ -144,3 +144,104 @@ def test_rolling_option_history_rejects_range_of_31_days(monkeypatch):
             from_date="2026-07-01",
             to_date="2026-08-01",
         )
+
+
+def test_service_rejects_invalid_api_key(monkeypatch):
+    import services.rollingoption_service as svc
+
+    monkeypatch.setattr(
+        svc, "get_auth_token_broker", lambda api_key, include_feed_token=True: (None, None, None)
+    )
+
+    ok, response, status = svc.get_rolling_option_history(
+        api_key="bad-key",
+        underlying_security_id=13,
+        exchange_segment="NSE_FNO",
+        instrument="OPTIDX",
+        expiry_flag="WEEK",
+        expiry_code=0,
+        strike="ATM",
+        option_type="CALL",
+        interval="1",
+        from_date="2026-07-01",
+        to_date="2026-07-31",
+    )
+
+    assert ok is False
+    assert status == 403
+    assert response["status"] == "error"
+
+
+def test_service_returns_broker_payload(monkeypatch):
+    import services.rollingoption_service as svc
+
+    monkeypatch.setattr(
+        svc,
+        "get_auth_token_broker",
+        lambda api_key, include_feed_token=True: ("tok", "feed", "dhan"),
+    )
+
+    class FakeBrokerData:
+        def __init__(self, auth_token):
+            self.auth_token = auth_token
+
+        def get_rolling_option_history(self, **kwargs):
+            return _fake_body()
+
+    fake_module = type("M", (), {"BrokerData": FakeBrokerData})
+    monkeypatch.setattr(svc, "import_broker_module", lambda name: fake_module)
+
+    ok, response, status = svc.get_rolling_option_history(
+        api_key="good-key",
+        underlying_security_id=13,
+        exchange_segment="NSE_FNO",
+        instrument="OPTIDX",
+        expiry_flag="WEEK",
+        expiry_code=0,
+        strike="ATM",
+        option_type="CALL",
+        interval="1",
+        from_date="2026-07-01",
+        to_date="2026-07-31",
+    )
+
+    assert ok is True
+    assert status == 200
+    assert response["status"] == "success"
+    assert response["data"]["ce"]["close"] == [11.0]
+
+
+def test_schema_rejects_a_reversed_date_range():
+    from marshmallow import ValidationError as MarshmallowValidationError
+
+    from restx_api.data_schemas import RollingOptionSchema
+
+    payload = {
+        "apikey": "k",
+        "underlying_security_id": 13,
+        "expiry_flag": "WEEK",
+        "strike": "ATM",
+        "option_type": "CALL",
+        "from_date": "2026-07-31",
+        "to_date": "2026-07-01",
+    }
+    with pytest.raises(MarshmallowValidationError, match="precedes"):
+        RollingOptionSchema().load(payload)
+
+
+def test_schema_rejects_a_malformed_date():
+    from marshmallow import ValidationError as MarshmallowValidationError
+
+    from restx_api.data_schemas import RollingOptionSchema
+
+    payload = {
+        "apikey": "k",
+        "underlying_security_id": 13,
+        "expiry_flag": "WEEK",
+        "strike": "ATM",
+        "option_type": "CALL",
+        "from_date": "01-07-2026",
+        "to_date": "2026-07-31",
+    }
+    with pytest.raises(MarshmallowValidationError, match="YYYY-MM-DD"):
+        RollingOptionSchema().load(payload)
