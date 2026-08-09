@@ -1175,6 +1175,7 @@ class BrokerData:
 
     def get_rolling_option_history(
         self,
+        *,
         underlying_security_id,
         exchange_segment,
         instrument,
@@ -1192,6 +1193,9 @@ class BrokerData:
         Returns Dhan's raw body: a dict with 'ce' and/or 'pe' keys, each holding
         parallel arrays. Paging is the caller's responsibility — Dhan caps a single
         request at 30 days.
+
+        `interval` is Dhan-native ("1", "5", "15", "25", "60"), NOT OpenAlgo's
+        common format ("1m", "5m") that `get_history` on this same class takes.
         """
         span_days = (
             datetime.strptime(to_date, "%Y-%m-%d")
@@ -1217,7 +1221,8 @@ class BrokerData:
             "toDate": to_date,
         }
 
-        logger.debug(f"rollingoption request: {json.dumps(payload)}")
+        body = json.dumps(payload)
+        logger.debug(f"rollingoption request: {body}")
         return get_api_response(
-            "/v2/charts/rollingoption", self.auth_token, "POST", json.dumps(payload)
+            "/v2/charts/rollingoption", self.auth_token, "POST", body
         )
