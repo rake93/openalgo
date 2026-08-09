@@ -68,6 +68,12 @@ def get_rolling_option_history(
         logger.exception("rolling option history failed")
         return False, {"status": "error", "message": str(exc)}, 500
 
+    # Dhan nests the legs under an outer "data" key, which its published example
+    # omits. Unwrap so our response is {"data": {"ce": ..., "pe": ...}} rather than
+    # data.data. Verified against the live API on 2026-08-09.
+    if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+        payload = payload["data"]
+
     if not isinstance(payload, dict) or not ({"ce", "pe"} & payload.keys()):
         return (
             False,

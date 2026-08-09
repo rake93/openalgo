@@ -357,7 +357,10 @@ class RollingOptionSchema(Schema):
     exchange_segment = fields.Str(load_default="NSE_FNO")
     instrument = fields.Str(load_default="OPTIDX")
     expiry_flag = fields.Str(required=True, validate=validate.OneOf(["WEEK", "MONTH"]))
-    expiry_code = fields.Int(load_default=0)
+    # 1-based: Dhan rejects 0 with "DH-905: expiryCode is required". Verified
+    # against the live API on 2026-08-09. WEEK 1/2/3 are the three nearest
+    # weeklies; WEEK 3 == MONTH 1 when the third weekly is the monthly expiry.
+    expiry_code = fields.Int(load_default=1, validate=validate.Range(min=1))
     # Dhan's own offset vocabulary (ATM, ATM+1..ATM+10, ATM-1..ATM-10 for index options;
     # +/-3 for stocks) -- NOT the ATM/ITM1-50/OTM1-50 scheme validate_option_offset checks
     # elsewhere in this file. Deliberately permissive on the numeric bound: stock options
@@ -366,7 +369,7 @@ class RollingOptionSchema(Schema):
     strike = fields.Str(
         required=True,
         validate=validate.Regexp(
-            r"^ATM([+-]\d{1,2})?$",
+            r"^ATM([+-]\d{1,2})?\Z",
             error="strike must be ATM or ATM+n / ATM-n (Dhan's offset vocabulary, "
             "not OpenAlgo's ITM/OTM scheme)",
         ),

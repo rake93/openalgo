@@ -380,6 +380,195 @@ def test_service_returns_404_when_broker_module_missing(monkeypatch):
     assert response["status"] == "error"
 
 
+def test_service_unwraps_outer_data_envelope(monkeypatch):
+    """Dhan nests the legs under an outer "data" key that its published example
+    omits. The service must unwrap it so the caller sees the legs directly at
+    response["data"]["ce"], not buried at response["data"]["data"]["ce"].
+    """
+    import services.rollingoption_service as svc
+
+    monkeypatch.setattr(
+        svc,
+        "get_auth_token_broker",
+        lambda api_key, include_feed_token=True: ("tok", "feed", "dhan"),
+    )
+
+    class FakeBrokerData:
+        def __init__(self, auth_token):
+            pass
+
+        def get_rolling_option_history(self, **kwargs):
+            return {"data": {"ce": _fake_body()["ce"], "pe": None}}
+
+    fake_module = type("M", (), {"BrokerData": FakeBrokerData})
+    monkeypatch.setattr(svc, "import_broker_module", lambda name: fake_module)
+
+    ok, response, status = svc.get_rolling_option_history(
+        api_key="good-key",
+        underlying_security_id=13,
+        exchange_segment="NSE_FNO",
+        instrument="OPTIDX",
+        expiry_flag="WEEK",
+        expiry_code=1,
+        strike="ATM",
+        option_type="CALL",
+        interval="1",
+        from_date="2026-07-01",
+        to_date="2026-07-31",
+    )
+
+    assert ok is True
+    assert status == 200
+    assert response["data"]["ce"]["close"] == [11.0]
+
+
+def test_service_passes_single_leg_response_with_none_leg(monkeypatch):
+    """Only the requested leg is populated on a real Dhan response; the other
+    leg is `None` and both keys are always present. The guard must accept this
+    shape and `pe: None` must survive into the response, not be stripped.
+    """
+    import services.rollingoption_service as svc
+
+    monkeypatch.setattr(
+        svc,
+        "get_auth_token_broker",
+        lambda api_key, include_feed_token=True: ("tok", "feed", "dhan"),
+    )
+
+    class FakeBrokerData:
+        def __init__(self, auth_token):
+            pass
+
+        def get_rolling_option_history(self, **kwargs):
+            return {"data": {"ce": _fake_body()["ce"], "pe": None}}
+
+    fake_module = type("M", (), {"BrokerData": FakeBrokerData})
+    monkeypatch.setattr(svc, "import_broker_module", lambda name: fake_module)
+
+    ok, response, status = svc.get_rolling_option_history(
+        api_key="good-key",
+        underlying_security_id=13,
+        exchange_segment="NSE_FNO",
+        instrument="OPTIDX",
+        expiry_flag="WEEK",
+        expiry_code=1,
+        strike="ATM",
+        option_type="CALL",
+        interval="1",
+        from_date="2026-07-01",
+        to_date="2026-07-31",
+    )
+
+    assert ok is True
+    assert status == 200
+    assert "pe" in response["data"]
+    assert response["data"]["pe"] is None
+
+
+def test_service_still_returns_502_on_dhan_error_envelope_without_data_key(monkeypatch):
+    """Dhan's error envelope (`errorType`/`errorCode`/`errorMessage`) has no
+    outer "data" key, so the new unwrap step must be a no-op for it and the
+    shape guard must still reject it. Verifies the unwrap doesn't accidentally
+    let a real Dhan error through as a success.
+    """
+    import services.rollingoption_service as svc
+
+    monkeypatch.setattr(
+        svc,
+        "get_auth_token_broker",
+        lambda api_key, include_feed_token=True: ("tok", "feed", "dhan"),
+    )
+
+    class FakeBrokerData:
+        def __init__(self, auth_token):
+            pass
+
+        def get_rolling_option_history(self, **kwargs):
+            return {
+                "errorType": "Input_Exception",
+                "errorCode": "DH-905",
+                "errorMessage": "expiryCode is required",
+            }
+
+    fake_module = type("M", (), {"BrokerData": FakeBrokerData})
+    monkeypatch.setattr(svc, "import_broker_module", lambda name: fake_module)
+
+    ok, response, status = svc.get_rolling_option_history(
+        api_key="good-key",
+        underlying_security_id=13,
+        exchange_segment="NSE_FNO",
+        instrument="OPTIDX",
+        expiry_flag="WEEK",
+        expiry_code=1,
+        strike="ATM",
+        option_type="CALL",
+        interval="1",
+        from_date="2026-07-01",
+        to_date="2026-07-31",
+    )
+
+    assert ok is False
+    assert status == 502
+    assert response["status"] == "error"
+
+
+def test_schema_rejects_expiry_code_zero():
+    from marshmallow import ValidationError as MarshmallowValidationError
+
+    from restx_api.data_schemas import RollingOptionSchema
+
+    payload = {
+        "apikey": "k",
+        "underlying_security_id": 13,
+        "expiry_flag": "WEEK",
+        "expiry_code": 0,
+        "strike": "ATM",
+        "option_type": "CALL",
+        "from_date": "2026-07-01",
+        "to_date": "2026-07-31",
+    }
+    with pytest.raises(MarshmallowValidationError):
+        RollingOptionSchema().load(payload)
+
+
+def test_schema_defaults_expiry_code_to_one_when_omitted():
+    from restx_api.data_schemas import RollingOptionSchema
+
+    payload = {
+        "apikey": "k",
+        "underlying_security_id": 13,
+        "expiry_flag": "WEEK",
+        "strike": "ATM",
+        "option_type": "CALL",
+        "from_date": "2026-07-01",
+        "to_date": "2026-07-31",
+    }
+    loaded = RollingOptionSchema().load(payload)
+    assert loaded["expiry_code"] == 1
+
+
+def test_schema_rejects_strike_with_trailing_newline():
+    """`$` matches before a trailing newline in Python regexes, so
+    "ATM+1\\n" would slip past `validate.Regexp` and be forwarded to the
+    broker verbatim. `\\Z` closes that hole.
+    """
+    from marshmallow import ValidationError as MarshmallowValidationError
+
+    from restx_api.data_schemas import RollingOptionSchema
+
+    payload = {
+        "apikey": "k",
+        "underlying_security_id": 13,
+        "expiry_flag": "WEEK",
+        "strike": "ATM+1\n",
+        "option_type": "CALL",
+        "from_date": "2026-07-01",
+        "to_date": "2026-07-31",
+    }
+    with pytest.raises(MarshmallowValidationError):
+        RollingOptionSchema().load(payload)
+
+
 def test_schema_rejects_a_reversed_date_range():
     from marshmallow import ValidationError as MarshmallowValidationError
 
