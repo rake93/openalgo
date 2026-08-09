@@ -68,4 +68,11 @@ def get_rolling_option_history(
         logger.exception("rolling option history failed")
         return False, {"status": "error", "message": str(exc)}, 500
 
+    if not isinstance(payload, dict) or not ({"ce", "pe"} & payload.keys()):
+        return (
+            False,
+            {"status": "error", "message": f"Unexpected broker response: {payload}"},
+            502,
+        )
+
     return True, {"status": "success", "data": payload}, 200

@@ -32,5 +32,5 @@ class RollingOption(Resource):
         api_key = payload.pop("apikey")
         ok, response, status = get_rolling_option_history(api_key=api_key, **payload)
         if not ok:
-            logger.info(f"rollingoption request rejected: {response.get('message')}")
+            logger.warning(f"rollingoption request rejected: {response.get('message')}")
         return make_response(jsonify(response), status)

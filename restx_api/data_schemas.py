@@ -358,7 +358,19 @@ class RollingOptionSchema(Schema):
     instrument = fields.Str(load_default="OPTIDX")
     expiry_flag = fields.Str(required=True, validate=validate.OneOf(["WEEK", "MONTH"]))
     expiry_code = fields.Int(load_default=0)
-    strike = fields.Str(required=True)
+    # Dhan's own offset vocabulary (ATM, ATM+1..ATM+10, ATM-1..ATM-10 for index options;
+    # +/-3 for stocks) -- NOT the ATM/ITM1-50/OTM1-50 scheme validate_option_offset checks
+    # elsewhere in this file. Deliberately permissive on the numeric bound: stock options
+    # use a different range than index options and we haven't confirmed exact limits
+    # against the live API.
+    strike = fields.Str(
+        required=True,
+        validate=validate.Regexp(
+            r"^ATM([+-]\d{1,2})?$",
+            error="strike must be ATM or ATM+n / ATM-n (Dhan's offset vocabulary, "
+            "not OpenAlgo's ITM/OTM scheme)",
+        ),
+    )
     option_type = fields.Str(required=True, validate=validate.OneOf(["CALL", "PUT"]))
     # Dhan-native interval, NOT OpenAlgo's common format ("1m", "5m").
     interval = fields.Str(load_default="1", validate=validate.OneOf(["1", "5", "15", "25", "60"]))
