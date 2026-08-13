@@ -1,6 +1,7 @@
 import re
+from datetime import datetime
 
-from marshmallow import Schema, ValidationError, fields, validate
+from marshmallow import Schema, ValidationError, fields, validate, validates_schema
 
 from utils.constants import VALID_EXCHANGES
 
@@ -348,3 +349,51 @@ class MultiOptionGreeksSchema(Schema):
         required=False, validate=validate.Range(min=0, max=100)
     )  # Common interest rate for all
     expiry_time = fields.Str(required=False)  # Optional: Common expiry time for all
+
+
+class RollingOptionSchema(Schema):
+    apikey = fields.Str(required=True, validate=validate.Length(min=1, max=256))
+    underlying_security_id = fields.Int(required=True)
+    exchange_segment = fields.Str(load_default="NSE_FNO")
+    instrument = fields.Str(load_default="OPTIDX")
+    expiry_flag = fields.Str(required=True, validate=validate.OneOf(["WEEK", "MONTH"]))
+    # 1-based: Dhan rejects 0 with "DH-905: expiryCode is required". Verified
+    # against the live API on 2026-08-09. WEEK 1/2/3 are the three nearest
+    # weeklies; WEEK 3 == MONTH 1 when the third weekly is the monthly expiry.
+    expiry_code = fields.Int(load_default=1, validate=validate.Range(min=1))
+    # Dhan's own offset vocabulary (ATM, ATM+1..ATM+10, ATM-1..ATM-10 for index options;
+    # +/-3 for stocks) -- NOT the ATM/ITM1-50/OTM1-50 scheme validate_option_offset checks
+    # elsewhere in this file. Deliberately permissive on the numeric bound: stock options
+    # use a different range than index options and we haven't confirmed exact limits
+    # against the live API.
+    strike = fields.Str(
+        required=True,
+        validate=validate.Regexp(
+            r"^ATM([+-]\d{1,2})?\Z",
+            error="strike must be ATM or ATM+n / ATM-n (Dhan's offset vocabulary, "
+            "not OpenAlgo's ITM/OTM scheme)",
+        ),
+    )
+    option_type = fields.Str(required=True, validate=validate.OneOf(["CALL", "PUT"]))
+    # Dhan-native interval, NOT OpenAlgo's common format ("1m", "5m").
+    interval = fields.Str(load_default="1", validate=validate.OneOf(["1", "5", "15", "25", "60"]))
+    from_date = fields.Str(required=True)
+    to_date = fields.Str(required=True)
+
+    @validates_schema
+    def validate_date_range(self, data, **kwargs):
+        """Reject malformed and reversed ranges at the edge.
+
+        The adapter's cap only tests `span > 30`, so a reversed range slips through
+        it with a negative span and fails later as an opaque broker error. Catching
+        it here turns a 500 into a 400 that names the problem.
+        """
+        try:
+            start = datetime.strptime(data["from_date"], "%Y-%m-%d")
+            end = datetime.strptime(data["to_date"], "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValidationError(f"dates must be YYYY-MM-DD: {exc}") from exc
+        if end < start:
+            raise ValidationError(
+                f"to_date {data['to_date']} precedes from_date {data['from_date']}"
+            )

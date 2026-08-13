@@ -1163,3 +1163,64 @@ class BrokerData:
         except Exception as e:
             logger.error(f"Error in get_depth: {str(e)}", exc_info=True)
             raise Exception(f"Error fetching market depth: {str(e)}")
+
+    # Dhan's rolling-option endpoint is addressed by UNDERLYING security id plus
+    # expiry and strike offset — never by an option contract token. That is why it
+    # reaches expired series, which /v2/charts/intraday cannot: there is no expired
+    # token to resolve.
+    ROLLING_OPTION_MAX_DAYS = 30
+    ROLLING_OPTION_REQUIRED_DATA = [
+        "open", "high", "low", "close", "volume", "oi", "iv", "strike", "spot",
+    ]
+
+    def get_rolling_option_history(
+        self,
+        *,
+        underlying_security_id,
+        exchange_segment,
+        instrument,
+        expiry_flag,
+        expiry_code,
+        strike,
+        option_type,
+        interval,
+        from_date,
+        to_date,
+        required_data=None,
+    ):
+        """Fetch spot-relative option bars, including expired contracts.
+
+        Returns Dhan's raw body: a dict with 'ce' and/or 'pe' keys, each holding
+        parallel arrays. Paging is the caller's responsibility — Dhan caps a single
+        request at 30 days.
+
+        `interval` is Dhan-native ("1", "5", "15", "25", "60"), NOT OpenAlgo's
+        common format ("1m", "5m") that `get_history` on this same class takes.
+        """
+        span_days = (
+            datetime.strptime(to_date, "%Y-%m-%d")
+            - datetime.strptime(from_date, "%Y-%m-%d")
+        ).days
+        if span_days > self.ROLLING_OPTION_MAX_DAYS:
+            raise ValueError(
+                f"Dhan allows at most 30 days per rollingoption request; "
+                f"got {span_days} ({from_date} to {to_date}). Page on the caller side."
+            )
+
+        payload = {
+            "exchangeSegment": exchange_segment,
+            "interval": str(interval),
+            "securityId": str(underlying_security_id),
+            "instrument": instrument,
+            "expiryFlag": expiry_flag,
+            "expiryCode": int(expiry_code),
+            "strike": strike,
+            "drvOptionType": option_type,
+            "requiredData": list(required_data or self.ROLLING_OPTION_REQUIRED_DATA),
+            "fromDate": from_date,
+            "toDate": to_date,
+        }
+
+        body = json.dumps(payload)
+        logger.debug(f"rollingoption request: {body}")
+        return get_api_response("/v2/charts/rollingoption", self.auth_token, "POST", body)

@@ -50,6 +50,7 @@ from .pnl_symbols import api as pnl_symbols_ns
 from .portfolio import api as portfolio_ns
 from .positionbook import api as positionbook_ns
 from .quotes import api as quotes_ns
+from .rollingoption import api as rolling_option_ns
 from .search import api as search_ns
 from .sip import api as sip_ns
 from .split_order import api as split_order_ns
@@ -109,3 +110,4 @@ api.add_namespace(place_gtt_order_ns, path="/placegttorder")
 api.add_namespace(modify_gtt_order_ns, path="/modifygttorder")
 api.add_namespace(cancel_gtt_order_ns, path="/cancelgttorder")
 api.add_namespace(gtt_orderbook_ns, path="/gttorderbook")
+api.add_namespace(rolling_option_ns, path="/rollingoption")
