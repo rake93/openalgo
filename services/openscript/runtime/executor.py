@@ -19,7 +19,12 @@ from services.openscript.limits import SCRIPT_LIMITS
 
 from .admit import IRAdmissionError, admit_ir, resolve_plan_cost
 from .calendar import DAY_SECONDS, IST_CALENDAR, SessionCalendar, local_day_key
-from .htf_resample import aggregate_buckets, align_htf_range, build_buckets
+from .htf_resample import (
+    aggregate_buckets,
+    align_htf_inner_range,
+    align_htf_range,
+    build_buckets,
+)
 from .session_string import SESSION_DAY_FIELDS, SessionParseError, parse_session_string
 from .timeframe import (
     Timeframe,
@@ -505,10 +510,60 @@ def _eval_htf(node, dataset, htf_cache, inputs, decls, calendar):
     bucket_index, agg = entry
     out = np.zeros(len(bucket_index), dtype=float)
     if len(bucket_index):
-        align_htf_range(
-            node["source"], node["offset"], dataset, bucket_index, agg, out, 0, len(out) - 1
-        )
+        inner = node.get("inner")
+        if inner is not None:
+            # `source` is the KERNEL's source and `offset` is the RESULT offset
+            # here -- the descriptor's own `sourceOffset` is the shift (design §6).
+            align_htf_inner_range(
+                inner["fn"],
+                int(inner["sourceOffset"]),
+                resolve_htf_inner_length(node, inputs, decls),
+                node["source"],
+                int(node["offset"]),
+                bucket_index,
+                count,
+                agg,
+                out,
+                0,
+                len(out) - 1,
+            )
+        else:
+            align_htf_range(
+                node["source"], node["offset"], dataset, bucket_index, agg, out, 0, len(out) - 1
+            )
     return out
+
+
+def resolve_htf_inner_length(node: dict, inputs: dict, decls: dict) -> int:
+    """The effective window length of an `htf` node's inner kernel.
+
+    Resolved like every other input-bound numeric -- runtime input, else the
+    declared default, clamped to the declared max. Shared with any bounded
+    recompute for the same reason `_hist_offset` is: two copies of one resolution
+    rule is exactly how the full and incremental paths diverged in C5.
+
+    int() throughout: the lexer floats every numeric literal, so a length arrives
+    as 5.0 and would index/allocate as a float.
+    """
+    inner = node.get("inner")
+    if inner is None:
+        return 0
+    length_input_id = inner.get("lengthInputId")
+    if length_input_id is None:
+        return int(inner["length"])
+    decl = decls.get(length_input_id) or {}
+    raw = inputs.get(length_input_id, decl.get("defaultValue", inner["length"]))
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return int(inner["length"])
+    hi = decl.get("max")
+    if isinstance(hi, (int, float)) and math.isfinite(float(hi)):
+        v = min(v, float(hi))
+    lo = decl.get("min")
+    if isinstance(lo, (int, float)) and math.isfinite(float(lo)):
+        v = max(v, float(lo))
+    return int(v) if math.isfinite(v) and v >= 1 else int(inner["length"])
 
 
 def _hist_offset(node: dict, inputs: dict, decls: dict) -> int:

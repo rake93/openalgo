@@ -91,6 +91,46 @@ def analyze_window_bounds(ir: dict) -> list:
             )
         )
 
+    # An htf node's INNER kernel length is priced exactly like a call's window
+    # length (`inputBound` at the declared maxval), so it must be visible to the
+    # same warning. G9's whole design is that the charge and the diagnostic come
+    # from one place; a priced argument the warning cannot see would tell the
+    # author their cost is fine while admission prices it at maximumLookback.
+    for node in nodes:
+        inner = node.get("inner")
+        if node.get("op") != "htf" or not isinstance(inner, dict):
+            continue
+        length_input_id = inner.get("lengthInputId")
+        if length_input_id is None:
+            continue
+        decl = decls.get(length_input_id)
+        if decl is None or decl.get("type") not in ("integer", "float"):
+            continue
+        if _declared_max(decl) is not None:
+            continue
+        if decl["id"] in reported:
+            continue
+        reported.add(decl["id"])
+        raw_span = spans.get(node.get("id")) or spans.get(str(node.get("id")))
+        if raw_span is None:
+            continue
+        span = Span(
+            start=raw_span["start"],
+            end=raw_span["end"],
+            line=raw_span["line"],
+            column=raw_span["column"],
+        )
+        out.append(
+            make_diagnostic(
+                "OS5008",
+                "warning",
+                span,
+                f"'{decl['id']}' has no maxval, so the request.security inner window is "
+                f"priced at maximumLookback ({SCRIPT_LIMITS['maximumLookback']}) "
+                f"— add maxval= to bound it",
+            )
+        )
+
     for node in nodes:
         if node.get("op") != "call":
             continue

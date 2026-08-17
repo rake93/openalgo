@@ -358,11 +358,33 @@ def cost_of(node: dict, ir: dict) -> dict:
         # Resample (bucketing) + per-bucket aggregation + alignment: a few O(n)
         # passes per node. The per-timeframe resample is SHARED across nodes, so a
         # barCount-per-node charge upper-bounds real work (Phase 3 design §7).
-        per_bar = _lit(_HTF_COST_PER_BAR)
+        #
+        # An INNER kernel adds O(K · Leff) over K <= barCount buckets, so charging
+        # Leff per BASE bar upper-bounds it -- the compression factor n/K is
+        # deliberate over-charge. Under-charging is the G9 failure mode;
+        # over-charging is caution, and `real <= charged <= estimate` is the
+        # shipped invariant (design §8). No new CostExpr kind, so cost_expr.py is
+        # untouched by this feature.
+        inner = node.get("inner")
+        if inner is None:
+            per_bar = _lit(_HTF_COST_PER_BAR)
+        else:
+            length_input_id = inner.get("lengthInputId")
+            len_term = (
+                # Priced at the input's declared MAXVAL, never its default:
+                # admission has to hold for every value the setting can take.
+                {"k": "inputBound", "id": length_input_id}
+                if length_input_id is not None
+                else _lit(int(inner["length"]))
+            )
+            per_bar = _add(_lit(_HTF_COST_PER_BAR), len_term)
         return {
             "perBarCost": per_bar,
             "totalCost": _mul(per_bar, _bar_count()),
-            "bytesCost": _mul(_lit(_SERIES_BYTES_PER_BAR), _bar_count()),
+            # Aligned out + shifted + kernelArr, each <= n entries, when inner runs.
+            "bytesCost": _mul(
+                _lit(_SERIES_BYTES_PER_BAR * (1 if inner is None else 3)), _bar_count()
+            ),
         }
     if op in ("binop", "unop", "select", "hist", "nz"):
         return _series_element()

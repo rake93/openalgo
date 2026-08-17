@@ -82,6 +82,9 @@ class Analyzer:
         # Names bound to `input.bool(...)` — accepted as a `label_visible=`/
         # `text_visible=` binding (G6).
         self._bool_inputs: set[str] = set()
+        # Names bound to `input.int(...)` — accepted as an HTF inner window
+        # length, where the value must be priceable at compile time.
+        self._int_inputs: set[str] = set()
         # True while visiting the direct value of a `color=` named argument.
         self._in_color_arg_position = False
         # Scan state per `:=` target: decl seen (const-init) / reassign visited.
@@ -151,6 +154,8 @@ class Analyzer:
                 self._session_inputs.add(stmt.name)
             if _is_input_bool_call(stmt.value):
                 self._bool_inputs.add(stmt.name)
+            if _is_input_int_call(stmt.value):
+                self._int_inputs.add(stmt.name)
             scan = self._scan_vars.get(stmt.name)
             if scan is not None:
                 if not top_level:
@@ -435,10 +440,9 @@ class Analyzer:
             if len(source.elements) == 0:
                 self._error("OS2027", source.span)
             for el in source.elements:
-                if not _is_htf_source_expr(el):
-                    self._error("OS2027", el.span)
-        elif not _is_htf_source_expr(source):
-            self._error("OS2027", (source or call).span)
+                self._admit_htf_source(el, call.span)
+        else:
+            self._admit_htf_source(source, call.span)
 
         # optional lookahead — named `lookahead=` or a 4th positional. Only
         # `lookahead_off` is supported; anything else that IS a barmerge member is
@@ -665,6 +669,85 @@ class Analyzer:
                             "otherwise every historical object reads the live bar",
                         )
 
+    def _classify_htf_inner(self, e):
+        """The inner-`ta.*` shape (design §5): `ta.highest(S[n], L)` / `ta.lowest(...)`
+        where S is a BASE source kind and n >= 1, optionally followed by `[m]`.
+
+        Returns "ok", or the code to emit, or None for "not this shape at all"
+        (the caller then falls back to OS2027). Returning the CODE rather than a
+        bool is the point: one call site distinguishes a wrong kernel (OS2034)
+        from a source reading the FORMING bucket (OS2035) from an arbitrary
+        expression (OS2027) -- three different author actions, one diagnostic
+        each. Mirror: semantic.ts classifyHtfInner.
+        """
+        if e is None:
+            return None
+        # `ta.highest(S[n], L)[m]` -- the RESULT offset, in HTF space. The index
+        # POSITION carries the meaning: inside `request.security` an index counts
+        # HTF BUCKETS, outside it counts BASE bars (a hist node).
+        if e.type == "Index":
+            m = _const_number_of(e.index)
+            if m is None or m != int(m) or m < 0:
+                return None if self._classify_htf_inner(e.object) is None else "OS2035"
+            return self._classify_htf_inner(e.object)
+        if e.type != "Call":
+            return None
+        callee = e.callee
+        if (
+            getattr(callee, "type", None) != "Member"
+            or getattr(callee.object, "type", None) != "Identifier"
+            or callee.object.name != "ta"
+        ):
+            return None
+        if callee.property not in ("highest", "lowest"):
+            return "OS2034"
+        args = [a for a in e.args if a.name is None]
+        if len(args) != 2:
+            return "OS2034"
+        src = args[0].value
+        # A bare `S` reads the forming bucket -- the one shape v1 refuses BY NAME,
+        # because the fix is a single character and the alternative is a repaint.
+        if src is None or src.type != "Index":
+            return "OS2035" if _is_htf_source_expr(src) else None
+        base = src.object
+        if getattr(base, "type", None) != "Identifier" or base.name not in HTF_INNER_SOURCE_KINDS:
+            return "OS2034" if _is_htf_source_expr(base) else None
+        n = _const_number_of(src.index)
+        if n is None or n != int(n) or n < 1:
+            return "OS2035"
+        return "ok"
+
+    def _check_htf_inner_length(self, call) -> None:
+        """The window length must be priceable at COMPILE time: a positive int
+        literal, or an identifier bound to an `input.int`. Anything else makes the
+        PlanCost charge fiction -- the G9 failure mode one level down."""
+        args = [a for a in call.args if a.name is None]
+        length = args[1].value if len(args) > 1 else None
+        if length is None:
+            return
+        const_len = _const_number_of(length)
+        if const_len is not None:
+            if const_len != int(const_len) or const_len < 1:
+                self._error("OS2034", length.span, "inner window length must be a positive integer")
+            return
+        if length.type == "Identifier" and length.name in self._int_inputs:
+            return
+        self._error(
+            "OS2034", length.span, "inner window length must be a constant or an input.int variable"
+        )
+
+    def _admit_htf_source(self, el, fallback_span) -> None:
+        """Admit one `request.security` source element: a raw series, or an inner call."""
+        if _is_htf_source_expr(el):
+            return
+        verdict = self._classify_htf_inner(el)
+        if verdict == "ok":
+            inner = el.object if el.type == "Index" else el
+            self._check_htf_inner_length(inner)
+            return
+        # OS2027 stays the fallback for arbitrary expressions (design §5).
+        self._error(verdict or "OS2027", el.span if el is not None else fallback_span)
+
     def _named_arg_value(self, call: ast.CallExpr, name: str):
         """The value expression of a named argument, if present."""
         for arg in call.args:
@@ -831,6 +914,24 @@ def _is_input_timeframe_call(e: ast.Expr) -> bool:
     )
 
 
+# HTF source kinds an INNER kernel may read: the base ones only. Combined
+# kinds (hl2/hlc3/ohlc4) have no per-bucket aggregate array -- they are composed
+# at alignment time -- so serving them means running the kernel per component,
+# which no target asks for. Mirror: semantic.ts HTF_INNER_SOURCE_KINDS.
+HTF_INNER_SOURCE_KINDS = frozenset({"open", "high", "low", "close", "volume"})
+
+
+def _const_number_of(e):
+    """A numeric literal, or a negated one; else None."""
+    if e is None:
+        return None
+    if e.type == "Number":
+        return e.value
+    if e.type == "Unary" and e.op == "-" and e.operand.type == "Number":
+        return -e.operand.value
+    return None
+
+
 def _is_htf_source_expr(e) -> bool:
     """A bare source identifier, optionally with a history offset (`close[1]`).
 
@@ -861,6 +962,17 @@ def _is_input_color_call(e: ast.Expr) -> bool:
         and getattr(e.callee.object, "type", None) == "Identifier"
         and e.callee.object.name == "input"
         and e.callee.property == "color"
+    )
+
+
+def _is_input_int_call(e: ast.Expr) -> bool:
+    """`input.int(...)` — bindable as an HTF inner window length."""
+    return (
+        e.type == "Call"
+        and getattr(e.callee, "type", None) == "Member"
+        and getattr(e.callee.object, "type", None) == "Identifier"
+        and e.callee.object.name == "input"
+        and e.callee.property == "int"
     )
 
 

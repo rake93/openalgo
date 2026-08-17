@@ -65,7 +65,13 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "OS2024": "request.security symbol must be syminfo.tickerid (same-symbol only)",
     "OS2025": "request.security timeframe must be a compile-time constant string",
     "OS2026": "request.security timeframe string is not a valid timeframe",
-    "OS2027": "request.security expression must be a source series (optionally with a [n] offset)",
+    # Reworded 2026-08-18 in BOTH tables, and the shared fixtures/htf/surface.json
+    # pins this exact string -- three shapes now compile, and the old text sent
+    # authors of a legal inner call looking for a bug in their source.
+    "OS2027": (
+        "request.security expression must be a source series, or ta.highest/ta.lowest "
+        "over one with a history offset"
+    ),
     "OS2028": "request.security lookahead must be barmerge.lookahead_off",
     "OS2029": "location.absolute requires price=",
     "OS2030": "price= applies only to location.absolute",
@@ -77,6 +83,14 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     # both rules are "track= with a lifetime that is not price-independent", and
     # they share a check site. Mirrors diagnostics.ts verbatim.
     "OS2033": "track= requires a price-independent lifetime",
+    # Semantic -- HTF inner `ta.*` (design §5). Renumbered UP from OS2033/OS2034
+    # on 2026-08-17 when G-LIVE landed first and took OS2033; codes are
+    # append-only, so the second design moves.
+    "OS2034": "request.security inner call must be ta.highest or ta.lowest over a base source",
+    "OS2035": (
+        "request.security inner source must read closed HTF bars \u2014 add a history "
+        "offset, e.g. high[1]"
+    ),
     # Limits
     "OS3001": "Source exceeds maximum size",
     "OS3002": "Program exceeds maximum AST nodes",

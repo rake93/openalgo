@@ -21,6 +21,7 @@ See the engine's docs/openscript-phase3-request-security-design.md sections 3-4.
 import numpy as np
 
 from .calendar import DAY_SECONDS, IST_CALENDAR, SessionCalendar, local_day_key
+from .ta_dispatch import invoke_kernel
 from .timeframe import Timeframe
 
 #: Day stride for the `min` bucket key: the key is `dayNumber * STRIDE + slotOfDay`,
@@ -152,6 +153,51 @@ def align_closed_into(closed_agg, bucket_index, offset: int, out, frm: int, to: 
     for i in range(frm, to + 1):
         b = int(bucket_index[i]) - offset
         out[i] = closed_agg[b] if b >= 0 else np.nan
+
+
+def align_htf_inner_range(
+    fn: str,
+    source_offset: int,
+    length: int,
+    source: str,
+    result_offset: int,
+    bucket_index,
+    count: int,
+    agg: dict,
+    out,
+    frm: int,
+    to: int,
+) -> None:
+    """An inner `ta.highest`/`ta.lowest` evaluated in HTF space (design §4):
+
+        1. shifted[j] = j >= n ? aggClosed[S][j - n] : nan     (HTF space, K entries)
+        2. kernel_arr = invoke_kernel(fn, [shifted, length])   (the SAME dispatch base space uses)
+        3. out[i]     = align_closed_into(kernel_arr, bucket_index, m)
+
+    STEP 1 IS THE FINALITY GUARANTEE MADE STRUCTURAL. The forming bucket's partial
+    aggregate sits at aggClosed[K-1]; with n >= 1 it would land at shifted index
+    K-1+n, past the end. It cannot enter a consumed value -- not by policy, by
+    construction.
+
+    ⚠ THE `src >= 0` GUARD BELOW IS LOAD-BEARING **HERE AND NOWHERE ELSE**.
+    Mutation-tested on the TS side 2026-08-18: removing it changes nothing in
+    JavaScript, because Float64Array[-1] is `undefined` and assigning that writes
+    NaN -- an equivalent mutant no TS test can kill. In NumPy `closed[-1]` WRAPS
+    to the LAST element, which is the FORMING bucket's partial aggregate, so
+    dropping the guard here would read the forming bucket into the kernel window
+    and silently violate the one property this design exists to guarantee. Do not
+    "simplify" it away.
+
+    Mirror: htf-resample.ts alignHtfInnerRange.
+    """
+    closed = agg[source]
+    shifted = np.full(count, np.nan, dtype=float)
+    for j in range(count):
+        src = j - source_offset
+        if src >= 0:
+            shifted[j] = closed[src]
+    kernel_arr = invoke_kernel(fn, [shifted, int(length)])
+    align_closed_into(kernel_arr, bucket_index, result_offset, out, frm, to)
 
 
 def align_closed(closed_agg, bucket_index, offset: int):

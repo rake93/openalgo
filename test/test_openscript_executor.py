@@ -1105,3 +1105,127 @@ def test_timeframe_in_seconds_converts_a_duration_to_a_bar_count():
     """The recorded G2 use case: 'how many bars in 30 minutes on this chart'."""
     values = np.asarray(_line(_run('indicator("x")\nplot(1800 / timeframe.in_seconds)', _spaced_dataset(300))))
     assert values[0] == 6.0
+
+
+# ── HTF inner ta.* — values (design §4), the Python mirror of
+#    openalgo-openscript/tests/htf-executor.test.ts "executor htf inner ta.*"
+#
+# 3 IST days x 3 hourly bars, so the DAILY closed aggregates are
+# high = [13, 23, 33] and low = [1, 4, 7] -- the expectations below are derived
+# from those, not read off the engine.
+#
+# ONE CASE HERE EXISTS ONLY FOR PYTHON. `_align_htf_inner_range`'s `src >= 0`
+# guard is an EQUIVALENT MUTANT in TypeScript (Float64Array[-1] is undefined and
+# assigning it writes NaN), so no TS test can kill it. In NumPy `closed[-1]`
+# WRAPS to the last element -- the FORMING bucket's partial aggregate -- so
+# without the guard the kernel window would silently include the forming bucket.
+# `test_the_forming_bucket_cannot_reach_a_consumed_value` is what kills that
+# mutant, and it can only be written on this side.
+
+_HTF_DAY = 86_400
+
+
+def _htf_inner_dataset(highs=None):
+    """3 IST days x 3 hourly bars; +19800 puts 04:00-06:00 UTC inside the IST day."""
+    times = []
+    for d in range(3):
+        for h in (4, 5, 6):
+            times.append(d * _HTF_DAY + h * 3600)
+    h = highs if highs is not None else [11, 12, 13, 21, 22, 23, 31, 32, 33]
+    return {
+        "time": np.asarray(times, dtype=float),
+        "open": np.asarray([10, 10, 10, 20, 20, 20, 30, 30, 30], dtype=float),
+        "high": np.asarray(h, dtype=float),
+        "low": np.asarray([1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=float),
+        "close": np.asarray([10, 11, 12, 20, 21, 22, 30, 31, 32], dtype=float),
+        "volume": np.asarray([1] * 9, dtype=float),
+    }
+
+
+def _htf_inner_plot(src, ds=None, inputs=None):
+    return _line(_run(src, ds if ds is not None else _htf_inner_dataset(), inputs))
+
+
+def test_htf_inner_highest_over_closed_buckets():
+    """shifted = [nan, 13, 23]; highest(.,2) = [nan, nan, 23]; constant per bucket."""
+    vals = _htf_inner_plot(
+        'plot(request.security(syminfo.tickerid,"D",ta.highest(high[1],2)))'
+    )
+    assert all(math.isnan(v) for v in vals[:6])
+    assert list(vals[6:]) == [23.0, 23.0, 23.0]
+
+
+def test_htf_inner_length_one_reads_the_previous_bucket():
+    vals = _htf_inner_plot(
+        'plot(request.security(syminfo.tickerid,"D",ta.highest(high[1],1)))'
+    )
+    assert all(math.isnan(v) for v in vals[:3])
+    assert list(vals[3:]) == [13.0, 13.0, 13.0, 23.0, 23.0, 23.0]
+
+
+def test_htf_inner_lowest_reads_the_low_aggregates():
+    """Non-vacuity for the `fn` field: a highest/lowest swap survives any test
+    that only ever asks for one of them."""
+    vals = _htf_inner_plot('plot(request.security(syminfo.tickerid,"D",ta.lowest(low[1],1)))')
+    assert list(vals[3:]) == [1.0, 1.0, 1.0, 4.0, 4.0, 4.0]
+
+
+def test_htf_inner_result_offset_gathers_an_earlier_bucket():
+    vals = _htf_inner_plot(
+        'plot(request.security(syminfo.tickerid,"D",ta.highest(high[1],1)[1]))'
+    )
+    assert all(math.isnan(v) for v in vals[:6])
+    assert list(vals[6:]) == [13.0, 13.0, 13.0]
+
+
+def test_htf_inner_source_offset_two_reaches_two_buckets_back():
+    vals = _htf_inner_plot(
+        'plot(request.security(syminfo.tickerid,"D",ta.highest(high[2],1)))'
+    )
+    assert all(math.isnan(v) for v in vals[:6])
+    assert list(vals[6:]) == [13.0, 13.0, 13.0]
+
+
+def test_htf_inner_on_timeframe_identity():
+    """tf == base reduces to the base-space kernel, which is what lets a port
+    delete its `timeframe.period == TF` guard branches (design §11)."""
+    htf = _htf_inner_plot('plot(request.security(syminfo.tickerid,"60",ta.highest(high[1],2)))')
+    base = _htf_inner_plot("plot(ta.highest(high[1],2))")
+    assert [None if math.isnan(v) else v for v in htf] == [
+        None if math.isnan(v) else v for v in base
+    ]
+
+
+def test_the_forming_bucket_cannot_reach_a_consumed_value():
+    """THE FINALITY PROOF, and the case that kills a mutant TypeScript cannot.
+
+    The forming bucket's partial aggregate sits at aggClosed[K-1]; with n >= 1 it
+    would land at shifted index K-1+n, past the end. Mutating ONLY the forming
+    bucket's bars must therefore change nothing. Drop the `src >= 0` guard in
+    `align_htf_inner_range` and NumPy's closed[-1] wraps to exactly that partial
+    aggregate, so this assertion fails -- which is the whole reason it exists on
+    this side.
+    """
+    src = 'plot(request.security(syminfo.tickerid,"D",ta.highest(high[1],2)))'
+    base = _htf_inner_plot(src)
+    moved = _htf_inner_plot(src, _htf_inner_dataset([11, 12, 13, 21, 22, 23, 999, 999, 999]))
+    assert [None if math.isnan(v) else v for v in moved] == [
+        None if math.isnan(v) else v for v in base
+    ]
+
+
+def test_mutating_a_closed_bucket_does_change_the_output():
+    """Non-vacuity for the proof above: an implementation that ignored the source
+    entirely would satisfy it."""
+    src = 'plot(request.security(syminfo.tickerid,"D",ta.highest(high[1],2)))'
+    moved = _htf_inner_plot(src, _htf_inner_dataset([11, 12, 13, 21, 22, 999, 31, 32, 33]))
+    assert moved[8] == 999.0
+
+
+def test_htf_inner_input_bound_length_resolves_from_the_runtime_value():
+    src = (
+        'n = input.int(2, "L", minval=1, maxval=10)\n'
+        'plot(request.security(syminfo.tickerid,"D",ta.highest(high[1],n)))'
+    )
+    assert _htf_inner_plot(src, None, {"n": 1})[5] == 13.0
+    assert math.isnan(_htf_inner_plot(src, None, {"n": 2})[5])

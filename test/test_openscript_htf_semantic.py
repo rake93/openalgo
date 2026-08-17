@@ -115,12 +115,11 @@ def test_valid_htf_source_expressions(expr):
 
 @pytest.mark.parametrize(
     "expr",
-    ["ta.ema(close, 9)", "close + 1", "1", '"close"', "bar_index"],
-    ids=["ta-call", "arithmetic", "number", "string", "context-series"],
+    ["close + 1", "1", '"close"', "bar_index"],
+    ids=["arithmetic", "number", "string", "context-series"],
 )
 def test_os2027_rejects_a_non_source_expression(expr):
-    """Inner `ta.*` on an HTF series is explicitly out of scope for v1, so
-    `ta.ema(close, 9)` must be rejected rather than silently resampled."""
+    """OS2027 stays the FALLBACK for genuinely arbitrary expressions."""
     assert "OS2027" in _codes(f'x = request.security(syminfo.tickerid, "60", {expr})\nplot(x)\n')
 
 
@@ -134,9 +133,11 @@ def test_the_tuple_array_form_is_accepted():
     assert "OS2027" not in _codes(src)
 
 
-def test_os2027_rejects_a_bad_element_inside_the_array_form():
+def test_os2034_rejects_a_bad_element_inside_the_array_form():
+    """The tuple path must agree with the single form -- both route through one
+    `_admit_htf_source`, which is why they cannot disagree."""
     src = '[h, x] = request.security(syminfo.tickerid, "60", [high, ta.ema(close, 9)])\nplot(h)\nplot(x)\n'
-    assert "OS2027" in _codes(src)
+    assert "OS2034" in _codes(src)
 
 
 # ── OS2028: lookahead ──────────────────────────────────────────────────────
@@ -226,3 +227,13 @@ def test_no_output_node_is_ever_a_bare_const_na_for_a_valid_htf_call():
             f"the plotted node is {node['op']} (value={node.get('value')!r}), not htf — "
             "the request.security lowering is being bypassed and this plot is silently na"
         )
+
+
+def test_os2034_rejects_a_ta_call_outside_the_inner_allowlist():
+    """Was OS2027 until 2026-08-18. `ta.ema(...)` is no longer an "arbitrary
+    expression": it is a RECOGNISED kernel the v1 inner subset declines, and
+    OS2034 names the admitted set instead of leaving the author to guess. The
+    parametrised OS2027 cases above are the non-vacuity proof that the fallback
+    still fires."""
+    src = 'x = request.security(syminfo.tickerid, "60", ta.ema(close, 9))\nplot(x)\n'
+    assert "OS2034" in _codes(src)

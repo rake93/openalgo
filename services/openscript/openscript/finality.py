@@ -220,7 +220,18 @@ def analyze_finality(ir: dict) -> list[Diagnostic]:
             # the HTF bucket boundary, not after a fixed number of base bars, so
             # there is no constant to report. This is the first genuinely variable
             # delay in the corpus -- a pivot's delay is a constant `rightbars`.
-            if node["offset"] == 0:
+            # The MINIMUM offset this node reads in HTF space. Without `inner`
+            # that is just `offset`. With it, the kernel reads `sourceOffset`
+            # buckets back BEFORE the result offset applies, and v1 admits no
+            # offset-0 inner -- so an inner node is confirmed always (design §7).
+            # Written as the general expression rather than an `inner ⇒ confirmed`
+            # special case, so the arm is already correct if an offset-0 inner is
+            # ever admitted. Mirror: finality.ts minReadOffset.
+            _inner = node.get("inner")
+            _min_read_offset = int(node["offset"]) + (
+                int(_inner["sourceOffset"]) if _inner is not None else 0
+            )
+            if _min_read_offset == 0:
                 f = "provisional"
                 sources = sources + [
                     {

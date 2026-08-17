@@ -135,6 +135,11 @@ def _admit_node_structure(ir: dict, errors: list[dict]) -> None:
 def _admit_node_references(ir: dict, errors: list[dict]) -> None:
     """Node-to-node and node-to-input wiring."""
     declared_inputs = _declared_input_ids(ir)
+    # Declared features are read here too: `htf.inner` is a gated FIELD on a
+    # node, the same shape `track` is on an output.
+    _header = ir.get("header")
+    _req = _header.get("requiredFeatures") if isinstance(_header, dict) else None
+    declared_features = {str(f) for f in _req} if isinstance(_req, list) else set()
     # Input id -> declared type, for the session `field` gate below.
     decl_type_by_id = {
         str(d.get("id")): str(d.get("type")) for d in ir.get("inputs", []) if isinstance(d, dict)
@@ -227,6 +232,43 @@ def _admit_node_references(ir: dict, errors: list[dict]) -> None:
                     "detail": str(node.get("timeframeInputId")),
                 }
             )
+        if node.get("op") == "htf" and isinstance(node.get("inner"), dict):
+            inner = node["inner"]
+            # A gated FIELD, not a gated node kind: an `htf` node alone rides
+            # `request-security`, but an `inner` descriptor on one needs
+            # `request-security-inner-ta` DECLARED.
+            if "request-security-inner-ta" not in declared_features:
+                errors.append(
+                    {
+                        "code": "IR_FEATURE_NOT_DECLARED",
+                        "message": (
+                            f"node {node_id} carries an inner ta descriptor without "
+                            "feature 'request-security-inner-ta'"
+                        ),
+                        "detail": "request-security-inner-ta",
+                    }
+                )
+            # Shape validation, because the compiler gate protects SOURCE and this
+            # protects hand-built IR. `sourceOffset >= 1` is the one that matters:
+            # it is what keeps the forming bucket out of every consumed value, so
+            # an offset-0 descriptor must never execute even if someone forges it.
+            if inner.get("fn") not in ("highest", "lowest"):
+                bad_ref(node_id, "inner.fn", inner.get("fn"))
+            so = inner.get("sourceOffset")
+            if not isinstance(so, (int, float)) or isinstance(so, bool) or so < 1:
+                bad_ref(node_id, "inner.sourceOffset", so)
+            ln = inner.get("length")
+            if not isinstance(ln, (int, float)) or isinstance(ln, bool) or ln < 1:
+                bad_ref(node_id, "inner.length", ln)
+            lid = inner.get("lengthInputId")
+            if lid is not None and str(lid) not in declared_inputs:
+                errors.append(
+                    {
+                        "code": "IR_BAD_INPUT_REF",
+                        "message": f"node {node_id} inner length reads undeclared input '{lid}'",
+                        "detail": str(lid),
+                    }
+                )
         if node.get("op") == "scan":
             node_inputs = node.get("inputs")
             arity = len(node_inputs) if isinstance(node_inputs, list) else 0
@@ -352,8 +394,12 @@ _KNOWN_OUTPUT_KINDS = frozenset(
 # than its spawn bar. Unlike an additive style field a runtime may safely ignore,
 # ignoring THIS one pins the level to its spawn bar and draws a silently wrong
 # chart -- which is what feature negotiation exists to refuse.
+# `request-security-inner-ta` (design §6): a kernel evaluated over the CLOSED
+# per-bucket aggregates. A runtime that ignored the `inner` descriptor would serve
+# the raw source series in place of the kernel -- silent wrong values, the C5
+# class -- so it rides feature negotiation rather than being additive-optional.
 SUPPORTED_FEATURES: frozenset[str] = frozenset(
-    {"drawing-streams", "request-security", "drawing-track"}
+    {"drawing-streams", "request-security", "drawing-track", "request-security-inner-ta"}
 )
 
 # Output kinds gated behind an IR feature — mirror of the TS GATED_OUTPUT_FEATURE.

@@ -283,6 +283,8 @@ def _required_features(gen) -> list[str]:
         features.append("request-security")
     if gen._uses_tracking:
         features.append("drawing-track")
+    if gen._uses_htf_inner_ta:
+        features.append("request-security-inner-ta")
     return features
 
 
@@ -323,6 +325,9 @@ class IRGenerator:
         # `_uses_drawings` because a tracked level needs BOTH: the kind rides
         # `drawing-streams`, the field rides this.
         self._uses_tracking = False
+        # Set when an `htf` node carries an `inner` descriptor -- drives the
+        # `request-security-inner-ta` requiredFeatures flag (design §6).
+        self._uses_htf_inner_ta = False
 
     # ── node emission (CSE) ─────────────────────────────────────────────────────
 
@@ -1404,6 +1409,52 @@ class IRGenerator:
                     }
         return {"timeframe": fallback}
 
+    def _htf_inner_descriptor(self, e):
+        """Read an inner-`ta.*` descriptor off a `ta.highest(S[n], L)` call, or
+        None when the expression is a plain source.
+
+        FIELD ORDER IS CONTRACTUAL -- fn, sourceOffset, length, lengthInputId --
+        because the TS ir-gen serialises the same object and the shared IR
+        fixtures compare bytes rather than parsed values.
+        """
+        if e is None or e.type != "Call" or getattr(e.callee, "type", None) != "Member":
+            return None
+        fn = e.callee.property
+        if fn not in ("highest", "lowest"):
+            return None
+        args = [a for a in e.args if a.name is None]
+        if len(args) != 2:
+            return None
+        src_expr = args[0].value
+        if src_expr is None or src_expr.type != "Index":
+            return None
+        if getattr(src_expr.object, "type", None) != "Identifier":
+            return None
+        # int() on every numeric: the lexer floats EVERY literal, so `high[1]`
+        # arrives as 1.0 and a float would serialize as 1.0 against the TS 1.
+        source_offset = int(_resolve_const(src_expr.index))
+        len_expr = args[1].value
+        const_len = _resolve_const(len_expr) if len_expr is not None else None
+        length_input_id = None
+        if isinstance(const_len, (int, float)) and not isinstance(const_len, bool):
+            length = int(const_len)
+        else:
+            # The same resolution path `_lower_hist` uses for an input-bound
+            # history offset. The declared default is baked as the fallback so
+            # stored IR stays executable; the runtime value wins at execution.
+            name = len_expr.name if len_expr is not None and len_expr.type == "Identifier" else ""
+            bound = self._resolve_var(name) if name else None
+            decl = None
+            if bound is not None and self._nodes[bound].get("op") == "input":
+                input_id = self._nodes[bound]["inputId"]
+                decl = next((d for d in self._inputs if d["id"] == input_id), None)
+            length = int(decl["defaultValue"]) if decl is not None else 0
+            length_input_id = decl["id"] if decl is not None else name
+        inner = {"fn": fn, "sourceOffset": source_offset, "length": length}
+        if length_input_id is not None:
+            inner["lengthInputId"] = length_input_id
+        return (src_expr.object.name, inner)
+
     def _htf_node_for(self, source_expr, tf: dict, span) -> int:
         """Emit one `htf` node for `source` or `source[n]`.
 
@@ -1417,6 +1468,21 @@ class IRGenerator:
             idx = getattr(src, "index", None)
             offset = int(idx.value) if idx is not None and idx.type == "Number" else 0
             src = src.object
+        # An inner `ta.*` call sits where a bare source would. The index unwrapped
+        # above is then the RESULT offset `m` rather than a source offset, and the
+        # kernel's own `S[n]` is read from inside the call -- semantic already
+        # guaranteed n >= 1 and a priceable length (OS2034/OS2035).
+        inner_desc = self._htf_inner_descriptor(src)
+        if inner_desc is not None:
+            self._uses_htf_inner_ta = True
+            inner_source, inner = inner_desc
+            node = {"op": "htf", "timeframe": tf["timeframe"]}
+            if "timeframeInputId" in tf:
+                node["timeframeInputId"] = tf["timeframeInputId"]
+            node["source"] = inner_source
+            node["offset"] = offset
+            node["inner"] = inner
+            return self._emit(node, span, 0)
         source = src.name if src is not None and src.type == "Identifier" else "close"
         node = {"op": "htf", "timeframe": tf["timeframe"], "source": source, "offset": offset}
         if "timeframeInputId" in tf:
