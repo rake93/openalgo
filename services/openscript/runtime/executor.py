@@ -1127,8 +1127,27 @@ def _materialize_drawing(
             # skip the object gracefully in BOTH runtimes (never crash; Fable #5).
             if not math.isfinite(spawn_time):
                 continue
-            price = _sample_at(price_v, s)
-            edge = _resolve_right_edge(o, s, price, price, dataset, n, calendar, values)
+            tracks = o.get("track") is True
+            spawn_price = _sample_at(price_v, s)
+            # ORDER IS LOAD-BEARING. A tracked sample bar comes from the right
+            # edge, but `_resolve_right_edge` CONSUMES a price to evaluate its
+            # terminate predicate -- so the edge resolves from the SPAWN price
+            # and the tracked value is read after. That is sound only because
+            # OS2033 rejects every price-reading predicate under `track=`
+            # (G-LIVE §2.2): relax that rule and this becomes a circular sample.
+            edge = _resolve_right_edge(o, s, spawn_price, spawn_price, dataset, n, calendar, values)
+            # Tracked: sample at the object's own right edge, clamped into the
+            # dataset -- an `extend.bars` end still in the future reads the live
+            # bar until history reaches it. Untracked: the spawn bar, frozen.
+            sample_bar = min(edge["x2bar"], n - 1) if tracks else s
+            price = _sample_at(price_v, sample_bar) if tracks else spawn_price
+            # An `na` tracked sample DROPS the item rather than inventing a level
+            # for it -- the marker-price rule, and Pine's own behaviour
+            # (`f_line_session` deletes the line when y is na). Tracked-ONLY: an
+            # untracked na price is shipped behaviour, and widening the rule to
+            # it would change every existing fixture.
+            if tracks and not math.isfinite(price):
+                continue
             off = _resolve_offset(o, offset, s, values)
             if budget is not None:
                 budget.charge(DRAW_OBJECT_WEIGHT * (edge["objBars"] + _sampled_span(o, off)))
@@ -1139,9 +1158,14 @@ def _materialize_drawing(
                 "price": price,
                 "open": edge["open"],
             }
+            if tracks:
+                item["tracks"] = True
             label = o.get("label")
             if label and labels_visible and (not o.get("labelLatestOnly") or k == len(spawns) - 1):
-                item["label"] = _render_draw_text(label, s, values)
+                # The label describes the TRACKED state, so its args sample at
+                # the same bar as the price. A frozen label over a moving line
+                # prints a stale number.
+                item["label"] = _render_draw_text(label, sample_bar, values)
             items.append(item)
         # Built key by key rather than copied: the IR style also carries the G8
         # colorInputId, which is COMPILE-side binding metadata and must not reach

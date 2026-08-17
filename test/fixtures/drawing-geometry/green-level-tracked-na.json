@@ -1,0 +1,64 @@
+{
+  "name": "green-level-tracked-na",
+  "note": "G-LIVE §2.1 na policy. The price series is finite at the spawn bar (13) and na at the bar the tracked sample reads, so the item DROPS rather than drawing a fabricated level — the marker-price rule, applied to tracked levels only. The empty item list IS the assertion: an implementation that kept the item reports one, and one that read na and crashed fails loudly. The untracked half of this pair lives in tests/tracked-levels.test.ts, where the same program still draws.",
+  "instrument": {
+    "exchange": "NSE",
+    "symbol": "SBIN"
+  },
+  "inputs": {},
+  "source": "indicator(\"T\", shorttitle=\"T\", overlay=true)\nplotlevel(bar_index == 1, bar_index == 4 ? na : high, \"TR\", track=true, extend=extend.lastbar, max_kept=1)",
+  "ir": null,
+  "bars": {
+    "time": [
+      1784782800,
+      1784782860,
+      1784782920,
+      1784782980,
+      1784783040
+    ],
+    "open": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "high": [
+      11,
+      13,
+      12,
+      19,
+      17
+    ],
+    "low": [
+      9,
+      11,
+      10,
+      17,
+      15
+    ],
+    "close": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "volume": [
+      100,
+      100,
+      100,
+      100,
+      100
+    ]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "TR",
+        "items": []
+      }
+    ]
+  }
+}

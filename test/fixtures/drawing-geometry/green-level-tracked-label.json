@@ -1,0 +1,72 @@
+{
+  "name": "green-level-tracked-label",
+  "note": "G-LIVE §2.1. A tracked label's template args sample at the SAME bar as the price, so the text cannot print a stale number. {price} over high[4]=17 renders '17.00' (formatDrawNumber's two-decimal, round-half-even form); an untracked label would read 'H 13.00'.",
+  "instrument": {
+    "exchange": "NSE",
+    "symbol": "SBIN"
+  },
+  "inputs": {},
+  "source": "indicator(\"T\", shorttitle=\"T\", overlay=true)\nplotlevel(bar_index == 1, high, \"TR\", track=true, extend=extend.lastbar, max_kept=1, label=\"H {price}\")",
+  "ir": null,
+  "bars": {
+    "time": [
+      1784782800,
+      1784782860,
+      1784782920,
+      1784782980,
+      1784783040
+    ],
+    "open": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "high": [
+      11,
+      13,
+      12,
+      19,
+      17
+    ],
+    "low": [
+      9,
+      11,
+      10,
+      17,
+      15
+    ],
+    "close": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "volume": [
+      100,
+      100,
+      100,
+      100,
+      100
+    ]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "TR",
+        "items": [
+          {
+            "x1bar": 1,
+            "x2bar": 4,
+            "price": 17,
+            "open": true,
+            "label": "H 17.00"
+          }
+        ]
+      }
+    ]
+  }
+}

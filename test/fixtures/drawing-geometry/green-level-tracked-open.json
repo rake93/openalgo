@@ -1,0 +1,72 @@
+{
+  "name": "green-level-tracked-open",
+  "note": "G-LIVE §2.1. An OPEN tracked level (extend.lastbar with max_kept=1, the pair OS2033 admits) samples the LAST bar, not its spawn bar. high[1]=13 at spawn and high[4]=17 at the last bar, so a sample-at-spawn mutant reports 13 and dies here by construction.",
+  "instrument": {
+    "exchange": "NSE",
+    "symbol": "SBIN"
+  },
+  "inputs": {},
+  "source": "indicator(\"T\", shorttitle=\"T\", overlay=true)\nplotlevel(bar_index == 1, high, \"TR\", track=true, extend=extend.lastbar, max_kept=1)",
+  "ir": null,
+  "bars": {
+    "time": [
+      1784782800,
+      1784782860,
+      1784782920,
+      1784782980,
+      1784783040
+    ],
+    "open": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "high": [
+      11,
+      13,
+      12,
+      19,
+      17
+    ],
+    "low": [
+      9,
+      11,
+      10,
+      17,
+      15
+    ],
+    "close": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "volume": [
+      100,
+      100,
+      100,
+      100,
+      100
+    ]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "TR",
+        "items": [
+          {
+            "x1bar": 1,
+            "x2bar": 4,
+            "price": 17,
+            "open": true,
+            "label": null
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -25,6 +25,7 @@ from .builtins_table import (
     INPUT_FUNCTIONS,
     INPUT_NAMED_ARGS,
     KERNELS_FUNCTIONS,
+    LEVEL_DEFAULT_MAX_KEPT,
     MATH_FUNCTIONS,
     NAMED_ARGS,
     OUTPUT_FUNCTIONS,
@@ -611,6 +612,58 @@ class Analyzer:
                 self._error(
                     "OS2023", visible_arg.span, f"{visible_name}= requires a {text_name}= to gate"
                 )
+        # G-LIVE: `track=true` samples the price at the object's RIGHT EDGE, so
+        # it is admitted only with a lifetime that reads no price (design §2.2).
+        # These rules are load-bearing for CORRECTNESS, not just author guidance:
+        # the materializer resolves the right edge from the SPAWN price and
+        # re-samples afterwards, which is a circular sample the moment a
+        # predicate reads the tracked value.
+        #
+        # LEVEL-ONLY, and the `fn` guard is what keeps it to ONE diagnostic per
+        # mistake: `plotzone` does not declare `track=` at all, so OS2010 already
+        # rejects it precisely. Without the guard a tracked zone reported OS2010
+        # AND OS2033 -- a precise code plus a vaguer one about lifetimes, for an
+        # argument that does not exist there.
+        track_arg = self._named_arg_value(call, "track") if fn == "plotlevel" else None
+        if track_arg is not None:
+            if track_arg.type != "Bool":
+                # Const-only, and an `input.bool` is NOT a const: both rules
+                # below are validated at COMPILE time, so a runtime flip would
+                # enter the tracked path with an unchecked lifetime.
+                self._error("OS2023", track_arg.span, "track= must be a bool literal")
+            elif track_arg.value is True:
+                term_arg = self._named_arg_value(call, "terminate")
+                terminate_member = None if term_arg is None else self._enum_member(term_arg)
+                if terminate_member is not None and terminate_member != "new_session":
+                    # A price predicate against a tracked level is vacuous or
+                    # degenerate in every combination: `close_above` a tracked
+                    # running high can NEVER fire (close <= high <= runningHigh),
+                    # and `touch` against the running extremum fires EVERY bar.
+                    self._error(
+                        "OS2033",
+                        track_arg.span,
+                        f"track= cannot be combined with terminate.{terminate_member} — a price "
+                        "predicate would chase its own target. Use terminate.new_session, "
+                        "extend.bars, or extend.lastbar with max_kept=1",
+                    )
+                if extend_mode == "lastbar":
+                    max_kept = self._numeric_arg_value(call, "max_kept")
+                    effective = LEVEL_DEFAULT_MAX_KEPT if max_kept is None else max_kept
+                    # The Python lexer floats every numeric literal, so compare
+                    # numerically rather than against an int -- `max_kept=1`
+                    # arrives as 1.0 (the standing int/float trap, C5/N-integer).
+                    if float(effective) != 1.0:
+                        # An open-forever object tracks forever, so with
+                        # max_kept > 1 every HISTORICAL object would read the live
+                        # bar's value -- a plainly wrong chart. max_kept=1 is
+                        # exactly Pine's single-reused-line display.
+                        shown = int(effective) if float(effective).is_integer() else effective
+                        self._error(
+                            "OS2033",
+                            track_arg.span,
+                            f"track= with extend.lastbar requires max_kept=1 (got {shown}) — "
+                            "otherwise every historical object reads the live bar",
+                        )
 
     def _named_arg_value(self, call: ast.CallExpr, name: str):
         """The value expression of a named argument, if present."""

@@ -31,7 +31,13 @@ from ..runtime.session_string import (
 # so lowering can never produce a timeframe the executor cannot bucket (register C4).
 from ..runtime.timeframe import parse_timeframe
 from . import ast_nodes as ast
-from .builtins_table import CONTEXT_MEMBERS, KERNELS_FUNCTIONS, TA_FUNCTIONS, ta_overload
+from .builtins_table import (
+    CONTEXT_MEMBERS,
+    KERNELS_FUNCTIONS,
+    LEVEL_DEFAULT_MAX_KEPT,
+    TA_FUNCTIONS,
+    ta_overload,
+)
 from .diagnostics import Diagnostic, Span, make_diagnostic
 from .input_defval import defval_of
 from .stdlib import stdlib_function
@@ -275,6 +281,8 @@ def _required_features(gen) -> list[str]:
         features.append("drawing-streams")
     if gen._uses_request_security:
         features.append("request-security")
+    if gen._uses_tracking:
+        features.append("drawing-track")
     return features
 
 
@@ -310,6 +318,11 @@ class IRGenerator:
         # `drawing-streams` requiredFeatures flag (design 0.5 §8).
         self._uses_drawings = False
         self._uses_request_security = False
+        # Set when a `track=true` level is lowered -- drives the `drawing-track`
+        # requiredFeatures flag (G-LIVE design §4). Separate from
+        # `_uses_drawings` because a tracked level needs BOTH: the kind rides
+        # `drawing-streams`, the field rides this.
+        self._uses_tracking = False
 
     # ── node emission (CSE) ─────────────────────────────────────────────────────
 
@@ -959,7 +972,7 @@ class IRGenerator:
             "offset": self._draw_num(call, "offset", 0),
             "rightPad": self._draw_num(call, "right_pad", 0),
             "extend": extend,
-            "maxKept": self._draw_max_kept(call, 20),
+            "maxKept": self._draw_max_kept(call, LEVEL_DEFAULT_MAX_KEPT),
             "labelLatestOnly": self._const_arg(call, None, "label_latest_only") is True,
         }
         _off_node = self._draw_offset_node(call)
@@ -969,6 +982,14 @@ class IRGenerator:
         if _bars_node is not None:
             out["barsNodeId"] = _bars_node
         self._apply_extend_args(out, call, extend)
+        # G-LIVE: absent when false, so an untracked level's IR stays
+        # byte-identical to what it was before this feature existed. Semantic has
+        # already refused every lifetime that reads a price (OS2033) and every
+        # non-literal value (OS2023), so reaching here means the tracked sample
+        # is well-founded.
+        if self._const_arg(call, None, "track") is True:
+            out["track"] = True
+            self._uses_tracking = True
         # G6: a const `label_visible=false` folds the label away entirely; an
         # input.bool binding rides alongside the label for render-time gating.
         hidden, visible_input_id = self._visibility_binding(call, "label_visible")

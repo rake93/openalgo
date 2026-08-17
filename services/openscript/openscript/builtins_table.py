@@ -261,6 +261,12 @@ CONTEXT_MEMBERS: dict[str, dict[str, str]] = {
     "timeframe": {"in_seconds": "timeframe_in_seconds"},
 }
 
+# `plotlevel`'s `max_kept` default. Shared by the OS2033 lifetime check and the
+# lowering so the two cannot disagree about what "no max_kept=" means -- the N16
+# lesson, where a default duplicated between a validator and a lowering degraded
+# three separate ways in silence. Mirror: builtins-table.ts LEVEL_DEFAULT_MAX_KEPT.
+LEVEL_DEFAULT_MAX_KEPT = 20
+
 NAMED_ARGS: dict[str, frozenset[str]] = {
     "indicator": frozenset({"title", "shorttitle", "overlay"}),
     "plot": frozenset({"title", "color", "linewidth", "style"}),
@@ -288,6 +294,10 @@ NAMED_ARGS: dict[str, frozenset[str]] = {
         # G6: a bool literal or an `input.bool`, gating ONLY the label — gating
         # the spawn condition would hide the line the label belongs to.
         "label_visible",
+        # G-LIVE: a const bool. Level-only in v1 -- `plotzone` deliberately does
+        # NOT list it, so a tracked zone is OS2010 rather than a silently
+        # ignored word. That is the whole cost of keeping the door shut.
+        "track",
     }),
     "plotzone": frozenset({
         "title", "color", "border_color", "border_style", "offset", "right_pad",

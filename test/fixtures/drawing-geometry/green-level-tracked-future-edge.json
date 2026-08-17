@@ -1,0 +1,72 @@
+{
+  "name": "green-level-tracked-future-edge",
+  "note": "G-LIVE §5. A right edge the dataset has NOT reached: extend.bars from bar 3 with bars=4 lands at x2bar=7 while the last bar is 4. `open` is false, but x2.time is null, so the object is NOT committed and the tracked sample clamps to the last bar (17) rather than reading out of range. This is the fixture that pins the `!open && x2.time !== null` conjunction — the `||` mutant commits here and freezes a price that is still riding.",
+  "instrument": {
+    "exchange": "NSE",
+    "symbol": "SBIN"
+  },
+  "inputs": {},
+  "source": "indicator(\"T\", shorttitle=\"T\", overlay=true)\nplotlevel(bar_index == 3, high, \"TR\", track=true, extend=extend.bars, bars=4)",
+  "ir": null,
+  "bars": {
+    "time": [
+      1784782800,
+      1784782860,
+      1784782920,
+      1784782980,
+      1784783040
+    ],
+    "open": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "high": [
+      11,
+      13,
+      12,
+      19,
+      17
+    ],
+    "low": [
+      9,
+      11,
+      10,
+      17,
+      15
+    ],
+    "close": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "volume": [
+      100,
+      100,
+      100,
+      100,
+      100
+    ]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "TR",
+        "items": [
+          {
+            "x1bar": 3,
+            "x2bar": 7,
+            "price": 17,
+            "open": false,
+            "label": null
+          }
+        ]
+      }
+    ]
+  }
+}

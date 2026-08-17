@@ -348,7 +348,13 @@ _KNOWN_OUTPUT_KINDS = frozenset(
 # (Pri 4) — the level/zone materializer (executor._materialize_drawing) now
 # executes, so a well-formed drawing IR ADMITS + materializes. Mirror of the TS
 # SUPPORTED_FEATURES.
-SUPPORTED_FEATURES: frozenset[str] = frozenset({"drawing-streams", "request-security"})
+# `drawing-track` (G-LIVE): a level whose price samples at its RIGHT EDGE rather
+# than its spawn bar. Unlike an additive style field a runtime may safely ignore,
+# ignoring THIS one pins the level to its spawn bar and draws a silently wrong
+# chart -- which is what feature negotiation exists to refuse.
+SUPPORTED_FEATURES: frozenset[str] = frozenset(
+    {"drawing-streams", "request-security", "drawing-track"}
+)
 
 # Output kinds gated behind an IR feature — mirror of the TS GATED_OUTPUT_FEATURE.
 _GATED_OUTPUT_FEATURE = {"level": "drawing-streams", "zone": "drawing-streams"}
@@ -468,6 +474,22 @@ def admit_ir(ir: dict) -> list[dict]:
                     "code": "IR_FEATURE_NOT_DECLARED",
                     "message": f"output kind '{o.get('kind')}' requires feature '{feat}' to be declared",
                     "detail": o.get("kind"),
+                }
+            )
+        # A gated FIELD rather than a gated kind (G-LIVE §4): a `level` alone
+        # needs only `drawing-streams`, but `track: true` on one needs
+        # `drawing-track` DECLARED. Server-recompiled IR always declares it;
+        # only a hand-forged document trips this.
+        if (
+            isinstance(o, dict)
+            and o.get("track") is True
+            and "drawing-track" not in declared_features
+        ):
+            errors.append(
+                {
+                    "code": "IR_FEATURE_NOT_DECLARED",
+                    "message": "output field 'track' requires feature 'drawing-track' to be declared",
+                    "detail": "track",
                 }
             )
     return errors

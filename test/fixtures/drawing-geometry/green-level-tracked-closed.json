@@ -1,0 +1,72 @@
+{
+  "name": "green-level-tracked-closed",
+  "note": "G-LIVE §2.1. A CLOSED tracked level freezes at its RIGHT-EDGE bar. extend.bars with bars=2 spawns at 1 and ends at 3, so the price is high[3]=19 — neither the spawn value (13) nor the last bar's (17). Three distinct values kill both wrong-bar mutants with one fixture.",
+  "instrument": {
+    "exchange": "NSE",
+    "symbol": "SBIN"
+  },
+  "inputs": {},
+  "source": "indicator(\"T\", shorttitle=\"T\", overlay=true)\nplotlevel(bar_index == 1, high, \"TR\", track=true, extend=extend.bars, bars=2)",
+  "ir": null,
+  "bars": {
+    "time": [
+      1784782800,
+      1784782860,
+      1784782920,
+      1784782980,
+      1784783040
+    ],
+    "open": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "high": [
+      11,
+      13,
+      12,
+      19,
+      17
+    ],
+    "low": [
+      9,
+      11,
+      10,
+      17,
+      15
+    ],
+    "close": [
+      10,
+      12,
+      11,
+      18,
+      16
+    ],
+    "volume": [
+      100,
+      100,
+      100,
+      100,
+      100
+    ]
+  },
+  "expect": {
+    "drawings": [
+      {
+        "kind": "levels",
+        "title": "TR",
+        "items": [
+          {
+            "x1bar": 1,
+            "x2bar": 3,
+            "price": 19,
+            "open": false,
+            "label": null
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -52,12 +52,24 @@ def _signature(item: dict) -> str:
     so it never drifts; a not-yet-reached extend.bars end commits (one update) only
     once history covers it. Frozen values/label/mitigation/open always included."""
     open_ = item["open"]
-    right_edge = "proj" if (open_ or item["x2"]["time"] is None) else str(item["x2"]["time"])
+    committed = (not open_) and item["x2"]["time"] is not None
+    right_edge = str(item["x2"]["time"]) if committed else "proj"
     parts: list = [item["id"], open_, right_edge]
     if _is_zone(item):
         parts += ["z", item["top"], item["bottom"], item.get("mitigated") is True, _text_part(item.get("text"))]
     else:
-        parts += ["l", item["price"], _text_part(item.get("label"))]
+        # G-LIVE §5: a tracked price and its label enter the committed signature
+        # EXACTLY when the right-edge time does. Until then they are 'live', for
+        # the same reason a projected edge is 'proj' -- including them would make
+        # every forming tick a structural diff on an open tracked object and
+        # break the zero-diff-on-rebase invariant. The live value still reaches
+        # the screen through the re-materialized outputs.
+        live = item.get("tracks") is True and not committed
+        parts += [
+            "l",
+            "live" if live else item["price"],
+            "live" if live else _text_part(item.get("label")),
+        ]
     return "|".join(str(p) for p in parts)
 
 

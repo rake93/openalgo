@@ -73,6 +73,10 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     # both OS2031's and OS2032's emitters live in semantic.py)
     "OS2031": "Malformed session string",
     "OS2032": "session.* argument must be a session-string literal or an input.session variable",
+    # Semantic -- G-LIVE tracked levels (design §10). ONE code, two messages:
+    # both rules are "track= with a lifetime that is not price-independent", and
+    # they share a check site. Mirrors diagnostics.ts verbatim.
+    "OS2033": "track= requires a price-independent lifetime",
     # Limits
     "OS3001": "Source exceeds maximum size",
     "OS3002": "Program exceeds maximum AST nodes",
